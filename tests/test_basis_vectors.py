@@ -13,5 +13,3 @@ def test_basis_vectors():
     assert np.isclose(np.dot(u,v), 0), "u,v are not orthogonal"
     assert np.isclose(np.dot(u,n), 0), "u,n are not orthogonal"
     assert np.isclose(np.dot(v,n), 0), "v,n are not orthogonal"
-
-    return
