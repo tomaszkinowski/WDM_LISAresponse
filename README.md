@@ -80,4 +80,5 @@ python -m pytest
 
 # Authors
 
+Tomasz Kinowski
 Christopher J. Moore
