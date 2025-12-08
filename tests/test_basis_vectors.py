@@ -1,5 +1,4 @@
 import numpy as np
-import WDM_LISAresponse
 from WDM_LISAresponse.code.lisa_response.time_domain_response import basis_vectors
 
 def test_basis_vectors():
