@@ -1,63 +1,119 @@
 import jax
 import jax.numpy as jnp
 
-from typing import Tuple
+from jaxtyping import Array
 
 
-def basis_vectors(theta : float, 
-                  phi : float) -> Tuple[jnp.ndarray, 
-                                        jnp.ndarray, 
-                                        jnp.ndarray]:
-    """
-    Set up an orthonormal set of basis vectors (u,v,n) at a point on the sphere
-    of the sky given by the spherical polar angles (theta,phi).
+@jax.jit
+def basis_vectors(theta : Array, 
+                  phi : Array) -> Array:
+    r"""
+    Set up an orthonormal triad of basis vectors 
+    :math:`\{\hat{u}, \hat{v}, \hat{n}\}` at a point on the sphere of the sky 
+    specified by the spherical polar angles :math:`(\theta, \phi)`;
 
-    Parameters
-    ----------
-    theta : float
-        polar angle [rad]
-    phi : float
-        azimuthal angle [rad]
+    .. math::
+        \begin{align}
+            \hat{u} &= \cos\theta\cos\phi \hat{x} + 
+                        \cos\theta\sin\phi \hat{y} - 
+                        \sin\theta \hat{z} \\
+            \hat{v} &= \sin\phi \hat{x} - 
+                        \cos\phi \hat{y} \\
+            \hat{n} &= \sin\theta\cos\phi \hat{x} + 
+                        \sin\theta\sin\phi \hat{y} + 
+                        \cos\theta \hat{z}
+        \end{align} .
 
-    Returns
-    -------
-    u : jnp.ndarray
-        North/South basis vector, shape=(3,)
-    v : jnp.ndarray
-        East/West basis vector, shape=(3,)
-    n : jnp.ndarray
-        Radial basis vector, shape=(3,)
-    """
-    u = jnp.array([jnp.cos(theta)*jnp.cos(phi), jnp.cos(theta)*jnp.sin(phi), - jnp.sin(theta)])
-    v = jnp.array([jnp.sin(phi), -jnp.cos(phi), 0.])
-    n = jnp.array([jnp.sin(theta)*jnp.cos(phi), jnp.sin(theta)*jnp.sin(phi), jnp.cos(theta)])
-    return u, v, n
-
-def basis_tensors(theta : float, 
-                  phi : float) -> Tuple[jnp.ndarray, 
-                                        jnp.ndarray]:
-    """
-    Set up an two GW polarisation basis tensors at a point on the sphere
-    of the sky given by the spherical polar angles (theta,phi).
+    The radial unit vector :math:`\hat{n}` points towards the GW source.
 
     Parameters
     ----------
-    theta : float
-        polar angle [rad]
-    phi : float
-        azimuthal angle [rad]
+    theta : Array
+        polar angle [rad], either a scalar JAX array (shape=()), or an array of 
+        arbitrary shape=(...,).
+    phi : Array
+        azimuthal angle [rad], either a scalar JAX array (shape=()), or an array 
+        of arbitrary shape=(...,).
 
     Returns
     -------
-    e_plus : jnp.ndarray
-        plus polarised tensor, shape=(3,3)
-    e_cross : jnp.ndarray
-        cross polarised tensor, shape=(3,3)
+    basis : Array
+        The three orthonormal basis vectors. If inputs are scalars, returns an 
+        array of shape=(3,3) with the first axis indexing the basis vectors
+        :math:`\hat{u}, \hat{v}, \hat{n}` and the second axis labelling the
+        Cartesian components. If inputs are arrays of shape=(...,), returns an 
+        array of shape=(3,3,...).
     """
-    u, v, n = basis_vectors(theta, phi)
-    e_plus = jnp.tensordot(u, u, axes=0) - jnp.tensordot(v, v, axes=0)
-    e_cross = jnp.tensordot(u, v, axes=0) + jnp.tensordot(v, u, axes=0)
-    return e_plus, e_cross
+    theta = jnp.asarray(theta)
+    phi = jnp.asarray(phi)
+
+    basis = jnp.array([
+                        [jnp.cos(theta)*jnp.cos(phi), 
+                         jnp.cos(theta)*jnp.sin(phi), 
+                         -jnp.sin(theta)]
+                         ,
+                         [jnp.sin(phi), 
+                          -jnp.cos(phi), 
+                          jnp.zeros_like(theta)]
+                         ,
+                         [jnp.sin(theta)*jnp.cos(phi), 
+                          jnp.sin(theta)*jnp.sin(phi), 
+                          jnp.cos(theta)]
+                    ])
+    
+    return basis
+
+
+@jax.jit
+def basis_tensors(theta : Array, 
+                  phi : Array) -> Array:
+    r"""
+    Set up the two transverse-traceless GW polarisation basis tensors 
+    :math:`e^+` and :math:`e^\times` at a point on the sphere of the sky 
+    specified by the spherical polar angles :math:`(\theta, \phi)`;
+
+    .. math::
+        \begin{align}
+            e^+ &= \hat{u}\otimes\hat{u} - \hat{v}\otimes\hat{v} \\
+            e^\times &= \hat{u}\otimes\hat{v} + \hat{v}\otimes\hat{u} 
+        \end{align} .
+
+    Parameters
+    ----------
+    theta : Array
+        polar angle [rad], either a scalar JAX array (shape=()), or an array of 
+        arbitrary shape=(...,).
+    phi : Array
+        azimuthal angle [rad], either a scalar JAX array (shape=()), or an array 
+        of arbitrary shape=(...,).
+
+    Returns
+    -------
+    polarisarion_basis : jnp.ndarray
+        Plus and cross polarisation basis tensors. If inputs are scalars, 
+        returns an array of shape=(2,3,3) with the first axis indexing the 
+        basis tensors :math:`e^+` and :math:`e^\times` and the second and third
+        axes labelling the Cartesian components. If inputs are arrays of 
+        shape=(...,), returns an array of shape=(2,3,3,...).
+    """
+    theta = jnp.asarray(theta)
+    phi = jnp.asarray(phi)
+
+    basis = basis_vectors(theta, phi)
+
+    polarisarion_basis = jnp.array([
+                            jnp.einsum('i...,j...->ij...', 
+                                        basis[0,...], basis[0,...]) - \
+                            jnp.einsum('i...,j...->ij...', 
+                                        basis[1,...], basis[1 ,...])
+                            ,
+                            jnp.einsum('i...,j...->ij...', 
+                                        basis[0,...], basis[1,...]) + \
+                            jnp.einsum('i...,j...->ij...', 
+                                        basis[1,...], basis[0 ,...])
+                            ])
+
+    return polarisarion_basis
 
 
 

@@ -13,6 +13,7 @@ dependencies = [
     "scipy",
     "matplotlib",
     "jax",
+    "jaxtyping",
     "ipykernel",
     "lisaorbits",
     "WDM @ git+https://github.com/cjm96/WDM_GW_wavelets.git"
