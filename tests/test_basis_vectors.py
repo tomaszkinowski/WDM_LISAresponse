@@ -9,9 +9,7 @@ def test_basis_vectors():
     """
     Check unit vectors are othronormal 
     """
-    theta = 1.0
-    phi = 1.0
-
+    theta, phi = 1.0, 1.0
     basis = basis_vectors(theta, phi)
 
     u = basis[0,:]
@@ -37,10 +35,10 @@ def test_basis_vector_functions_are_vectorised():
     num_pts = 10
 
     key, subkey = jax.random.split(key)
-    theta = jax.random.uniform(key, shape=(num_pts,), minval=0.0, maxval=np.pi)
+    theta = jax.random.uniform(key, shape=(num_pts,), minval=0.0, maxval=jnp.pi)
 
     key, subkey = jax.random.split(key)
-    phi = jax.random.uniform(key, shape=(num_pts,), minval=0.0, maxval=2*np.pi)
+    phi = jax.random.uniform(key, shape=(num_pts,), minval=0.0, maxval=2*jnp.pi)
 
     basis = basis_vectors(theta, phi)
 
@@ -58,7 +56,8 @@ def test_basis_vector_functions_are_vectorised():
     cross = jnp.cross(basis[0,...], basis[1,...], axis=0)
     assert jnp.allclose(cross, -basis[2,...]), \
             "Basis vectors have incorrect handedness"
-    
+
+
 def test_basis_tensors():
     """
     Check polarisation basis tensors 
