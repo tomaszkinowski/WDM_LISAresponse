@@ -4,6 +4,7 @@ import numpy as np
 import WDM_LISAresponse
 from WDM_LISAresponse.code.lisa_response.time_domain_response import basis_tensors, basis_vectors
 
+
 def test_basis_vectors():
     """
     Check unit vectors are othronormal 
@@ -101,10 +102,10 @@ def test_basis_tensors():
     assert polarisation_basis.shape == (2, 3, 3, num_pts), \
         "Polarisation basis tensors have incorrect shape for vectorised inputs"
     
-    assert jnp.allclose(jnp.trace(polarisation_basis[0,...]), 0.0), \
+    assert jnp.allclose(jnp.einsum('ii...->', polarisation_basis[0,...]), 0.0),\
         "Plus polarisation basis tensor is not traceless"
     
-    assert jnp.allclose(jnp.trace(polarisation_basis[1,...]), 0.0), \
+    assert jnp.allclose(jnp.einsum('ii...->', polarisation_basis[1,...]), 0.0),\
         "Cross polarisation basis tensor is not traceless"
     
     assert jnp.allclose(jnp.einsum('i...,ij...,j...->...', 
