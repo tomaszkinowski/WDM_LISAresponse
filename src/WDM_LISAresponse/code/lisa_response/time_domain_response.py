@@ -8,7 +8,7 @@ from jaxtyping import Array
 def basis_vectors(theta : Array, 
                   phi : Array) -> Array:
     r"""
-    Set up an orthonormal triad of basis vectors 
+    Creates an orthonormal triad of spatial basis vectors (Carteisian coords) 
     :math:`\{\hat{u}, \hat{v}, \hat{n}\}` at a point on the sphere of the sky 
     specified by the spherical polar angles :math:`(\theta, \phi)`;
 
@@ -29,10 +29,10 @@ def basis_vectors(theta : Array,
     Parameters
     ----------
     theta : Array
-        polar angle [rad], either a scalar JAX array (shape=()), or an array of 
+        Polar angle [rad], either a scalar JAX array (shape=()), or an array of 
         arbitrary shape=(...,).
     phi : Array
-        azimuthal angle [rad], either a scalar JAX array (shape=()), or an array 
+        Azimuthal angle [rad], either a scalar JAX array (shape=()), or an array 
         of arbitrary shape=(...,).
 
     Returns
@@ -68,7 +68,7 @@ def basis_vectors(theta : Array,
 def basis_tensors(theta : Array, 
                   phi : Array) -> Array:
     r"""
-    Set up the two transverse-traceless GW polarisation basis tensors 
+    Creates the two transverse-traceless GW polarisation basis tensors 
     :math:`e^+` and :math:`e^\times` at a point on the sphere of the sky 
     specified by the spherical polar angles :math:`(\theta, \phi)`;
 
@@ -81,15 +81,15 @@ def basis_tensors(theta : Array,
     Parameters
     ----------
     theta : Array
-        polar angle [rad], either a scalar JAX array (shape=()), or an array of 
+        Polar angle [rad], either a scalar JAX array (shape=()), or an array of 
         arbitrary shape=(...,).
     phi : Array
-        azimuthal angle [rad], either a scalar JAX array (shape=()), or an array 
+        Azimuthal angle [rad], either a scalar JAX array (shape=()), or an array 
         of arbitrary shape=(...,).
 
     Returns
     -------
-    polarisarion_basis : jnp.ndarray
+    polarisarion_basis : Array
         Plus and cross polarisation basis tensors. If inputs are scalars, 
         returns an array of shape=(2,3,3) with the first axis indexing the 
         basis tensors :math:`e^+` and :math:`e^\times` and the second and third
@@ -114,8 +114,4 @@ def basis_tensors(theta : Array,
                             ])
 
     return polarisarion_basis
-
-
-
-
 
