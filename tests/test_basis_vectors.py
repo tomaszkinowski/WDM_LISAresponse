@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import WDM_LISAresponse
-from WDM_LISAresponse.code.lisa_response.time_domain_response import basis_tensors, basis_vectors
+from WDM_LISAresponse.code.lisa_response.time_domain_response import basis_tensors, basis_vectors, basis_tangent_vectors
 
 
 def test_basis_vectors():
@@ -56,6 +56,20 @@ def test_basis_vector_functions_are_vectorised():
     cross = jnp.cross(basis[0,...], basis[1,...], axis=0)
     assert jnp.allclose(cross, -basis[2,...]), \
             "Basis vectors have incorrect handedness"
+    
+    # test the basis_tangent_vectors function
+    tengent_basis = basis_tangent_vectors(theta, phi)
+
+    assert tengent_basis.shape == (2, 3, num_pts), \
+        "Basis vectors have incorrect shape"
+    
+    for i in range(2):
+        for j in range(i, 2):
+            x = jnp.einsum('a...,a...->...', 
+                           tengent_basis[i,...], 
+                           tengent_basis[j,...])
+            assert jnp.allclose(x, jnp.where(i==j, 1.0, 0.0)), \
+                f"Basis vectors {i}, {j} are not orthonormal"
 
 
 def test_basis_tensors():
