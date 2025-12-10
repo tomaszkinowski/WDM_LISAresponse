@@ -98,11 +98,11 @@ def basis_tangent_vectors(theta : Array,
     Returns
     -------
     tangent_basis : Array
-        The two orthonormal basis vectors. If inputs are scalars, returns an 
-        array of shape=(2,3) with the first axis indexing the basis vectors
-        :math:`\hat{u}, \hat{v}` and the second axis labelling the Cartesian 
-        components. If inputs are arrays of shape=(...,), returns an array of 
-        shape=(3,3,...).
+        The two orthonormal basis vectors in the tangent plane of the sky. 
+        If inputs are scalars, returns an array of shape=(2,3) with the first 
+        axis indexing the basis vectors :math:`\hat{u}, \hat{v}` and the second 
+        axis labelling the Cartesian components. If inputs are arrays of 
+        shape=(...,), returns an array of shape=(3,3,...).
     """
     theta = jnp.asarray(theta)
     phi = jnp.asarray(phi)
