@@ -63,6 +63,9 @@ def test_basis_vector_functions_are_vectorised():
     assert tengent_basis.shape == (2, 3, num_pts), \
         "Basis vectors have incorrect shape"
     
+    assert jnp.allclose(tengent_basis, basis[0:2,...]), \
+        "basis_tangent_vectors does not match basis_vectors output"
+    
     for i in range(2):
         for j in range(i, 2):
             x = jnp.einsum('a...,a...->...', 
