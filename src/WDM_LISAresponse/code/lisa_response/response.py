@@ -254,3 +254,104 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     dl_sr_wdm = np.pi *c * l_sr *np.einsum('tXx,Xx-> t', rhat_cross, e_plus) * np.einsum("tnm->t", sum_nm)
 
     return dl_sr_wdm
+
+#wdm response but with double approx 
+
+#write the function for the wdm transform 
+
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500):
+    """
+    WDM LISA Response with additional assumption on time support
+
+    Parameters 
+    ----------
+    times : ndarray
+        the sample times of the LISA response
+        this is the time at which the signal is sent by SC 
+    s : int
+        sending SC
+    r : int
+        sending SC
+    orbits : LISA orbits class objects
+        computes the positions of all the SC
+    theta : float
+        polar angle [rad]
+    phi : float
+        azimuthal angle [rad]
+    td_waveform_plus : ndarray
+        time domain waveform of the plus polarisation of len = times  
+    td_waveform_cross : ndarray
+        time domain waveform of the cross polarisation of len = times 
+    Nf : int
+        number of basis element in the frequency dimension 
+
+    Returns
+    -------
+    """
+
+
+    current_length = len(times)
+    print(f"Current length of time series: {current_length}")
+
+    dt = np.mean(np.diff(times))
+
+    N = WDM.utils.next_multiple(current_length, 2*Nf)
+
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=1, calc_m0=True)
+    print(wdm)
+
+    h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
+
+    print(f"Padded length of time series: {N}")
+
+    print((N-current_length)*wdm.dt)
+
+    w_t = wdm.dwt(h_plus_padded)
+
+    #basic implementation of wdm transform 
+
+    x_s = orbits.compute_position(times, sc=[s])[:,0,:]
+
+    _, _, n = basis_vectors(theta, phi)
+
+    Omega = -n  
+        
+    xi_s = times - np.einsum('x,tx->t', Omega, x_s/c)
+
+    freq_vals = np.arange(0, wdm.Nf) * wdm.dF
+
+    times_vals = np.arange(0, wdm.Nt) * wdm.dT
+
+    in_times_vals = times[0] + times_vals
+
+
+    l_sr_dT = _compute_ltt_iterative(in_times_vals, s, r, orbits)
+        
+    omega_sr_dT = (l_sr_dT)**(-1)  
+        
+    rhat_sr_dT = rhat(in_times_vals, s, r, orbits)
+
+    rhat_cross_dT = np.einsum('tx,tX->txX', rhat_sr_dT, rhat_sr_dT)
+
+    Om_dot_rhat_dT = np.einsum('x,tx->t', Omega, rhat_sr_dT)
+        
+    transfer_func_arg = 0.5 * 2.0 * np.pi * freq_vals[np.newaxis, :] * (omega_sr_dT**(-1))[:, np.newaxis] * (1.0 - Om_dot_rhat_dT)[:, np.newaxis] #Nt x Nf dimensions
+
+    transfer_func = np.sinc(transfer_func_arg / np.pi) * np.exp(transfer_func_arg*1j) #shape Nt x Nf
+    e_plus, _ = basis_tensors(theta, phi)
+
+    Nt = wdm.Nt   # number of time bins
+    Nf = wdm.Nf   # number of frequency bins
+
+    # Create a grid of (n, m)
+    n_grid, m_grid = np.meshgrid(np.arange(Nt), np.arange(Nf), indexing="ij")
+
+    vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, xi_s-times[0])
+    w_nm = np.pi * c * (transfer_func[:, :]+np.conj(transfer_func[:, :])) * w_t[:, :] * l_sr_dT[:, np.newaxis] *np.einsum('tXx,Xx-> t', rhat_cross_dT, e_plus)[:, np.newaxis] / (4.0 * np.pi)
+    print("The shape is", w_nm.shape)
+    sum_nm = np.pi * c * (transfer_func[np.newaxis,:, :]+np.conj(transfer_func[np.newaxis, :, :])) * w_t[np.newaxis, :, :] * vals *  l_sr_dT[np.newaxis, :, np.newaxis] *np.einsum('tXx,Xx-> t', rhat_cross_dT, e_plus)[np.newaxis, :, np.newaxis] / (4.0 * np.pi)
+    dl_sr_wdm_dT = np.einsum("tnm->t", sum_nm) 
+
+    return dl_sr_wdm_dT, w_nm
+
+
