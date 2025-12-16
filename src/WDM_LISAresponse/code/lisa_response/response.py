@@ -294,19 +294,15 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     print(f"Current length of time series: {current_length}")
 
     dt = np.mean(np.diff(times))
-
+    print(dt)
     N = WDM.utils.next_multiple(current_length, 2*Nf)
 
     wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=1, calc_m0=True)
     print(wdm)
 
-    h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
 
-    print(f"Padded length of time series: {N}")
 
-    print((N-current_length)*wdm.dt)
-
-    w_t = wdm.dwt(h_plus_padded)
+    w_t = wdm.dwt(td_waveform_plus)
 
     #basic implementation of wdm transform 
 
@@ -328,7 +324,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     l_sr_dT = _compute_ltt_iterative(in_times_vals, s, r, orbits)
         
     omega_sr_dT = (l_sr_dT)**(-1)  
-        
+    
     rhat_sr_dT = rhat(in_times_vals, s, r, orbits)
 
     rhat_cross_dT = np.einsum('tx,tX->txX', rhat_sr_dT, rhat_sr_dT)
@@ -347,7 +343,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     n_grid, m_grid = np.meshgrid(np.arange(Nt), np.arange(Nf), indexing="ij")
 
     vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, xi_s-times[0])
-    w_nm = np.pi * c * (transfer_func[:, :]+np.conj(transfer_func[:, :])) * w_t[:, :] * l_sr_dT[:, np.newaxis] *np.einsum('tXx,Xx-> t', rhat_cross_dT, e_plus)[:, np.newaxis] / (4.0 * np.pi)
+    w_nm = np.pi * c * (transfer_func+np.conj(transfer_func)) * w_t * l_sr_dT[:, np.newaxis] *np.einsum('tXx,Xx-> t', rhat_cross_dT, e_plus)[:, np.newaxis] / (4.0 * np.pi)
     print("The shape is", w_nm.shape)
     sum_nm = np.pi * c * (transfer_func[np.newaxis,:, :]+np.conj(transfer_func[np.newaxis, :, :])) * w_t[np.newaxis, :, :] * vals *  l_sr_dT[np.newaxis, :, np.newaxis] *np.einsum('tXx,Xx-> t', rhat_cross_dT, e_plus)[np.newaxis, :, np.newaxis] / (4.0 * np.pi)
     dl_sr_wdm_dT = np.einsum("tnm->t", sum_nm) 
