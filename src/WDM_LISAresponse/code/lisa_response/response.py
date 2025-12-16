@@ -259,7 +259,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
 #write the function for the wdm transform 
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500):
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False):
     """
     WDM LISA Response with additional assumption on time support
 
@@ -284,6 +284,8 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         time domain waveform of the cross polarisation of len = times 
     Nf : int
         number of basis element in the frequency dimension 
+    return_td : bool
+        indicate whether we also want the time domain lisa response
 
     Returns
     -------
@@ -342,11 +344,17 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     # Create a grid of (n, m)
     n_grid, m_grid = np.meshgrid(np.arange(Nt), np.arange(Nf), indexing="ij")
 
-    vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, xi_s-times[0])
+
     w_nm = np.pi * c * (transfer_func+np.conj(transfer_func)) * w_t * l_sr_dT[:, np.newaxis] *np.einsum('tXx,Xx-> t', rhat_cross_dT, e_plus)[:, np.newaxis] / (4.0 * np.pi)
-    print("The shape is", w_nm.shape)
-    sum_nm = np.pi * c * (transfer_func[np.newaxis,:, :]+np.conj(transfer_func[np.newaxis, :, :])) * w_t[np.newaxis, :, :] * vals *  l_sr_dT[np.newaxis, :, np.newaxis] *np.einsum('tXx,Xx-> t', rhat_cross_dT, e_plus)[np.newaxis, :, np.newaxis] / (4.0 * np.pi)
-    dl_sr_wdm_dT = np.einsum("tnm->t", sum_nm) 
+    
+    if return_td:
+        vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, xi_s-times[0])
+        sum_nm = np.pi * c * (transfer_func[np.newaxis,:, :]+np.conj(transfer_func[np.newaxis, :, :])) * w_t[np.newaxis, :, :] * vals *  l_sr_dT[np.newaxis, :, np.newaxis] *np.einsum('tXx,Xx-> t', rhat_cross_dT, e_plus)[np.newaxis, :, np.newaxis] / (4.0 * np.pi)
+        dl_sr_wdm_dT = np.einsum("tnm->t", sum_nm) 
+    else:
+        dl_sr_wdm_dT = 0.0
+     
+  
 
     return dl_sr_wdm_dT, w_nm
 
