@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np 
 from lisaconstants import c
 from typing import Tuple
-
+#functions used to compute lisa responses 
 
 def basis_vectors(theta : float, 
                   phi : float) -> Tuple[jnp.ndarray, 
