@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 import WDM
 from scipy.fft import fft, fftfreq
-from .time_domain_response import (
+from .response_sub import (
     basis_vectors,
     basis_tensors,
     _compute_ltt_iterative,
