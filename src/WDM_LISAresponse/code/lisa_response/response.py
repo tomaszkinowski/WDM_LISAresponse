@@ -333,11 +333,11 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     
     if return_td:
         vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, xi_s-times[0])
-        sum_nm = vals * w_nm[None, :, :]
+        sum_nm = vals * w_nm
         dl_sr_wdm_dT = np.einsum("tnm->t", sum_nm) 
-        return dl_sr_wdm_dT, w_nm
+        return dl_sr_wdm_dT, w_nm[0,:,:]
     else:
-        return w_nm
+        return w_nm[0,:,:]
 
 
 
