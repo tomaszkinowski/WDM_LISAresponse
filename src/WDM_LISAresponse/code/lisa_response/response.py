@@ -67,8 +67,8 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
 
     xi = np.linspace(xi_s, xi_r, num_int_points) # (num_int_points, num_times)
 
-    h_plus_interp = interp1d(times, td_waveform_plus, kind="linear", bounds_error=False, fill_value="extrapolate")
-    h_cross_interp = interp1d(times, td_waveform_cross, kind="linear", bounds_error=False, fill_value="extrapolate")
+    h_plus_interp = interp1d(times, td_waveform_plus, kind="cubic", bounds_error=False, fill_value="extrapolate")
+    h_cross_interp = interp1d(times, td_waveform_cross, kind="cubic", bounds_error=False, fill_value="extrapolate")
 
     h_plus = h_plus_interp(xi)
     h_cross = h_cross_interp(xi)
@@ -327,12 +327,10 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
 
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(Nf), indexing="ij")
 
-    vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, xi_s + tau_s - times[0])
-
     w_nm = 0.5 * c * l_sr_dT[np.newaxis, :, np.newaxis] * np.einsum("nXx,Xx->n", rhat_cross_dT, e_plus)[np.newaxis, :, np.newaxis] *  np.sinc(sinc_arg / np.pi)[np.newaxis, :, :] *  w_t[np.newaxis, :, :]
     
     if return_td:
-        vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, xi_s-times[0])
+        vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, tau_s+ xi_s-times[0])
         sum_nm = vals * w_nm
         dl_sr_wdm_dT = np.einsum("tnm->t", sum_nm) 
         return dl_sr_wdm_dT, w_nm[0,:,:]
