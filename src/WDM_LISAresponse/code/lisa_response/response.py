@@ -49,10 +49,12 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
     -------
     """
     x_s = orbits.compute_position(times, sc=[s])[:,0,:]
-    x_r = orbits.compute_position(times, sc=[r])[:,0,:]
 
     l_sr = _compute_ltt_iterative(times, s, r, orbits)
     rhat_sr = rhat(times, s, r, orbits)
+
+    t_rec = times + l_sr
+    x_r_rec = orbits.compute_position(t_rec, sc=[r])[:,0,:]
 
     D = np.einsum('tx,tX->txX', rhat_sr, rhat_sr)
 
@@ -63,13 +65,12 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
     Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
 
     xi_s = times - np.einsum('x,tx->t', Omega, x_s/c)
-    xi_r = times + l_sr - np.einsum('x,tx->t', Omega, x_r/c)
+    xi_r = t_rec - np.einsum('x,tx->t', Omega, x_r_rec/c)
 
     xi = np.linspace(xi_s, xi_r, num_int_points) # (num_int_points, num_times)
 
-    h_plus_interp = interp1d(times, td_waveform_plus, kind="cubic", bounds_error=False, fill_value="extrapolate")
-    h_cross_interp = interp1d(times, td_waveform_cross, kind="cubic", bounds_error=False, fill_value="extrapolate")
-
+    h_plus_interp = interp1d(times, td_waveform_plus, kind="cubic", bounds_error=False, fill_value=0.0) #change back to extrapolate
+    h_cross_interp = interp1d(times, td_waveform_cross, kind="cubic", bounds_error=False, fill_value=0.0)
     h_plus = h_plus_interp(xi)
     h_cross = h_cross_interp(xi)
 
