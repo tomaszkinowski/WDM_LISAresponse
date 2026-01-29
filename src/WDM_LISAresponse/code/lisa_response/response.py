@@ -15,7 +15,8 @@ from .response_sub import (
     basis_vectors,
     basis_tensors,
     _compute_ltt_iterative,
-    rhat, gnm_at_times_grid_np
+    rhat, gnm_at_times_grid_np,
+    gnm_at_times_grid_np_wsinc
 )
 # Add your LISA response functions here
 
@@ -227,18 +228,17 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     freq_vals = np.arange(0, wdm.Nf) * wdm.dF
 
     tau_s = l_sr * (1 - Om_dot_rhat) * 0.5
-        
     sinc_arg = 2.0 * np.pi * freq_vals[np.newaxis, :] * tau_s[:, np.newaxis]
-       
+
     e_plus, _ = basis_tensors(theta, phi)
 
-    n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(Nf), indexing="ij")
+    n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(wdm.Nf), indexing="ij")
 
     vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, xi_s + tau_s - times[0])
 
-    sum_nm = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] *  w_t[np.newaxis, :, :] * vals
+    sum_nm = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t[np.newaxis, :, :] * vals
 
-    dl_sr_wdm = 0.5 *c * l_sr *np.einsum('tXx,Xx-> t', rhat_cross, e_plus) * np.einsum("tnm->t", sum_nm)
+    dl_sr_wdm = 0.5 * c * l_sr * np.einsum('tXx,Xx->t', rhat_cross, e_plus) * np.einsum("tnm->t", sum_nm)
 
     return dl_sr_wdm
 
