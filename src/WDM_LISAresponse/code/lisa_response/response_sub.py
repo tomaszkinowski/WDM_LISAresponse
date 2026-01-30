@@ -220,8 +220,6 @@ def gnm_at_times_grid_np(wdm, n_grid, m_grid, t_query, time_first=True, a=-0.5):
 
     return values
 
-import numpy as np
-
 def _interp_periodic_wsinc_centered(y, t_query, dt, taps=16):
     """
     Periodic Hann-windowed sinc interpolation, centered on nearest sample.

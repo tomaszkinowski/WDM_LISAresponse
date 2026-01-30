@@ -10,7 +10,7 @@ from typing import Tuple
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 import WDM
-from scipy.fft import fft, fftfreq
+from numpy.fft import fft, fftfreq
 from .response_sub import (
     basis_vectors,
     basis_tensors,
@@ -70,8 +70,8 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
 
     xi = np.linspace(xi_s, xi_r, num_int_points) # (num_int_points, num_times)
 
-    h_plus_interp = interp1d(times, td_waveform_plus, kind="cubic", bounds_error=False, fill_value=0.0) #change back to extrapolate
-    h_cross_interp = interp1d(times, td_waveform_cross, kind="cubic", bounds_error=False, fill_value=0.0)
+    h_plus_interp = interp1d(times, td_waveform_plus, kind="cubic", bounds_error=False, fill_value="extrapolate") #change back to extrapolate
+    h_cross_interp = interp1d(times, td_waveform_cross, kind="cubic", bounds_error=False, fill_value="extrapolate")
     h_plus = h_plus_interp(xi)
     h_cross = h_cross_interp(xi)
 
@@ -87,80 +87,80 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
 
     return c* dl_sr
 
-def one_arm_response_freq_domain(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross):
+def one_arm_response_freq_domain(
+    times, s, r, orbits, theta, phi,
+    td_waveform_plus, td_waveform_cross,
+    chunk_size=512
+):
     """
-    Eq. 19
-
-    Parameters 
-    ----------
-    times : ndarray
-        the sample times of the LISA response
-        this is the time at which the signal is sent by SC 
-    s : int
-        sending SC
-    r : int
-        sending SC
-    orbits : LISA orbits class objects
-        computes the positions of all the SC
-    theta : float
-        polar angle [rad]
-    phi : float
-        azimuthal angle [rad]
-    td_waveform_plus : ndarray
-        time domain waveform of the plus polarisation of len = times  
-    td_waveform_cross :
-        time domain waveform of the cross polarisation of len = times 
-
-    Returns
-    -------
+    Faster FD one-arm response:
+    - avoids building 4D tensors (Nt x Nw x 3 x 3)
+    - avoids large Nt x Nw arrays via frequency chunking
+    - uses scalar antenna factors F_plus(t), F_cross(t)
     """
-    x_s = orbits.compute_position(times, sc=[s])[:,0,:]
+    times = np.asarray(times)
+    Nt = times.size
 
-    l_sr = _compute_ltt_iterative(times, s, r, orbits)
-    
-    omega_sr = (l_sr)**(-1)  
+    # Assume uniform sampling
+    dt = times[1] - times[0]
 
-
-    rhat_sr = rhat(times, s, r, orbits)
-
-    rhat_cross = np.einsum('tx,tX->txX', rhat_sr, rhat_sr)
+    # Geometry (still computed here; biggest speedup across many calls is caching these externally)
+    x_s = orbits.compute_position(times, sc=[s])[:, 0, :]          # (Nt,3)
+    l_sr = _compute_ltt_iterative(times, s, r, orbits)              # (Nt,)
+    rhat_sr = rhat(times, s, r, orbits)                             # (Nt,3)
 
     _, _, n = basis_vectors(theta, phi)
+    Omega = -n
 
-    Omega = -n 
+    Om_dot_rhat = np.einsum('i,ti->t', Omega, rhat_sr)              # (Nt,)
+    xi_s = times - np.einsum('i,ti->t', Omega, x_s / c)             # (Nt,)
 
-    Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
-    
-
-    xi_s = times - np.einsum('x,tx->t', Omega, x_s/c)
-
-    #times_f = np.linspace(xi_s.min(), xi_s.max(), 10000)
-
-    dt = np.diff(times).mean()
-    len_times = len(times)
+    # FFT of waveform polarisations
     H_plus = fft(td_waveform_plus)
     H_cross = fft(td_waveform_cross)
-    h_freq = fftfreq(len_times, dt)
-    omega = 2.0 * np.pi * h_freq
-    
-    transfer_func_arg = 0.5 * omega[np.newaxis, :] * (omega_sr**(-1))[:, np.newaxis] * (1.0 - Om_dot_rhat)[:, np.newaxis]
 
-    transfer_func = np.sinc(transfer_func_arg / np.pi) * np.exp(transfer_func_arg*1j)
+    h_freq = fftfreq(Nt, dt)
+    omega = 2.0 * np.pi * h_freq                                    # (Nt,)
 
-    one_arm_detect_tensor = 0.5 * rhat_cross[:, np.newaxis, :, :] * transfer_func[:, :, np.newaxis, np.newaxis]
-    
+    # Antenna scalars: F_+(t) = rhat^T e_+ rhat, same for cross
     e_plus, e_cross = basis_tensors(theta, phi)
+    F_plus  = np.einsum('ti,ij,tj->t', rhat_sr, e_plus,  rhat_sr)   # (Nt,)
+    F_cross = np.einsum('ti,ij,tj->t', rhat_sr, e_cross, rhat_sr)   # (Nt,)
 
-    H_freq = H_plus[np.newaxis, :, np.newaxis, np.newaxis] * e_plus[np.newaxis, np.newaxis, :, :] + \
-        H_cross[np.newaxis, :, np.newaxis, np.newaxis] * e_cross[np.newaxis, np.newaxis, :, :] 
-    
-    integrand = np.exp(1j*omega[np.newaxis, :]*xi_s[:, np.newaxis]) * np.einsum('twxX,twxX->tw',one_arm_detect_tensor, H_freq)  * np.exp(-1j * omega[np.newaxis, :] * times[0])
-    
-    dl_sr = c*l_sr* (np.sum(integrand, axis=1)/(len_times)) 
+    # Combine constant phase shift into one term
+    phase_t = (xi_s - times[0])                                     # (Nt,)
+
+    # Accumulate inverse-sum in chunks to reduce memory and often improve speed
+    acc = np.zeros(Nt, dtype=complex)
+    one_minus = (1.0 - Om_dot_rhat)                                 # (Nt,)
+
+    for j0 in range(0, Nt, chunk_size):
+        j1 = min(j0 + chunk_size, Nt)
+
+        w = omega[j0:j1]                                            # (M,)
+        Hp = H_plus[j0:j1]
+        Hc = H_cross[j0:j1]
+
+        # transfer_func_arg = 0.5 * omega * l_sr * (1 - Om·rhat)
+        arg = 0.5 * (l_sr[:, None] * one_minus[:, None]) * w[None, :]  # (Nt,M)
+
+        # transfer function: sinc(arg/pi) * exp(i*arg)
+        tf = np.sinc(arg / np.pi) * np.exp(1j * arg)                # (Nt,M)
+
+        # scalar contraction: 0.5 * tf * (Hp*F_plus + Hc*F_cross)
+        resp = 0.5 * tf * (F_plus[:, None] * Hp[None, :] + F_cross[:, None] * Hc[None, :])  # (Nt,M)
+
+        # exp(i w * (xi_s - t0))
+        ph = np.exp(1j * phase_t[:, None] * w[None, :])             # (Nt,M)
+
+        acc += np.sum(ph * resp, axis=1)                            # (Nt,)
+
+    dl_sr = c * l_sr * (acc / Nt)
     return dl_sr
 
 
-def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500):
+
+def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, d=4):
     """
     Implementation of the wdm one arm response as coded in the Overleaf, equation 20.  
 
@@ -196,7 +196,12 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     N = WDM.utils.next_multiple(current_length, 2*Nf)
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=1, calc_m0=True)
+    if int(N/Nf) == 2:
+        q_val = 1
+    else:
+        q_val = int(0.5 * N/Nf)
+
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d)
     print(wdm)
 
     h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
