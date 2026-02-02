@@ -220,54 +220,63 @@ def gnm_at_times_grid_np(wdm, n_grid, m_grid, t_query, time_first=True, a=-0.5):
 
     return values
 
-def _interp_periodic_wsinc_centered(y, t_query, dt, taps=16):
+def _cubic_kernel_keys(t, a=-0.5):
+    """Keys cubic convolution kernel (Catmull–Rom when a=-0.5)."""
+    t = np.abs(t)
+    w = np.zeros_like(t, dtype=np.float64)
+
+    m1 = (t < 1)
+    m2 = (t >= 1) & (t < 2)
+
+    w[m1] = (a + 2)*t[m1]**3 - (a + 3)*t[m1]**2 + 1
+    w[m2] = a*t[m2]**3 - 5*a*t[m2]**2 + 8*a*t[m2] - 4*a
+    return w
+
+def _lagrange_weight_matrix(frac, x_nodes):
     """
-    Periodic Hann-windowed sinc interpolation, centered on nearest sample.
-    Works for real or complex y.
+    Build weights W of shape (P, Nt) for evaluation points frac (Nt,)
+    and node locations x_nodes (P,).
     """
-    y = np.asarray(y).reshape(-1)
-    N = y.size
-    T = N * dt
+    frac = frac.astype(np.float64)
+    x_nodes = x_nodes.astype(np.float64)
+    P = len(x_nodes)
+    Nt = len(frac)
+    W = np.ones((P, Nt), dtype=np.float64)
+    for j in range(P):
+        for k in range(P):
+            if k == j:
+                continue
+            W[j, :] *= (frac - x_nodes[k]) / (x_nodes[j] - x_nodes[k])
+    return W
 
-    tq = np.mod(np.asarray(t_query), T)
-    u = tq / dt
-
-    # center on nearest integer index
-    kc = np.rint(u).astype(int)
-    frac = u - kc  # typically in [-0.5, 0.5]
-
-    if taps % 2 != 0:
-        raise ValueError("taps must be even (e.g. 8, 16)")
-    M = taps // 2
-
-    j = np.arange(-M + 1, M + 1)          # length=taps
-    idx = (kc[..., None] + j[None, :]) % N
-
-    x = j[None, :] - frac[..., None]      # offsets in sample units
-
-    # sinc kernel
-    w = np.sinc(x)
-
-    # Hann window on |x|<=M
-    ax = np.abs(x)
-    win = np.zeros_like(ax)
-    m = ax <= M
-    win[m] = 0.5 * (1.0 + np.cos(np.pi * ax[m] / M))
-    w *= win
-
-    # normalize per query so DC gain = 1
-    w /= (np.sum(w, axis=-1, keepdims=True) + 1e-300)
-
-    return np.sum(y[idx] * w, axis=-1)
-
-def gnm_at_times_grid_np_wsinc(wdm, n_grid, m_grid, t_query, time_first=True, taps=16):
+def gnm_at_times_grid_np_interp(
+    wdm, n_grid, m_grid, t_query,
+    method="cubic",
+    time_first=True,
+    a=-0.5,
+    wrap=False,
+):
     """
-    Same interface/shape behavior as your gnm_at_times_grid_np,
-    but uses centered periodic windowed-sinc interpolation for g_nm(t_query).
+    Evaluate g_nm(t) for a grid of (n,m) at times t_query with selectable interpolation.
+
+    Parameters
+    ----------
+    wdm : WDM_transform (needs dt, N, and gnm(n,m)->(N,))
+    n_grid, m_grid : arrays of same shape (grid of indices)
+    t_query : scalar or array of query times (seconds)
+    method : {"nearest","linear","cubic"}
+    time_first : if True -> output shape (t_shape + grid_shape), else (grid_shape + t_shape)
+    a : Keys parameter for cubic (a=-0.5 Catmull–Rom)
+    wrap : if True, periodic wrap indices mod N. If False, zero-extend out-of-range.
+
+    Returns
+    -------
+    values : np.ndarray
+        If time_first: shape = t_shape + grid_shape
+        else:         shape = grid_shape + t_shape
     """
     dt = wdm.dt
     N  = wdm.N
-    T  = N * dt
 
     n_grid = np.asarray(n_grid)
     m_grid = np.asarray(m_grid)
@@ -277,16 +286,128 @@ def gnm_at_times_grid_np_wsinc(wdm, n_grid, m_grid, t_query, time_first=True, ta
     t_query = np.asarray(t_query)
     t_shape = t_query.shape if t_query.shape != () else (1,)
     t_flat = t_query.ravel()
-    t_mod_flat = np.mod(t_flat, T)
 
+    # fractional sample coordinate
+    u = t_flat / dt
+
+    # ----- build neighbor indices + weights depending on method -----
+    if method == "nearest":
+        k0 = np.rint(u).astype(int)
+
+        if wrap:
+            k0i = k0 % N
+            w0  = np.ones_like(u, dtype=np.float64)
+            idxs = [k0i]
+            ws   = [w0]
+        else:
+            v0  = (k0 >= 0) & (k0 < N)
+            k0c = np.clip(k0, 0, N-1)
+            w0  = v0.astype(np.float64)
+            idxs = [k0c]
+            ws   = [w0]
+
+    elif method == "linear":
+        k = np.floor(u).astype(int)
+        frac = u - k
+
+        k0 = k
+        k1 = k + 1
+
+        if wrap:
+            k0i = k0 % N
+            k1i = k1 % N
+            w0  = (1.0 - frac).astype(np.float64)
+            w1  = frac.astype(np.float64)
+            idxs = [k0i, k1i]
+            ws   = [w0,  w1]
+        else:
+            v0  = (k0 >= 0) & (k0 < N)
+            v1  = (k1 >= 0) & (k1 < N)
+            k0c = np.clip(k0, 0, N-1)
+            k1c = np.clip(k1, 0, N-1)
+            w0  = (1.0 - frac) * v0
+            w1  = frac * v1
+            idxs = [k0c, k1c]
+            ws   = [w0.astype(np.float64), w1.astype(np.float64)]
+
+    elif method == "cubic":
+        k = np.floor(u).astype(int)
+        frac = u - k
+
+        k_m1 = k - 1
+        k_0  = k
+        k_p1 = k + 1
+        k_p2 = k + 2
+
+        w_m1 = _cubic_kernel_keys(frac + 1.0, a=a)
+        w_0  = _cubic_kernel_keys(frac,       a=a)
+        w_p1 = _cubic_kernel_keys(frac - 1.0, a=a)
+        w_p2 = _cubic_kernel_keys(frac - 2.0, a=a)
+
+        if wrap:
+            idxs = [k_m1 % N, k_0 % N, k_p1 % N, k_p2 % N]
+            ws   = [w_m1,     w_0,     w_p1,     w_p2]
+        else:
+            v_m1 = (k_m1 >= 0) & (k_m1 < N)
+            v_0  = (k_0  >= 0) & (k_0  < N)
+            v_p1 = (k_p1 >= 0) & (k_p1 < N)
+            v_p2 = (k_p2 >= 0) & (k_p2 < N)
+
+            # zero-extend
+            w_m1 = w_m1 * v_m1
+            w_0  = w_0  * v_0
+            w_p1 = w_p1 * v_p1
+            w_p2 = w_p2 * v_p2
+
+            idxs = [
+                np.clip(k_m1, 0, N-1),
+                np.clip(k_0,  0, N-1),
+                np.clip(k_p1, 0, N-1),
+                np.clip(k_p2, 0, N-1),
+            ]
+            ws = [w_m1, w_0, w_p1, w_p2]
+
+        ws = [w.astype(np.float64) for w in ws]
+
+    elif method.startswith("lagrange"):
+        P = int(method.replace("lagrange", ""))
+        if P < 2:
+            raise ValueError("Lagrange needs >=2 points")
+        # choose a symmetric stencil; for P=8 -> offsets [-3,-2,-1,0,1,2,3,4]
+        half = P // 2
+        offsets = np.arange(-half + 1, half + 1, dtype=int)  # length P for even P
+
+        k = np.floor(u).astype(int)
+        frac = (u - k).astype(np.float64)  # in [0,1)
+
+        x_nodes = offsets.astype(np.float64)
+        W = _lagrange_weight_matrix(frac, x_nodes)  # (P, Nt)
+
+        idxs = [k + off for off in offsets]
+
+        if wrap:
+            idxs = [idx % N for idx in idxs]
+            ws = [W[j, :] for j in range(P)]
+        else:
+            valid = [(idx >= 0) & (idx < N) for idx in idxs]
+            idxs = [np.clip(idx, 0, N-1) for idx in idxs]
+            ws = [(W[j, :] * valid[j]) for j in range(P)]
+    else:
+        raise ValueError(f"Unknown method={method}")
+
+
+    # ----- evaluate for each (n,m) mode -----
     n_flat = n_grid.ravel()
     m_flat = m_grid.ravel()
 
     values_list = []
     for n_i, m_i in zip(n_flat, m_flat):
-        g_nm = np.asarray(wdm.gnm(n=int(n_i), m=int(m_i)))  # shape (N,)
-        v_flat = _interp_periodic_wsinc_centered(g_nm, t_mod_flat, dt, taps=taps)
-        values_list.append(v_flat.reshape(t_shape))
+        g = np.asarray(wdm.gnm(n=int(n_i), m=int(m_i)))  # (N,)
+
+        out = np.zeros_like(u, dtype=np.float64)
+        for k_idx, w in zip(idxs, ws):
+            out += w * g[k_idx]
+        values_list.append(out.reshape(t_shape))
 
     values_modes_t = np.stack(values_list, axis=0)  # (Nmodes, *t_shape)
 
@@ -300,6 +421,3 @@ def gnm_at_times_grid_np_wsinc(wdm, n_grid, m_grid, t_query, time_first=True, ta
         values = np.transpose(values, perm)
 
     return values
-
-# ---- ONE-LINER SWITCH (do this to activate the new interpolator globally) ----
-# gnm_at_times_grid_np = gnm_at_times_grid_np_wsinc

@@ -15,8 +15,9 @@ from .response_sub import (
     basis_vectors,
     basis_tensors,
     _compute_ltt_iterative,
-    rhat, gnm_at_times_grid_np,
-    gnm_at_times_grid_np_wsinc
+    rhat, 
+    gnm_at_times_grid_np,
+    gnm_at_times_grid_np_interp
 )
 # Add your LISA response functions here
 
@@ -160,7 +161,7 @@ def one_arm_response_freq_domain(
 
 
 
-def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, d=4):
+def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4):
     """
     Implementation of the wdm one arm response as coded in the Overleaf, equation 20.  
 
@@ -190,7 +191,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     -------
     """
     current_length = len(times)
-    print(f"Current length of time series: {current_length}")
+    #print(f"Current length of time series: {current_length}")
 
     dt = np.mean(np.diff(times))
 
@@ -201,12 +202,12 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     else:
         q_val = int(0.5 * N/Nf)
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d)
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d = d)
     print(wdm)
 
     h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
 
-    print(f"Padded length of time series: {N}")
+    #print(f"Padded length of time series: {N}")
 
     print(f"How much padding was added: {(N-current_length)*wdm.dt}")
 
@@ -239,7 +240,13 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(wdm.Nf), indexing="ij")
 
-    vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, xi_s + tau_s - times[0])
+    targ = xi_s + tau_s - times[0]
+    u = targ / wdm.dt
+    #print("targ min/max:", targ.min(), targ.max())
+    #print("u min/max:", u.min(), u.max())
+    #print("fraction outside [0,N):", np.mean((u < 0) | (u > (wdm.N-1))))
+
+    vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_s + tau_s - times[0], method=gnm_method, wrap=True)
 
     sum_nm = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t[np.newaxis, :, :] * vals
 
@@ -248,7 +255,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     return dl_sr_wdm
 
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False):
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4):
     """
     WDM response function where we also approximate the times t_i as t_n, see equation 21 for details
 
@@ -288,7 +295,12 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
 
     N = WDM.utils.next_multiple(current_length, 2*Nf)
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=1, calc_m0=True)
+    if int(N/Nf) == 2:
+        q_val = 1
+    else:
+        q_val = int(0.5 * N/Nf)
+
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d = d)
     print(wdm)
 
     h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
@@ -336,7 +348,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     w_nm = 0.5 * c * l_sr_dT[np.newaxis, :, np.newaxis] * np.einsum("nXx,Xx->n", rhat_cross_dT, e_plus)[np.newaxis, :, np.newaxis] *  np.sinc(sinc_arg / np.pi)[np.newaxis, :, :] *  w_t[np.newaxis, :, :]
     
     if return_td:
-        vals = gnm_at_times_grid_np(wdm, n_grid, m_grid, tau_s+ xi_s-times[0])
+        vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_s + tau_s - times[0], method=gnm_method, wrap=True)
         sum_nm = vals * w_nm
         dl_sr_wdm_dT = np.einsum("tnm->t", sum_nm) 
         return dl_sr_wdm_dT, w_nm[0,:,:]
