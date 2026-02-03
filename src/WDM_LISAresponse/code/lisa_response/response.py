@@ -17,7 +17,7 @@ from .response_sub import (
     _compute_ltt_iterative,
     rhat, 
     gnm_at_times_grid_np,
-    gnm_at_times_grid_np_interp
+    gnm_at_times_grid_np_interp,
 )
 # Add your LISA response functions here
 
@@ -191,7 +191,6 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     -------
     """
     current_length = len(times)
-    #print(f"Current length of time series: {current_length}")
 
     dt = np.mean(np.diff(times))
 
@@ -206,8 +205,6 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     print(wdm)
 
     h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
-
-    #print(f"Padded length of time series: {N}")
 
     print(f"How much padding was added: {(N-current_length)*wdm.dt}")
 
@@ -241,10 +238,6 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(wdm.Nf), indexing="ij")
 
     targ = xi_s + tau_s - times[0]
-    u = targ / wdm.dt
-    #print("targ min/max:", targ.min(), targ.max())
-    #print("u min/max:", u.min(), u.max())
-    #print("fraction outside [0,N):", np.mean((u < 0) | (u > (wdm.N-1))))
 
     vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_s + tau_s - times[0], method=gnm_method, wrap=True)
 
@@ -300,7 +293,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     else:
         q_val = int(0.5 * N/Nf)
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d = d)
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d = d, A_frac=0.4)
     print(wdm)
 
     h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
@@ -325,27 +318,39 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
 
     int_times_vals = times[0] + times_vals
 
+    
+
+
     l_sr =  _compute_ltt_iterative(times, s, r, orbits)
     l_sr_dT = _compute_ltt_iterative(int_times_vals, s, r, orbits)
+    
         
     rhat_sr = rhat(times, s, r, orbits)    
     rhat_sr_dT = rhat(int_times_vals, s, r, orbits)
+    
 
     rhat_cross_dT = np.einsum('tx,tX->txX', rhat_sr_dT, rhat_sr_dT)
 
     Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
     Om_dot_rhat_dT = np.einsum('x,tx->t', Omega, rhat_sr_dT)
+    
+
         
     tau_s = l_sr * (1 - Om_dot_rhat) * 0.5
     tau_n = l_sr_dT * (1 - Om_dot_rhat_dT) * 0.5
-        
-    sinc_arg = 2.0 * np.pi * freq_vals[np.newaxis, :] * tau_n[:, np.newaxis]
-       
+
+
     e_plus, _ = basis_tensors(theta, phi)
+
+    proj_dT = np.einsum("nXx,Xx->n", rhat_cross_dT, e_plus)
+   
+    sinc_arg = 2.0 * np.pi * freq_vals[np.newaxis, :] * tau_n[:, np.newaxis]
+   
+    A_nm = 0.5 * c * l_sr_dT[:, np.newaxis] * proj_dT[:, np.newaxis] *  np.sinc(sinc_arg / np.pi)
 
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(Nf), indexing="ij")
 
-    w_nm = 0.5 * c * l_sr_dT[np.newaxis, :, np.newaxis] * np.einsum("nXx,Xx->n", rhat_cross_dT, e_plus)[np.newaxis, :, np.newaxis] *  np.sinc(sinc_arg / np.pi)[np.newaxis, :, :] *  w_t[np.newaxis, :, :]
+    w_nm = A_nm[np.newaxis, :, :] *  w_t[np.newaxis, :, :]
     
     if return_td:
         vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_s + tau_s - times[0], method=gnm_method, wrap=True)
