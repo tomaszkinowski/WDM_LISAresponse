@@ -247,7 +247,6 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     return dl_sr_wdm
 
-
 def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4):
     """
     WDM response function where we also approximate the times t_i as t_n, see equation 21 for details
@@ -279,86 +278,63 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     Returns
     -------
     """
-
-
     current_length = len(times)
-    print(f"Current length of time series: {current_length}")
-
     dt = np.mean(np.diff(times))
 
     N = WDM.utils.next_multiple(current_length, 2*Nf)
+    q_val = 1 if int(N/Nf) == 2 else int(0.5 * N/Nf)
 
-    if int(N/Nf) == 2:
-        q_val = 1
-    else:
-        q_val = int(0.5 * N/Nf)
-
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d = d, A_frac=0.4)
-    print(wdm)
-
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d, A_frac=0.2)
+    #print(wdm)
     h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
+    w_t = wdm.dwt(h_plus_padded)  # shape (Nt, Nf) presumably
 
-    print(f"Padded length of time series: {N}")
-
-    print(f"How much padding was added: {(N-current_length)*wdm.dt}")
-
-    w_t = wdm.dwt(h_plus_padded)
-
-    x_s = orbits.compute_position(times, sc=[s])[:,0,:]
+    x_s = orbits.compute_position(times, sc=[s])[:, 0, :]
 
     _, _, n = basis_vectors(theta, phi)
+    Omega = -n
 
-    Omega = -n 
+    # faster than einsum in many cases
+    xi_s = times - (x_s @ (Omega / c))
 
-    xi_s = times - np.einsum('x,tx->t', Omega, x_s/c)
-
-    freq_vals = np.arange(0, wdm.Nf) * wdm.dF
-
-    times_vals = np.arange(0, wdm.Nt) * wdm.dT
-
+    freq_vals = np.arange(wdm.Nf) * wdm.dF
+    times_vals = np.arange(wdm.Nt) * wdm.dT
     int_times_vals = times[0] + times_vals
 
-    
-
-
-    l_sr =  _compute_ltt_iterative(times, s, r, orbits)
+    l_sr = _compute_ltt_iterative(times, s, r, orbits)
     l_sr_dT = _compute_ltt_iterative(int_times_vals, s, r, orbits)
-    
-        
-    rhat_sr = rhat(times, s, r, orbits)    
+
+    rhat_sr = rhat(times, s, r, orbits)
     rhat_sr_dT = rhat(int_times_vals, s, r, orbits)
-    
 
-    rhat_cross_dT = np.einsum('tx,tX->txX', rhat_sr_dT, rhat_sr_dT)
+    Om_dot_rhat = rhat_sr @ Omega
+    Om_dot_rhat_dT = rhat_sr_dT @ Omega
 
-    Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
-    Om_dot_rhat_dT = np.einsum('x,tx->t', Omega, rhat_sr_dT)
-    
-
-        
-    tau_s = l_sr * (1 - Om_dot_rhat) * 0.5
-    tau_n = l_sr_dT * (1 - Om_dot_rhat_dT) * 0.5
-
+    tau_s = 0.5 * l_sr * (1 - Om_dot_rhat)
+    tau_n = 0.5 * l_sr_dT * (1 - Om_dot_rhat_dT)
 
     e_plus, _ = basis_tensors(theta, phi)
 
-    proj_dT = np.einsum("nXx,Xx->n", rhat_cross_dT, e_plus)
-   
-    sinc_arg = 2.0 * np.pi * freq_vals[np.newaxis, :] * tau_n[:, np.newaxis]
-   
-    A_nm = 0.5 * c * l_sr_dT[:, np.newaxis] * proj_dT[:, np.newaxis] *  np.sinc(sinc_arg / np.pi)
+    # rhat_cross_dT is (Nt,3,3); proj_dT -> (Nt,)
+    # compute outer products + projection
+    rhat_cross_dT = rhat_sr_dT[:, :, None] * rhat_sr_dT[:, None, :]
+    proj_dT = np.einsum("tij,ij->t", rhat_cross_dT, e_plus)
 
+    # sinc simplification: np.sinc(2 f tau)
+    sinc_mat = np.sinc(2.0 * freq_vals[None, :] * tau_n[:, None])
+
+    A_nm = 0.5 * c * l_sr_dT[:, None] * proj_dT[:, None] * sinc_mat
+
+    if not return_td:
+        return A_nm * w_t
+
+    # For return_td: strongly consider chunking if gnm_at_times_grid_np_interp is heavy
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(Nf), indexing="ij")
-
-    w_nm = A_nm[np.newaxis, :, :] *  w_t[np.newaxis, :, :]
-    
-    if return_td:
-        vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_s + tau_s - times[0], method=gnm_method, wrap=True)
-        sum_nm = vals * w_nm
-        dl_sr_wdm_dT = np.einsum("tnm->t", sum_nm) 
-        return dl_sr_wdm_dT, w_nm[0,:,:]
-    else:
-        return w_nm[0,:,:]
-
+    tq = xi_s + tau_s - times[0]
+    vals = gnm_at_times_grid_np_interp(
+        wdm, n_grid, m_grid, tq, method=gnm_method, wrap=True
+    )
+    dl_sr = np.einsum("tnm,nm->t", vals, (A_nm * w_t))
+    return dl_sr, (A_nm * w_t)
 
 

@@ -249,6 +249,31 @@ def _lagrange_weight_matrix(frac, x_nodes):
             W[j, :] *= (frac - x_nodes[k]) / (x_nodes[j] - x_nodes[k])
     return W
 
+def _lanczos_weights(frac, A):
+    """
+    frac: (Nt,) fractional part in [0,1)
+    A: half-width of kernel (integer), total taps = 2A
+    Returns:
+      offsets: (2A,) integer offsets
+      W: (2A, Nt) weights for each offset
+    """
+    # offsets centered around 0: [-A+1, ..., A]
+    offsets = np.arange(-A + 1, A + 1, dtype=int)  # length 2A
+
+    # x = frac - offset for each tap; shape (2A, Nt)
+    x = (frac[None, :] - offsets[:, None]).astype(np.float64)
+
+    # sinc(pi x)/(pi x) using numpy's normalized sinc: np.sinc(x) = sin(pi x)/(pi x)
+    # Lanczos window: sinc(x/A)
+    W = np.sinc(x) * np.sinc(x / A)
+
+    # Normalize so weights sum to 1 at each frac (helps DC consistency)
+    s = np.sum(W, axis=0, keepdims=True)
+    W = np.divide(W, s, out=W, where=(s != 0))
+
+    return offsets, W
+
+
 def gnm_at_times_grid_np_interp(
     wdm, n_grid, m_grid, t_query,
     method="cubic",
@@ -392,6 +417,27 @@ def gnm_at_times_grid_np_interp(
             valid = [(idx >= 0) & (idx < N) for idx in idxs]
             idxs = [np.clip(idx, 0, N-1) for idx in idxs]
             ws = [(W[j, :] * valid[j]) for j in range(P)]
+
+    elif method.startswith("lanczos"):
+    # e.g. method="lanczos16" or "lanczos32"
+        A = int(method.replace("lanczos", ""))
+        if A < 2:
+            raise ValueError("Lanczos needs A>=2")
+
+        k = np.floor(u).astype(int)
+        frac = (u - k).astype(np.float64)
+
+        offsets, W = _lanczos_weights(frac, A)   # offsets (2A,), W (2A,Nt)
+
+        idxs = [k + off for off in offsets]
+        if wrap:
+            idxs = [idx % N for idx in idxs]
+            ws = [W[j, :] for j in range(len(offsets))]
+        else:
+            valid = [(idx >= 0) & (idx < N) for idx in idxs]
+            idxs = [np.clip(idx, 0, N-1) for idx in idxs]
+            ws = [(W[j, :] * valid[j]) for j in range(len(offsets))]
+
     else:
         raise ValueError(f"Unknown method={method}")
 
