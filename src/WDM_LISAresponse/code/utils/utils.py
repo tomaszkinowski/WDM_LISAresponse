@@ -34,3 +34,30 @@ def compare_response_signals(h_ref, h_test):
         "overlap": overlap,
         "mismatch": mismatch,
     }
+
+def wdm_mismatch(w1, w2):
+    """
+    Inner product in the wdm domain.
+
+    Parameters
+    ----------
+    w1 : ndarray
+        wdm coefficients 1 (Nt x Nf)
+    w2 : float
+        wdm coefficients 2 (Nt x Nf)
+
+    Returns
+    -------
+    overlap : float 
+        overlap between the two wdm coefficient arrays
+    mismatch : float
+        mismatch between the two wdm coefficient arrays 
+    """
+
+    inner_prod = np.abs(np.einsum("nm,nm->", np.conj(w1), w2))
+    w1_mag = np.sqrt(np.einsum("nm,nm->", np.conj(w1), w1))
+    w2_mag = np.sqrt(np.einsum("nm,nm->", np.conj(w2), w2))
+    overlap = inner_prod / (w1_mag * w2_mag)
+    mismatch = 1 - overlap
+    
+    return overlap, mismatch

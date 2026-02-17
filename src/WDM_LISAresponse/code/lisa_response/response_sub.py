@@ -389,3 +389,48 @@ def gnm_at_times_grid_np_interp(
         values = np.transpose(values, perm)
 
     return values
+
+def generate_time_shifts(Nt, times_0, dT, theta, phi, s, r, orbits):
+    """
+    Generates timeshifts for wdm method.
+
+    Parameters
+    ----------
+    Nt : int
+        Numer of grids in time resolution
+    times_0 : float
+        Reference zero time of series
+    dT : float
+        wdm time resolution
+    theta : float
+        polar angle of incoming waveform [rad]
+    phi : float
+        azimuthal angle of incoming waveform [rad]
+    s : int
+        sending SC
+    r : int
+        sending SC
+    orbits : LISA orbits class objects
+        computes the positions of all the SC
+
+    Returns
+    -------
+    t_shifts : ndarray
+        array of timeshifts to use for wdm method
+        same length as Nt.
+    """
+
+    t_p = times_0 + np.arange(Nt) * dT
+
+    _, _, n = basis_vectors(theta, phi)
+    Omega = -n
+    x_s = orbits.compute_position(t_p, sc=[s])[:, 0, :]
+    l_sr_tp = _compute_ltt_iterative(t_p, s, r, orbits)
+    rhat_sr_tp = rhat(t_p, s, r, orbits)
+    Om_dot_rhat_tp = rhat_sr_tp @ Omega
+    tau_p = 0.5 * l_sr_tp * (1 - Om_dot_rhat_tp)
+
+    t_shifts = x_s @ (n / c) + tau_p
+
+
+    return t_shifts

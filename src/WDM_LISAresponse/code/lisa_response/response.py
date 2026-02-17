@@ -10,13 +10,15 @@ from typing import Tuple
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 import WDM
+from WDM.code.time_delay_filters.time_shift_fast import wdm_time_shift_variable
 from numpy.fft import fft, fftfreq
 from .response_sub import (
     basis_vectors,
     basis_tensors,
     _compute_ltt_iterative,
     rhat, 
-    gnm_at_times_grid_np_interp
+    gnm_at_times_grid_np_interp,
+    generate_time_shifts
 )
 # Add your LISA response functions here
 
@@ -276,6 +278,11 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
 
     Returns
     -------
+    dl_sr : ndarray 
+        ndarray of length N of the lisa response 
+    w_sr : ndarray 
+        Nt x Nf ndarray of the shifted 
+
     """
     current_length = len(times)
     dt = np.mean(np.diff(times))
@@ -324,8 +331,14 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
 
     A_nm = 0.5 * c * l_sr_dT[:, None] * proj_dT[:, None] * sinc_mat
 
+    w_xi = A_nm * w_t 
+
+    time_shift = generate_time_shifts(wdm.Nt, times[0], wdm.dT, theta, phi, s, r, orbits)
+
+    w_sr = wdm_time_shift_variable(wdm, w_xi, time_shift, Nf=Nf, delta_mode = "target")
+
     if not return_td:
-        return A_nm * w_t
+        return w_sr
 
     # For return_td: strongly consider chunking if gnm_at_times_grid_np_interp is heavy
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(Nf), indexing="ij")
@@ -333,7 +346,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     vals = gnm_at_times_grid_np_interp(
         wdm, n_grid, m_grid, tq, method=gnm_method, wrap=False
     )
-    dl_sr = np.einsum("tnm,nm->t", vals, (A_nm * w_t))
-    return dl_sr, (A_nm * w_t)
+    dl_sr = np.einsum("tnm,nm->t", vals, w_xi)
+    return dl_sr, w_sr
 
 
