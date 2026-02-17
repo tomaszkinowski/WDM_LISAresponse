@@ -16,8 +16,7 @@ from .response_sub import (
     basis_tensors,
     _compute_ltt_iterative,
     rhat, 
-    gnm_at_times_grid_np,
-    gnm_at_times_grid_np_interp,
+    gnm_at_times_grid_np_interp
 )
 # Add your LISA response functions here
 
@@ -71,8 +70,8 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
 
     xi = np.linspace(xi_s, xi_r, num_int_points) # (num_int_points, num_times)
 
-    h_plus_interp = interp1d(times, td_waveform_plus, kind="cubic", bounds_error=False, fill_value="extrapolate") #change back to extrapolate
-    h_cross_interp = interp1d(times, td_waveform_cross, kind="cubic", bounds_error=False, fill_value="extrapolate")
+    h_plus_interp = interp1d(times, td_waveform_plus, kind="cubic", bounds_error=False, fill_value=0.0) #change back to extrapolate
+    h_cross_interp = interp1d(times, td_waveform_cross, kind="cubic", bounds_error=False, fill_value=0.0)
     h_plus = h_plus_interp(xi)
     h_cross = h_cross_interp(xi)
 
@@ -247,7 +246,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     return dl_sr_wdm
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4):
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0):
     """
     WDM response function where we also approximate the times t_i as t_n, see equation 21 for details
 
@@ -284,8 +283,8 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     N = WDM.utils.next_multiple(current_length, 2*Nf)
     q_val = 1 if int(N/Nf) == 2 else int(0.5 * N/Nf)
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d, A_frac=0.2)
-    #print(wdm)
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d, A_frac=0.25)
+    print(wdm)
     h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
     w_t = wdm.dwt(h_plus_padded)  # shape (Nt, Nf) presumably
 
@@ -297,7 +296,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     # faster than einsum in many cases
     xi_s = times - (x_s @ (Omega / c))
 
-    freq_vals = np.arange(wdm.Nf) * wdm.dF
+    freq_vals = (np.arange(wdm.Nf) + m_offset) * wdm.dF
     times_vals = np.arange(wdm.Nt) * wdm.dT
     int_times_vals = times[0] + times_vals
 
@@ -332,7 +331,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(Nf), indexing="ij")
     tq = xi_s + tau_s - times[0]
     vals = gnm_at_times_grid_np_interp(
-        wdm, n_grid, m_grid, tq, method=gnm_method, wrap=True
+        wdm, n_grid, m_grid, tq, method=gnm_method, wrap=False
     )
     dl_sr = np.einsum("tnm,nm->t", vals, (A_nm * w_t))
     return dl_sr, (A_nm * w_t)
