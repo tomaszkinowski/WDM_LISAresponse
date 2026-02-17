@@ -335,7 +335,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
 
     time_shift = generate_time_shifts(wdm.Nt, times[0], wdm.dT, theta, phi, s, r, orbits)
 
-    w_sr = wdm_time_shift_variable(wdm, w_xi, time_shift, Nf=Nf, delta_mode = "target")
+    w_sr = wdm_time_shift_variable(wdm, w_xi, -time_shift, Nf=Nf, delta_mode = "target") #pass -time_shift to agree
 
     if not return_td:
         return w_sr
