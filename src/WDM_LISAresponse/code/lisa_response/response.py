@@ -203,11 +203,11 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
         q_val = int(0.5 * N/Nf)
 
     wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d = d)
-    print(wdm)
+    #print(wdm)
 
     h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
 
-    print(f"How much padding was added: {(N-current_length)*wdm.dt}")
+    #print(f"How much padding was added: {(N-current_length)*wdm.dt}")
 
     w_t = wdm.dwt(h_plus_padded)
 
@@ -291,7 +291,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     q_val = 1 if int(N/Nf) == 2 else int(0.5 * N/Nf)
 
     wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d, A_frac=0.25)
-    print(wdm)
+    #print(wdm)
     h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
     w_t = wdm.dwt(h_plus_padded)  # shape (Nt, Nf) presumably
 
