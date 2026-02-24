@@ -191,11 +191,9 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     Returns
     -------
     """
-    current_length = len(times)
+    N = len(times)
 
-    dt = np.mean(np.diff(times))
-
-    N = WDM.utils.next_multiple(current_length, 2*Nf)
+    dt = np.mean(np.diff(times)) 
 
     if int(N/Nf) == 2:
         q_val = 1
@@ -205,11 +203,11 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d = d)
     #print(wdm)
 
-    h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
 
     #print(f"How much padding was added: {(N-current_length)*wdm.dt}")
 
-    w_t = wdm.dwt(h_plus_padded)
+    w_t_plus = wdm.dwt(td_waveform_plus)
+    w_t_cross = wdm.dwt(td_waveform_cross)
 
     #basic implementation of wdm transform 
 
@@ -234,17 +232,16 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     tau_s = l_sr * (1 - Om_dot_rhat) * 0.5
     sinc_arg = 2.0 * np.pi * freq_vals[np.newaxis, :] * tau_s[:, np.newaxis]
 
-    e_plus, _ = basis_tensors(theta, phi)
+    e_plus, e_cross = basis_tensors(theta, phi)
 
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(wdm.Nf), indexing="ij")
 
-    targ = xi_s + tau_s - times[0]
-
     vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_s + tau_s - times[0], method=gnm_method, wrap=True)
 
-    sum_nm = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t[np.newaxis, :, :] * vals
+    sum_nm_plus = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t_plus[np.newaxis, :, :] * vals
+    sum_nm_cross = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t_cross[np.newaxis, :, :] * vals
 
-    dl_sr_wdm = 0.5 * c * l_sr * np.einsum('tXx,Xx->t', rhat_cross, e_plus) * np.einsum("tnm->t", sum_nm)
+    dl_sr_wdm = 0.5 * c * l_sr * ( np.einsum('tXx,Xx->t', rhat_cross, e_plus) * np.einsum("tnm->t", sum_nm_plus) + np.einsum('tXx,Xx->t', rhat_cross, e_cross) * np.einsum("tnm->t", sum_nm_cross))
 
     return dl_sr_wdm
 
@@ -284,16 +281,16 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         Nt x Nf ndarray of the shifted 
 
     """
-    current_length = len(times)
+    N = len(times)
     dt = np.mean(np.diff(times))
 
-    N = WDM.utils.next_multiple(current_length, 2*Nf)
     q_val = 1 if int(N/Nf) == 2 else int(0.5 * N/Nf)
 
     wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d, A_frac=0.25)
     #print(wdm)
-    h_plus_padded, mask = WDM.utils.pad_signal(td_waveform_plus, N)
-    w_t = wdm.dwt(h_plus_padded)  # shape (Nt, Nf) presumably
+    
+    w_t_plus = wdm.dwt(td_waveform_plus)  # shape (Nt, Nf) presumably
+    w_t_cross = wdm.dwt(td_waveform_cross)  # shape (Nt, Nf) presumably
 
     x_s = orbits.compute_position(times, sc=[s])[:, 0, :]
 
@@ -319,19 +316,21 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     tau_s = 0.5 * l_sr * (1 - Om_dot_rhat)
     tau_n = 0.5 * l_sr_dT * (1 - Om_dot_rhat_dT)
 
-    e_plus, _ = basis_tensors(theta, phi)
+    e_plus, e_cross= basis_tensors(theta, phi)
 
     # rhat_cross_dT is (Nt,3,3); proj_dT -> (Nt,)
     # compute outer products + projection
     rhat_cross_dT = rhat_sr_dT[:, :, None] * rhat_sr_dT[:, None, :]
-    proj_dT = np.einsum("tij,ij->t", rhat_cross_dT, e_plus)
+    proj_dT_plus = np.einsum("tij,ij->t", rhat_cross_dT, e_plus)
+    proj_dT_cross = np.einsum("tij,ij->t", rhat_cross_dT, e_cross)
 
     # sinc simplification: np.sinc(2 f tau)
     sinc_mat = np.sinc(2.0 * freq_vals[None, :] * tau_n[:, None])
 
-    A_nm = 0.5 * c * l_sr_dT[:, None] * proj_dT[:, None] * sinc_mat
+    A_nm_plus = 0.5 * c * l_sr_dT[:, None] * proj_dT_plus[:, None] * sinc_mat
+    A_nm_cross = 0.5 * c * l_sr_dT[:, None] * proj_dT_cross[:, None] * sinc_mat
 
-    w_xi = A_nm * w_t 
+    w_xi = A_nm_plus * w_t_plus + A_nm_cross * w_t_cross
 
     time_shift = generate_time_shifts(wdm.Nt, times[0], wdm.dT, theta, phi, s, r, orbits)
 
