@@ -245,7 +245,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     return dl_sr_wdm
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0):
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None):
     """
     WDM response function where we also approximate the times t_i as t_n, see equation 21 for details
 
@@ -272,6 +272,8 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         number of basis element in the frequency dimension 
     return_td : bool
         indicate whether we also want the time domain lisa response
+    L_trunc : int 
+        indicate how much do you want to truncate your time shifts 
 
     Returns
     -------
@@ -334,7 +336,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
 
     time_shift = generate_time_shifts(wdm.Nt, times[0], wdm.dT, theta, phi, s, r, orbits)
 
-    w_sr = wdm_time_shift_variable(wdm, w_xi, -time_shift, Nf=Nf, delta_mode = "target") #pass -time_shift to agree
+    w_sr = wdm_time_shift_variable(wdm, w_xi, -time_shift, Nf=Nf, delta_mode = "target", L_trunc=L_trunc) #pass -time_shift to agree
 
     if not return_td:
         return w_sr
