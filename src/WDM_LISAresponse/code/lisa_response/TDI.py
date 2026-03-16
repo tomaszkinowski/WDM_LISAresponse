@@ -1,11 +1,23 @@
 #code to generate TDI signals in TD and WDM domains 
 import numpy as np
-from WDM_GW_wavelets.src.WDM.code.discrete_wavelet_transform.WDM import WDM_transform
-from WDM_LISAresponse.code.lisa_response.response import one_arm_response_wdm_dT, one_arm_response_td
-from WDM_GW_wavelets.src.WDM.code.time_delay_filters.time_shift_fast import wdm_time_shift_fixed, wdm_time_shift_variable
+from WDM_LISAresponse.code.lisa_response.response import one_arm_response_td, precompute_one_arm_wdm_dT_links
+from WDM_GW_wavelets.src.WDM.code.time_delay_filters.time_shift_fast import (
+    wdm_time_shift_fixed_batch,
+    wdm_time_shift_variable,
+    wdm_time_shift_variable_batch,
+)
 from WDM_LISAresponse.code.lisa_response.TDI_sub import fft_time_shift, interp_time_shift, precompute_gen2_michelson_shifts, precompute_gen2_sagnac_shifts
 
-def gen1_sagnac_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf, Lbar, return_zeta = False):
+
+def _resolve_one_arm_cache(one_arm_cache):
+    """Return an opt-in cache for one-arm WDM responses.
+
+    By default (``None``), no persistent cross-call cache is used.
+    Pass a mutable dict to reuse one-arm responses across repeated calls.
+    """
+    return one_arm_cache
+
+def gen1_sagnac_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf, Lbar, return_zeta = False, L_trunc=None, one_arm_cache=None, variable_shift_kwargs=None):
     """
     Implement the generation 1 version of the sagnac-type variables in the wdm domain.
 
@@ -29,6 +41,13 @@ def gen1_sagnac_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf
         dictionary encoding the fixed lengths between satelites 
     return_zeta : bool 
         return the 4th symmetric variable zeta 
+    L_trunc : int or None
+        Optional lag truncation forwarded to the fixed-delay WDM shifter.
+    one_arm_cache : dict or None
+        Optional cache for shared one-arm WDM responses.
+    variable_shift_kwargs : dict or None
+        Optional keyword arguments forwarded to the one-arm variable-delay shift
+        used when constructing the directed link responses.
     
     
     
@@ -44,51 +63,81 @@ def gen1_sagnac_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf
 
     """
 
-    #generate the unshifted terms 
+    cache = _resolve_one_arm_cache(one_arm_cache)
+    wdm, link_w = precompute_one_arm_wdm_dT_links(
+        times,
+        orbits,
+        theta,
+        phi,
+        waveform_plus,
+        waveform_cross,
+        Nf=Nf,
+        L_trunc=L_trunc,
+        cache=cache,
+        variable_shift_kwargs=variable_shift_kwargs,
+    )
 
-    w21 = one_arm_response_wdm_dT(times, 2, 1, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w32 = one_arm_response_wdm_dT(times, 3, 2, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w13 = one_arm_response_wdm_dT(times, 1, 3, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w31 = one_arm_response_wdm_dT(times, 3, 1, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w23 = one_arm_response_wdm_dT(times, 2, 3, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w12 = one_arm_response_wdm_dT(times, 1, 2, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
+    w21 = link_w[(2, 1)]
+    w32 = link_w[(3, 2)]
+    w13 = link_w[(1, 3)]
+    w31 = link_w[(3, 1)]
+    w23 = link_w[(2, 3)]
+    w12 = link_w[(1, 2)]
 
-    dt = times[1] - times[0]
-    N_pad = len(times)
-    q_val = int(0.5 * N_pad / Nf)
+    jobs = [
+        ("w32_L21", w32, Lbar[(2, 1)]),
+        ("w13_L32_L21", w13, Lbar[(2, 1)] + Lbar[(3, 2)]),
+        ("w23_L13", w23, Lbar[(1, 3)]),
+        ("w12_L32_L13", w12, Lbar[(3, 2)] + Lbar[(1, 3)]),
+        ("w13_L32", w13, Lbar[(3, 2)]),
+        ("w21_L13_L32", w21, Lbar[(3, 2)] + Lbar[(1, 3)]),
+        ("w31_L21", w31, Lbar[(2, 1)]),
+        ("w23_L21_L13", w23, Lbar[(2, 1)] + Lbar[(1, 3)]),
+        ("w21_L13", w21, Lbar[(1, 3)]),
+        ("w32_L21_L13", w32, Lbar[(2, 1)] + Lbar[(1, 3)]),
+        ("w12_L32", w12, Lbar[(3, 2)]),
+        ("w31_L32_L21", w31, Lbar[(3, 2)] + Lbar[(2, 1)]),
+    ]
+    shifted = wdm_time_shift_fixed_batch(
+        wdm,
+        [(w, delta) for _, w, delta in jobs],
+        Nf=Nf,
+        L_trunc=L_trunc,
+    )
+    shifted_map = {name: arr for (name, _, _), arr in zip(jobs, shifted)}
 
-    wdm = WDM_transform(dt=dt, Nf=Nf, N=N_pad, q=q_val, calc_m0=True, d = 4)
-
-    #generate shifted terms 
-
-    #for alpha
-    w32_L21 = wdm_time_shift_fixed(wdm, w32, Lbar[(2,1)], Nf)
-    w13_L32_L21 = wdm_time_shift_fixed(wdm, w13, Lbar[(2,1)] + Lbar[(3,2)], Nf)
-    w23_L13 = wdm_time_shift_fixed(wdm, w23, Lbar[(1,3)], Nf)
-    w12_L32_L13 = wdm_time_shift_fixed(wdm, w12, Lbar[(3,2)] + Lbar[(1,3)], Nf)
-    #for beta
-    w13_L32 = wdm_time_shift_fixed(wdm, w13, Lbar[(3,2)], Nf)
-    w21_L13_L32 = wdm_time_shift_fixed(wdm, w21, Lbar[(3,2)] + Lbar[(1,3)], Nf)
-    w31_L21 = wdm_time_shift_fixed(wdm, w31, Lbar[(2,1)], Nf)
-    w23_L21_L13 = wdm_time_shift_fixed(wdm, w23, Lbar[(2,1)] + Lbar[(1,3)], Nf)
-    #for gamma 
-    w21_L13 = wdm_time_shift_fixed(wdm, w21, Lbar[(1,3)], Nf)
-    w32_L21_L13 = wdm_time_shift_fixed(wdm, w32, Lbar[(2,1)] + Lbar[(1,3)], Nf)
-    w12_L32 = wdm_time_shift_fixed(wdm, w12, Lbar[(3,2)], Nf)
-    w31_L32_L21 = wdm_time_shift_fixed(wdm, w31, Lbar[(3,2)] + Lbar[(2,1)], Nf)
+    w32_L21 = shifted_map["w32_L21"]
+    w13_L32_L21 = shifted_map["w13_L32_L21"]
+    w23_L13 = shifted_map["w23_L13"]
+    w12_L32_L13 = shifted_map["w12_L32_L13"]
+    w13_L32 = shifted_map["w13_L32"]
+    w21_L13_L32 = shifted_map["w21_L13_L32"]
+    w31_L21 = shifted_map["w31_L21"]
+    w23_L21_L13 = shifted_map["w23_L21_L13"]
+    w21_L13 = shifted_map["w21_L13"]
+    w32_L21_L13 = shifted_map["w32_L21_L13"]
+    w12_L32 = shifted_map["w12_L32"]
+    w31_L32_L21 = shifted_map["w31_L32_L21"]
 
     alpha = w21 + w32_L21 + w13_L32_L21 - w31 - w23_L13 - w12_L32_L13
     beta = w32 + w13_L32 + w21_L13_L32 - w12 - w31_L21 - w23_L21_L13
     gamma = w13 + w21_L13 + w32_L21_L13 - w23 - w12_L32 - w31_L32_L21
 
     if return_zeta == True: 
-        #for zeta 
-        w21_L32 = wdm_time_shift_fixed(wdm, w21, Lbar[(3,2)], Nf)
-        w31_L32 = wdm_time_shift_fixed(wdm, w31, Lbar[(3,2)], Nf)
-        w32_L13 = wdm_time_shift_fixed(wdm, w32, Lbar[(1,3)], Nf)
-        w12_L13 = wdm_time_shift_fixed(wdm, w12, Lbar[(1,3)], Nf)
-        w13_L21 = wdm_time_shift_fixed(wdm, w13, Lbar[(2,1)], Nf)
-        w23_L21 = wdm_time_shift_fixed(wdm, w23, Lbar[(2,1)], Nf)
+        zeta_jobs = [
+            (w21, Lbar[(3, 2)]),
+            (w31, Lbar[(3, 2)]),
+            (w32, Lbar[(1, 3)]),
+            (w12, Lbar[(1, 3)]),
+            (w13, Lbar[(2, 1)]),
+            (w23, Lbar[(2, 1)]),
+        ]
+        w21_L32, w31_L32, w32_L13, w12_L13, w13_L21, w23_L21 = wdm_time_shift_fixed_batch(
+            wdm,
+            zeta_jobs,
+            Nf=Nf,
+            L_trunc=L_trunc,
+        )
 
         zeta = w21_L32 - w31_L32 + w32_L13 - w12_L13 + w13_L21 - w23_L21
 
@@ -184,7 +233,7 @@ def gen1_sagnac_td(times, waveform_plus, waveform_cross, theta, phi, orbits, Lba
     else:
         return alpha, beta, gamma
     
-def gen1_michelson_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf, Lbar):
+def gen1_michelson_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf, Lbar, L_trunc=None, one_arm_cache=None, variable_shift_kwargs=None):
     """
     Implement the generation 1 Michelson-type variables (X, Y, Z) in the WDM domain.
 
@@ -212,6 +261,13 @@ def gen1_michelson_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits,
         number of frequency cells in wdm domain
     Lbar : dict 
         dictionary encoding the fixed lengths between satelites 
+    L_trunc : int or None
+        Optional lag truncation forwarded to the fixed-delay WDM shifter.
+    one_arm_cache : dict or None
+        Optional cache for shared one-arm WDM responses.
+    variable_shift_kwargs : dict or None
+        Optional keyword arguments forwarded to the one-arm variable-delay shift
+        used when constructing the directed link responses.
 
     Returns
     -------
@@ -219,47 +275,77 @@ def gen1_michelson_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits,
         Nt x Nf WDM coefficients
     """
 
-    # generate the unshifted terms
-    w21 = one_arm_response_wdm_dT(times, 2, 1, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w32 = one_arm_response_wdm_dT(times, 3, 2, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w13 = one_arm_response_wdm_dT(times, 1, 3, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w31 = one_arm_response_wdm_dT(times, 3, 1, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w23 = one_arm_response_wdm_dT(times, 2, 3, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w12 = one_arm_response_wdm_dT(times, 1, 2, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
+    cache = _resolve_one_arm_cache(one_arm_cache)
+    wdm, link_w = precompute_one_arm_wdm_dT_links(
+        times,
+        orbits,
+        theta,
+        phi,
+        waveform_plus,
+        waveform_cross,
+        Nf=Nf,
+        L_trunc=L_trunc,
+        cache=cache,
+        variable_shift_kwargs=variable_shift_kwargs,
+    )
 
-    dt = times[1] - times[0]
-    N_pad = len(times)
-    q_val = int(0.5 * N_pad / Nf)
+    w21 = link_w[(2, 1)]
+    w32 = link_w[(3, 2)]
+    w13 = link_w[(1, 3)]
+    w31 = link_w[(3, 1)]
+    w23 = link_w[(2, 3)]
+    w12 = link_w[(1, 2)]
 
-    wdm = WDM_transform(dt=dt, Nf=Nf, N=N_pad, q=q_val, calc_m0=True, d=4)
+    jobs = [
+        ("w12_L21", w12, Lbar[(2, 1)]),
+        ("w31_L21_L21", w31, Lbar[(2, 1)] + Lbar[(2, 1)]),
+        ("w13_L13_L21_L21", w13, Lbar[(1, 3)] + Lbar[(2, 1)] + Lbar[(2, 1)]),
+        ("w13_L13", w13, Lbar[(1, 3)]),
+        ("w21_L13_L13", w21, Lbar[(1, 3)] + Lbar[(1, 3)]),
+        ("w12_L21_L13_L13", w12, Lbar[(2, 1)] + Lbar[(1, 3)] + Lbar[(1, 3)]),
+        ("w23_L32", w23, Lbar[(3, 2)]),
+        ("w12_L32_L32", w12, Lbar[(3, 2)] + Lbar[(3, 2)]),
+        ("w21_L21_L32_L32", w21, Lbar[(2, 1)] + Lbar[(3, 2)] + Lbar[(3, 2)]),
+        ("w21_L21", w21, Lbar[(2, 1)]),
+        ("w32_L21_L21", w32, Lbar[(2, 1)] + Lbar[(2, 1)]),
+        ("w23_L32_L21_L21", w23, Lbar[(3, 2)] + Lbar[(2, 1)] + Lbar[(2, 1)]),
+        ("w31_L13", w31, Lbar[(1, 3)]),
+        ("w23_L13_L13", w23, Lbar[(1, 3)] + Lbar[(1, 3)]),
+        ("w32_L32_L13_L13", w32, Lbar[(3, 2)] + Lbar[(1, 3)] + Lbar[(1, 3)]),
+        ("w32_L32", w32, Lbar[(3, 2)]),
+        ("w13_L32_L32", w13, Lbar[(3, 2)] + Lbar[(3, 2)]),
+        ("w31_L13_L32_L32", w31, Lbar[(1, 3)] + Lbar[(3, 2)] + Lbar[(3, 2)]),
+    ]
+    shifted = wdm_time_shift_fixed_batch(
+        wdm,
+        [(w, delta) for _, w, delta in jobs],
+        Nf=Nf,
+        L_trunc=L_trunc,
+    )
+    shifted_map = {name: arr for (name, _, _), arr in zip(jobs, shifted)}
 
-    #for X
-    w12_L21 = wdm_time_shift_fixed(wdm, w12, Lbar[(2, 1)], Nf)
-    w31_L21_L21 = wdm_time_shift_fixed(wdm, w31, Lbar[(2, 1)] + Lbar[(2, 1)], Nf)
-    w13_L13_L21_L21 = wdm_time_shift_fixed(wdm, w13, Lbar[(1, 3)] + Lbar[(2, 1)] + Lbar[(2, 1)], Nf)
-    w13_L13 = wdm_time_shift_fixed(wdm, w13, Lbar[(1, 3)], Nf)
-    w21_L13_L13 = wdm_time_shift_fixed(wdm, w21, Lbar[(1, 3)] + Lbar[(1, 3)], Nf)
-    w12_L21_L13_L13 = wdm_time_shift_fixed(wdm, w12, Lbar[(2, 1)] + Lbar[(1, 3)] + Lbar[(1, 3)], Nf)
+    w12_L21 = shifted_map["w12_L21"]
+    w31_L21_L21 = shifted_map["w31_L21_L21"]
+    w13_L13_L21_L21 = shifted_map["w13_L13_L21_L21"]
+    w13_L13 = shifted_map["w13_L13"]
+    w21_L13_L13 = shifted_map["w21_L13_L13"]
+    w12_L21_L13_L13 = shifted_map["w12_L21_L13_L13"]
+    w23_L32 = shifted_map["w23_L32"]
+    w12_L32_L32 = shifted_map["w12_L32_L32"]
+    w21_L21_L32_L32 = shifted_map["w21_L21_L32_L32"]
+    w21_L21 = shifted_map["w21_L21"]
+    w32_L21_L21 = shifted_map["w32_L21_L21"]
+    w23_L32_L21_L21 = shifted_map["w23_L32_L21_L21"]
+    w31_L13 = shifted_map["w31_L13"]
+    w23_L13_L13 = shifted_map["w23_L13_L13"]
+    w32_L32_L13_L13 = shifted_map["w32_L32_L13_L13"]
+    w32_L32 = shifted_map["w32_L32"]
+    w13_L32_L32 = shifted_map["w13_L32_L32"]
+    w31_L13_L32_L32 = shifted_map["w31_L13_L32_L32"]
 
     X = (w21 + w12_L21 + w31_L21_L21 + w13_L13_L21_L21) - (w31 + w13_L13 + w21_L13_L13 + w12_L21_L13_L13)
 
-    #for Y
-    w23_L32 = wdm_time_shift_fixed(wdm, w23, Lbar[(3, 2)], Nf)
-    w12_L32_L32 = wdm_time_shift_fixed(wdm, w12, Lbar[(3, 2)] + Lbar[(3, 2)], Nf)
-    w21_L21_L32_L32 = wdm_time_shift_fixed(wdm, w21, Lbar[(2, 1)] + Lbar[(3, 2)] + Lbar[(3, 2)], Nf)
-    w21_L21 = wdm_time_shift_fixed(wdm, w21, Lbar[(2, 1)], Nf)
-    w32_L21_L21 = wdm_time_shift_fixed(wdm, w32, Lbar[(2, 1)] + Lbar[(2, 1)], Nf)
-    w23_L32_L21_L21 = wdm_time_shift_fixed(wdm, w23, Lbar[(3, 2)] + Lbar[(2, 1)] + Lbar[(2, 1)], Nf)
-
     Y = (w32 + w23_L32 + w12_L32_L32 + w21_L21_L32_L32) - (w12 + w21_L21 + w32_L21_L21 + w23_L32_L21_L21)
-
-    #for Z 
-    w31_L13 = wdm_time_shift_fixed(wdm, w31, Lbar[(1, 3)], Nf)
-    w23_L13_L13 = wdm_time_shift_fixed(wdm, w23, Lbar[(1, 3)] + Lbar[(1, 3)], Nf)
-    w32_L32_L13_L13 = wdm_time_shift_fixed(wdm, w32, Lbar[(3, 2)] + Lbar[(1, 3)] + Lbar[(1, 3)], Nf)
-    w32_L32 = wdm_time_shift_fixed(wdm, w32, Lbar[(3, 2)], Nf)
-    w13_L32_L32 = wdm_time_shift_fixed(wdm, w13, Lbar[(3, 2)] + Lbar[(3, 2)], Nf)
-    w31_L13_L32_L32 = wdm_time_shift_fixed(wdm, w31, Lbar[(1, 3)] + Lbar[(3, 2)] + Lbar[(3, 2)], Nf)
 
     Z = (w13 + w31_L13 + w23_L13_L13 + w32_L32_L13_L13) - (w23 + w32_L32 + w13_L32_L32 + w31_L13_L32_L32)
 
@@ -548,6 +634,9 @@ def gen2_sagnac_wdm(
     orbits,
     Nf,
     shifts_cache=None,
+    L_trunc=None,
+    one_arm_cache=None,
+    variable_shift_kwargs=None,
 ):
     """
     Gen-2 Sagnac-type variables (alpha1, beta1, gamma1) in WDM DOMAIN,
@@ -559,18 +648,49 @@ def gen2_sagnac_wdm(
 
     Parameters
     ----------
+    times : ndarray
+        Input time grid for the padded waveform.
+    waveform_plus, waveform_cross : ndarray
+        Time-domain GW polarizations sampled on ``times``.
+    theta, phi : float
+        Sky-location angles in radians.
+    orbits : object
+        Orbit provider used for one-arm response and delay calculations.
+    Nf : int
+        Number of WDM frequency bins.
     shifts_cache : dict or None
         Optional mutable dict used to memoize computed shift libraries.
         Keyed by ("sagnac_wdm", id(orbits), wdm.Nt, times[0], wdm.dT, Nf).
+    L_trunc : int or None
+        Optional lag truncation forwarded to one-arm response construction and
+        subsequent variable-delay WDM shifts.
+    one_arm_cache : dict or None
+        Optional cache for shared one-arm WDM responses.
+    variable_shift_kwargs : dict or None
+        Optional keyword arguments forwarded to
+        ``wdm_time_shift_variable_batch`` (e.g. ``tl_tp_mode='interp'``,
+        ``tl_tp_interp_kind='linear'|'cubic'``, ``tl_tp_interp_points=...``).
+
+    Returns
+    -------
+    tuple of ndarray
+        ``(alpha1, beta1, gamma1)`` WDM coefficient arrays.
     """
 
     times = np.asarray(times, dtype=float)
-    dt = times[1] - times[0]
-    N_pad = len(times)
-    q_val = int(0.5 * N_pad / Nf)
-
-    # Build WDM object from the user-passed grid
-    wdm = WDM_transform(dt=dt, Nf=Nf, N=N_pad, q=q_val, calc_m0=True, d=4)
+    one_arm_cache = _resolve_one_arm_cache(one_arm_cache)
+    wdm, link_w = precompute_one_arm_wdm_dT_links(
+        times,
+        orbits,
+        theta,
+        phi,
+        waveform_plus,
+        waveform_cross,
+        Nf=Nf,
+        L_trunc=L_trunc,
+        cache=one_arm_cache,
+        variable_shift_kwargs=variable_shift_kwargs,
+    )
 
     # Build WDM time grid internally
     times_p = float(times[0]) + np.arange(wdm.Nt, dtype=float) * float(wdm.dT)
@@ -586,18 +706,15 @@ def gen2_sagnac_wdm(
         if shifts_cache is not None:
             shifts_cache[cache_key] = (shifts_alpha, shifts_beta, shifts_gamma)
 
-    # -----------------------
-    # unshifted one-arm responses (directed links) on times_p
-    # -----------------------
-    w21 = one_arm_response_wdm_dT(times_p, 2, 1, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w32 = one_arm_response_wdm_dT(times_p, 3, 2, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w13 = one_arm_response_wdm_dT(times_p, 1, 3, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w31 = one_arm_response_wdm_dT(times_p, 3, 1, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w23 = one_arm_response_wdm_dT(times_p, 2, 3, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w12 = one_arm_response_wdm_dT(times_p, 1, 2, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
+    w21 = link_w[(2, 1)]
+    w32 = link_w[(3, 2)]
+    w13 = link_w[(1, 3)]
+    w31 = link_w[(3, 1)]
+    w23 = link_w[(2, 3)]
+    w12 = link_w[(1, 2)]
 
-    def TS(w, shift_dict, chain):
-        return wdm_time_shift_variable(wdm, w, shift_dict[chain], Nf=Nf)
+    def build_jobs(prefix, shift_dict, jobs):
+        return [(f"{prefix}:{name}", w, shift_dict[chain]) for name, w, chain in jobs]
 
     # -----------------------
     # rotate helper
@@ -651,20 +768,70 @@ def gen2_sagnac_wdm(
     cG_31_23_12_21         = rot_chain(cA_31_23_12_21, 2)
     cG_31_23_12_21_32      = rot_chain(cA_31_23_12_21_32, 2)
 
-    # =====================================================================
-    # ALPHA1
-    # =====================================================================
-    w32_c21                  = TS(w32, shifts_alpha, cA_21)
-    w13_c21_32               = TS(w13, shifts_alpha, cA_21_32)
-    w31_c21_32_13            = TS(w31, shifts_alpha, cA_21_32_13)
-    w23_c21_32_13_31         = TS(w23, shifts_alpha, cA_21_32_13_31)
-    w12_c21_32_13_31_23      = TS(w12, shifts_alpha, cA_21_32_13_31_23)
+    alpha_jobs_local = [
+        ("w32_c21", w32, cA_21),
+        ("w13_c21_32", w13, cA_21_32),
+        ("w31_c21_32_13", w31, cA_21_32_13),
+        ("w23_c21_32_13_31", w23, cA_21_32_13_31),
+        ("w12_c21_32_13_31_23", w12, cA_21_32_13_31_23),
+        ("w23_c31", w23, cA_31),
+        ("w12_c31_23", w12, cA_31_23),
+        ("w21_c31_23_12", w21, cA_31_23_12),
+        ("w32_c31_23_12_21", w32, cA_31_23_12_21),
+        ("w13_c31_23_12_21_32", w13, cA_31_23_12_21_32),
+    ]
+    beta_jobs_local = [
+        ("w13b_c21", w13, cB_21),
+        ("w21b_c21_32", w21, cB_21_32),
+        ("w12b_c21_32_13", w12, cB_21_32_13),
+        ("w31b_c21_32_13_31", w31, cB_21_32_13_31),
+        ("w23b_c21_32_13_31_23", w23, cB_21_32_13_31_23),
+        ("w31b_c31", w31, cB_31),
+        ("w23b_c31_23", w23, cB_31_23),
+        ("w32b_c31_23_12", w32, cB_31_23_12),
+        ("w13b_c31_23_12_21", w13, cB_31_23_12_21),
+        ("w21b_c31_23_12_21_32", w21, cB_31_23_12_21_32),
+    ]
+    gamma_jobs_local = [
+        ("w21g_c21", w21, cG_21),
+        ("w32g_c21_32", w32, cG_21_32),
+        ("w23g_c21_32_13", w23, cG_21_32_13),
+        ("w12g_c21_32_13_31", w12, cG_21_32_13_31),
+        ("w31g_c21_32_13_31_23", w31, cG_21_32_13_31_23),
+        ("w12g_c31", w12, cG_31),
+        ("w31g_c31_23", w31, cG_31_23),
+        ("w13g_c31_23_12", w13, cG_31_23_12),
+        ("w21g_c31_23_12_21", w21, cG_31_23_12_21),
+        ("w32g_c31_23_12_21_32", w32, cG_31_23_12_21_32),
+    ]
 
-    w23_c31                  = TS(w23, shifts_alpha, cA_31)
-    w12_c31_23               = TS(w12, shifts_alpha, cA_31_23)
-    w21_c31_23_12            = TS(w21, shifts_alpha, cA_31_23_12)
-    w32_c31_23_12_21         = TS(w32, shifts_alpha, cA_31_23_12_21)
-    w13_c31_23_12_21_32      = TS(w13, shifts_alpha, cA_31_23_12_21_32)
+    all_jobs = []
+    all_jobs.extend(build_jobs("A", shifts_alpha, alpha_jobs_local))
+    all_jobs.extend(build_jobs("B", shifts_beta, beta_jobs_local))
+    all_jobs.extend(build_jobs("G", shifts_gamma, gamma_jobs_local))
+
+    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+
+    all_shifted = wdm_time_shift_variable_batch(
+        wdm,
+        [(w, t_shift) for _, w, t_shift in all_jobs],
+        Nf=Nf,
+        L_trunc=L_trunc,
+        batch_chunk=32,
+        **shift_kwargs,
+    )
+    shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
+
+    w32_c21 = shifted_map["A:w32_c21"]
+    w13_c21_32 = shifted_map["A:w13_c21_32"]
+    w31_c21_32_13 = shifted_map["A:w31_c21_32_13"]
+    w23_c21_32_13_31 = shifted_map["A:w23_c21_32_13_31"]
+    w12_c21_32_13_31_23 = shifted_map["A:w12_c21_32_13_31_23"]
+    w23_c31 = shifted_map["A:w23_c31"]
+    w12_c31_23 = shifted_map["A:w12_c31_23"]
+    w21_c31_23_12 = shifted_map["A:w21_c31_23_12"]
+    w32_c31_23_12_21 = shifted_map["A:w32_c31_23_12_21"]
+    w13_c31_23_12_21_32 = shifted_map["A:w13_c31_23_12_21_32"]
 
     alpha1 = (
         w21
@@ -681,20 +848,16 @@ def gen2_sagnac_wdm(
         - w13_c31_23_12_21_32
     )
 
-    # =====================================================================
-    # BETA1
-    # =====================================================================
-    w13b_c21                 = TS(w13, shifts_beta, cB_21)
-    w21b_c21_32              = TS(w21, shifts_beta, cB_21_32)
-    w12b_c21_32_13           = TS(w12, shifts_beta, cB_21_32_13)
-    w31b_c21_32_13_31        = TS(w31, shifts_beta, cB_21_32_13_31)
-    w23b_c21_32_13_31_23     = TS(w23, shifts_beta, cB_21_32_13_31_23)
-
-    w31b_c31                 = TS(w31, shifts_beta, cB_31)
-    w23b_c31_23              = TS(w23, shifts_beta, cB_31_23)
-    w32b_c31_23_12           = TS(w32, shifts_beta, cB_31_23_12)
-    w13b_c31_23_12_21        = TS(w13, shifts_beta, cB_31_23_12_21)
-    w21b_c31_23_12_21_32     = TS(w21, shifts_beta, cB_31_23_12_21_32)
+    w13b_c21 = shifted_map["B:w13b_c21"]
+    w21b_c21_32 = shifted_map["B:w21b_c21_32"]
+    w12b_c21_32_13 = shifted_map["B:w12b_c21_32_13"]
+    w31b_c21_32_13_31 = shifted_map["B:w31b_c21_32_13_31"]
+    w23b_c21_32_13_31_23 = shifted_map["B:w23b_c21_32_13_31_23"]
+    w31b_c31 = shifted_map["B:w31b_c31"]
+    w23b_c31_23 = shifted_map["B:w23b_c31_23"]
+    w32b_c31_23_12 = shifted_map["B:w32b_c31_23_12"]
+    w13b_c31_23_12_21 = shifted_map["B:w13b_c31_23_12_21"]
+    w21b_c31_23_12_21_32 = shifted_map["B:w21b_c31_23_12_21_32"]
 
     beta1 = (
         w32
@@ -711,20 +874,16 @@ def gen2_sagnac_wdm(
         - w21b_c31_23_12_21_32
     )
 
-    # =====================================================================
-    # GAMMA1
-    # =====================================================================
-    w21g_c21                 = TS(w21, shifts_gamma, cG_21)
-    w32g_c21_32              = TS(w32, shifts_gamma, cG_21_32)
-    w23g_c21_32_13           = TS(w23, shifts_gamma, cG_21_32_13)
-    w12g_c21_32_13_31        = TS(w12, shifts_gamma, cG_21_32_13_31)
-    w31g_c21_32_13_31_23     = TS(w31, shifts_gamma, cG_21_32_13_31_23)
-
-    w12g_c31                 = TS(w12, shifts_gamma, cG_31)
-    w31g_c31_23              = TS(w31, shifts_gamma, cG_31_23)
-    w13g_c31_23_12           = TS(w13, shifts_gamma, cG_31_23_12)
-    w21g_c31_23_12_21        = TS(w21, shifts_gamma, cG_31_23_12_21)
-    w32g_c31_23_12_21_32     = TS(w32, shifts_gamma, cG_31_23_12_21_32)
+    w21g_c21 = shifted_map["G:w21g_c21"]
+    w32g_c21_32 = shifted_map["G:w32g_c21_32"]
+    w23g_c21_32_13 = shifted_map["G:w23g_c21_32_13"]
+    w12g_c21_32_13_31 = shifted_map["G:w12g_c21_32_13_31"]
+    w31g_c21_32_13_31_23 = shifted_map["G:w31g_c21_32_13_31_23"]
+    w12g_c31 = shifted_map["G:w12g_c31"]
+    w31g_c31_23 = shifted_map["G:w31g_c31_23"]
+    w13g_c31_23_12 = shifted_map["G:w13g_c31_23_12"]
+    w21g_c31_23_12_21 = shifted_map["G:w21g_c31_23_12_21"]
+    w32g_c31_23_12_21_32 = shifted_map["G:w32g_c31_23_12_21_32"]
 
     gamma1 = (
         w13
@@ -752,6 +911,9 @@ def gen2_michelson_wdm(
     orbits,
     Nf,
     shifts_cache=None,
+    L_trunc=None,
+    one_arm_cache=None,
+    variable_shift_kwargs=None,
 ):
     """
     Gen-2 Michelson-type variables (X1, Y1, Z1) in the WDM domain,
@@ -763,25 +925,51 @@ def gen2_michelson_wdm(
 
     Parameters
     ----------
+    times : ndarray
+        Input time grid for the padded waveform.
+    waveform_plus, waveform_cross : ndarray
+        Time-domain GW polarizations sampled on ``times``.
+    theta, phi : float
+        Sky-location angles in radians.
+    orbits : object
+        Orbit provider used for one-arm response and delay calculations.
+    Nf : int
+        Number of WDM frequency bins.
     shifts_cache : dict or None
         Optional mutable dict used to memoize computed shift libraries.
         Keyed by ("michelson_wdm", id(orbits), wdm.Nt, times[0], wdm.dT, Nf).
+    L_trunc : int or None
+        Optional lag truncation forwarded to one-arm response construction and
+        subsequent variable-delay WDM shifts.
+    one_arm_cache : dict or None
+        Optional cache for shared one-arm WDM responses.
+    variable_shift_kwargs : dict or None
+        Optional keyword arguments forwarded to
+        ``wdm_time_shift_variable_batch`` (e.g. ``tl_tp_mode='interp'``,
+        ``tl_tp_interp_kind='linear'|'cubic'``, ``tl_tp_interp_points=...``).
+
+    Returns
+    -------
+    tuple of ndarray
+        ``(X1, Y1, Z1)`` WDM coefficient arrays.
     """
 
     times = np.asarray(times, dtype=float)
-    dt = times[1] - times[0]
-    N_pad = len(times)
-    q_val = int(0.5 * N_pad / Nf)
+    one_arm_cache = _resolve_one_arm_cache(one_arm_cache)
+    wdm, link_w = precompute_one_arm_wdm_dT_links(
+        times,
+        orbits,
+        theta,
+        phi,
+        waveform_plus,
+        waveform_cross,
+        Nf=Nf,
+        L_trunc=L_trunc,
+        cache=one_arm_cache,
+        variable_shift_kwargs=variable_shift_kwargs,
+    )
 
-    # Build WDM object from the user-passed grid
-    wdm = WDM_transform(dt=dt, Nf=Nf, N=N_pad, q=q_val, calc_m0=True, d=4)
-
-    # Build WDM time grid internally
     times_p = float(times[0]) + np.arange(wdm.Nt, dtype=float) * float(wdm.dT)
-
-    # -----------------------
-    # built-in shift precompute (on WDM grid)
-    # -----------------------
     cache_key = ("michelson_wdm", id(orbits), int(wdm.Nt), float(times[0]), float(wdm.dT), int(Nf))
     if shifts_cache is not None and cache_key in shifts_cache:
         shifts_X, shifts_Y, shifts_Z = shifts_cache[cache_key]
@@ -790,10 +978,6 @@ def gen2_michelson_wdm(
         if shifts_cache is not None:
             shifts_cache[cache_key] = (shifts_X, shifts_Y, shifts_Z)
 
-    def TS(w, shift_dict, chain):
-        return wdm_time_shift_variable(wdm, w, shift_dict[chain], Nf=Nf)
-
-    # rotate helpers
     def rot_sc(i, k):
         return ((i - 1 + k) % 3) + 1
 
@@ -804,135 +988,142 @@ def gen2_michelson_wdm(
     def rot_chain(chain, k):
         return tuple(rot_link(lk, k) for lk in chain)
 
-    # -----------------------
-    # unshifted one-arm responses (directed links) on times_p
-    # -----------------------
-    w21 = one_arm_response_wdm_dT(times_p, 2, 1, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w32 = one_arm_response_wdm_dT(times_p, 3, 2, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w13 = one_arm_response_wdm_dT(times_p, 1, 3, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w31 = one_arm_response_wdm_dT(times_p, 3, 1, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w23 = one_arm_response_wdm_dT(times_p, 2, 3, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
-    w12 = one_arm_response_wdm_dT(times_p, 1, 2, orbits, theta, phi, waveform_plus, waveform_cross, Nf)
+    w21 = link_w[(2, 1)]
+    w32 = link_w[(3, 2)]
+    w13 = link_w[(1, 3)]
+    w31 = link_w[(3, 1)]
+    w23 = link_w[(2, 3)]
+    w12 = link_w[(1, 2)]
 
-    # =====================================================================
-    # Base chains for X (MUST match X_patterns in precompute_gen2_michelson_shifts)
-    # =====================================================================
-    cX_21                              = ((2, 1),)
-    cX_21_12                           = ((2, 1), (1, 2))
-    cX_21_12_31                        = ((2, 1), (1, 2), (3, 1))
-    cX_21_12_31_13                     = ((2, 1), (1, 2), (3, 1), (1, 3))
-    cX_21_12_31_13_31                  = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1))
-    cX_21_12_31_13_31_13               = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3))
-    cX_21_12_31_13_31_13_21            = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3), (2, 1))
+    cX_21 = ((2, 1),)
+    cX_21_12 = ((2, 1), (1, 2))
+    cX_21_12_31 = ((2, 1), (1, 2), (3, 1))
+    cX_21_12_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3))
+    cX_21_12_31_13_31 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1))
+    cX_21_12_31_13_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3))
+    cX_21_12_31_13_31_13_21 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3), (2, 1))
 
-    cX_31                              = ((3, 1),)
-    cX_31_13                           = ((3, 1), (1, 3))
-    cX_31_13_21                        = ((3, 1), (1, 3), (2, 1))
-    cX_31_13_21_12                     = ((3, 1), (1, 3), (2, 1), (1, 2))
-    cX_31_13_21_12_21                  = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1))
-    cX_31_13_21_12_21_12               = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2))
-    cX_31_13_21_12_21_12_31            = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2), (3, 1))
+    cX_31 = ((3, 1),)
+    cX_31_13 = ((3, 1), (1, 3))
+    cX_31_13_21 = ((3, 1), (1, 3), (2, 1))
+    cX_31_13_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2))
+    cX_31_13_21_12_21 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1))
+    cX_31_13_21_12_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2))
+    cX_31_13_21_12_21_12_31 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2), (3, 1))
 
-    # Y/Z chains
-    cY_21 = rot_chain(cX_21, 1);  cZ_21 = rot_chain(cX_21, 2)
-    cY_21_12 = rot_chain(cX_21_12, 1);  cZ_21_12 = rot_chain(cX_21_12, 2)
-    cY_21_12_31 = rot_chain(cX_21_12_31, 1);  cZ_21_12_31 = rot_chain(cX_21_12_31, 2)
-    cY_21_12_31_13 = rot_chain(cX_21_12_31_13, 1);  cZ_21_12_31_13 = rot_chain(cX_21_12_31_13, 2)
-    cY_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 1);  cZ_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 2)
-    cY_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 1);  cZ_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 2)
-    cY_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 1);  cZ_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 2)
+    cY_21 = rot_chain(cX_21, 1); cZ_21 = rot_chain(cX_21, 2)
+    cY_21_12 = rot_chain(cX_21_12, 1); cZ_21_12 = rot_chain(cX_21_12, 2)
+    cY_21_12_31 = rot_chain(cX_21_12_31, 1); cZ_21_12_31 = rot_chain(cX_21_12_31, 2)
+    cY_21_12_31_13 = rot_chain(cX_21_12_31_13, 1); cZ_21_12_31_13 = rot_chain(cX_21_12_31_13, 2)
+    cY_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 1); cZ_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 2)
+    cY_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 1); cZ_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 2)
+    cY_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 1); cZ_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 2)
 
-    cY_31 = rot_chain(cX_31, 1);  cZ_31 = rot_chain(cX_31, 2)
-    cY_31_13 = rot_chain(cX_31_13, 1);  cZ_31_13 = rot_chain(cX_31_13, 2)
-    cY_31_13_21 = rot_chain(cX_31_13_21, 1);  cZ_31_13_21 = rot_chain(cX_31_13_21, 2)
-    cY_31_13_21_12 = rot_chain(cX_31_13_21_12, 1);  cZ_31_13_21_12 = rot_chain(cX_31_13_21_12, 2)
-    cY_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 1);  cZ_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 2)
-    cY_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 1);  cZ_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 2)
-    cY_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 1);  cZ_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 2)
+    cY_31 = rot_chain(cX_31, 1); cZ_31 = rot_chain(cX_31, 2)
+    cY_31_13 = rot_chain(cX_31_13, 1); cZ_31_13 = rot_chain(cX_31_13, 2)
+    cY_31_13_21 = rot_chain(cX_31_13_21, 1); cZ_31_13_21 = rot_chain(cX_31_13_21, 2)
+    cY_31_13_21_12 = rot_chain(cX_31_13_21_12, 1); cZ_31_13_21_12 = rot_chain(cX_31_13_21_12, 2)
+    cY_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 1); cZ_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 2)
+    cY_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 1); cZ_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 2)
+    cY_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 1); cZ_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 2)
 
-    # =====================================================================
-    # X1 (use shifts_X)
-    # =====================================================================
-    w12_cX_21                           = TS(w12, shifts_X, cX_21)
-    w31_cX_21_12                        = TS(w31, shifts_X, cX_21_12)
-    w13_cX_21_12_31                     = TS(w13, shifts_X, cX_21_12_31)
-    w31_cX_21_12_31_13                  = TS(w31, shifts_X, cX_21_12_31_13)
-    w13_cX_21_12_31_13_31               = TS(w13, shifts_X, cX_21_12_31_13_31)
-    w21_cX_21_12_31_13_31_13            = TS(w21, shifts_X, cX_21_12_31_13_31_13)
-    w12_cX_21_12_31_13_31_13_21         = TS(w12, shifts_X, cX_21_12_31_13_31_13_21)
+    all_jobs = []
 
-    w13_cX_31                           = TS(w13, shifts_X, cX_31)
-    w21_cX_31_13                        = TS(w21, shifts_X, cX_31_13)
-    w12_cX_31_13_21                     = TS(w12, shifts_X, cX_31_13_21)
-    w21_cX_31_13_21_12                  = TS(w21, shifts_X, cX_31_13_21_12)
-    w12_cX_31_13_21_12_21               = TS(w12, shifts_X, cX_31_13_21_12_21)
-    w31_cX_31_13_21_12_21_12            = TS(w31, shifts_X, cX_31_13_21_12_21_12)
-    w13_cX_31_13_21_12_21_12_31         = TS(w13, shifts_X, cX_31_13_21_12_21_12_31)
+    def add_jobs(prefix, shift_dict, jobs):
+        for name, w, chain in jobs:
+            all_jobs.append((f"{prefix}:{name}", w, shift_dict[chain]))
+
+    add_jobs("X", shifts_X, [
+        ("w12_cX_21", w12, cX_21),
+        ("w31_cX_21_12", w31, cX_21_12),
+        ("w13_cX_21_12_31", w13, cX_21_12_31),
+        ("w31_cX_21_12_31_13", w31, cX_21_12_31_13),
+        ("w13_cX_21_12_31_13_31", w13, cX_21_12_31_13_31),
+        ("w21_cX_21_12_31_13_31_13", w21, cX_21_12_31_13_31_13),
+        ("w12_cX_21_12_31_13_31_13_21", w12, cX_21_12_31_13_31_13_21),
+        ("w13_cX_31", w13, cX_31),
+        ("w21_cX_31_13", w21, cX_31_13),
+        ("w12_cX_31_13_21", w12, cX_31_13_21),
+        ("w21_cX_31_13_21_12", w21, cX_31_13_21_12),
+        ("w12_cX_31_13_21_12_21", w12, cX_31_13_21_12_21),
+        ("w31_cX_31_13_21_12_21_12", w31, cX_31_13_21_12_21_12),
+        ("w13_cX_31_13_21_12_21_12_31", w13, cX_31_13_21_12_21_12_31),
+    ])
+
+    W = {(2,1): w21, (3,2): w32, (1,3): w13, (3,1): w31, (2,3): w23, (1,2): w12}
+
+    def add_template_jobs(prefix, shift_dict, c21, c21_12, c21_12_31, c21_12_31_13, c21_12_31_13_31, c21_12_31_13_31_13, c21_12_31_13_31_13_21,
+                          c31, c31_13, c31_13_21, c31_13_21_12, c31_13_21_12_21, c31_13_21_12_21_12, c31_13_21_12_21_12_31, k):
+        def R(link):
+            return rot_link(link, k)
+
+        y231 = W[R((2, 1))]
+        y13p2 = W[R((1, 2))]
+        y32p1 = W[R((3, 1))]
+        y123 = W[R((1, 3))]
+
+        add_jobs(prefix, shift_dict, [
+            ("t1", y13p2, c21), ("t2", y32p1, c21_12), ("t3", y123, c21_12_31),
+            ("t4", y32p1, c21_12_31_13), ("t5", y123, c21_12_31_13_31),
+            ("t6", y231, c21_12_31_13_31_13), ("t7", y13p2, c21_12_31_13_31_13_21),
+            ("n1", y123, c31), ("n2", y231, c31_13), ("n3", y13p2, c31_13_21),
+            ("n4", y231, c31_13_21_12), ("n5", y13p2, c31_13_21_12_21),
+            ("n6", y32p1, c31_13_21_12_21_12), ("n7", y123, c31_13_21_12_21_12_31),
+        ])
+        return y231, y32p1
+
+    y_y231, y_y32p1 = add_template_jobs(
+        "Y", shifts_Y,
+        cY_21, cY_21_12, cY_21_12_31, cY_21_12_31_13, cY_21_12_31_13_31, cY_21_12_31_13_31_13, cY_21_12_31_13_31_13_21,
+        cY_31, cY_31_13, cY_31_13_21, cY_31_13_21_12, cY_31_13_21_12_21, cY_31_13_21_12_21_12, cY_31_13_21_12_21_12_31,
+        k=1,
+    )
+    z_y231, z_y32p1 = add_template_jobs(
+        "Z", shifts_Z,
+        cZ_21, cZ_21_12, cZ_21_12_31, cZ_21_12_31_13, cZ_21_12_31_13_31, cZ_21_12_31_13_31_13, cZ_21_12_31_13_31_13_21,
+        cZ_31, cZ_31_13, cZ_31_13_21, cZ_31_13_21_12, cZ_31_13_21_12_21, cZ_31_13_21_12_21_12, cZ_31_13_21_12_21_12_31,
+        k=2,
+    )
+
+    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+
+    all_shifted = wdm_time_shift_variable_batch(
+        wdm,
+        [(w, t_shift) for _, w, t_shift in all_jobs],
+        Nf=Nf,
+        L_trunc=L_trunc,
+        batch_chunk=32,
+        **shift_kwargs,
+    )
+    shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
 
     X1 = (
         w21
-        + w12_cX_21
-        + w31_cX_21_12
-        + w13_cX_21_12_31
-        + w31_cX_21_12_31_13
-        + w13_cX_21_12_31_13_31
-        + w21_cX_21_12_31_13_31_13
-        + w12_cX_21_12_31_13_31_13_21
+        + shifted_map["X:w12_cX_21"] + shifted_map["X:w31_cX_21_12"] + shifted_map["X:w13_cX_21_12_31"]
+        + shifted_map["X:w31_cX_21_12_31_13"] + shifted_map["X:w13_cX_21_12_31_13_31"]
+        + shifted_map["X:w21_cX_21_12_31_13_31_13"] + shifted_map["X:w12_cX_21_12_31_13_31_13_21"]
         - w31
-        - w13_cX_31
-        - w21_cX_31_13
-        - w12_cX_31_13_21
-        - w21_cX_31_13_21_12
-        - w12_cX_31_13_21_12_21
-        - w31_cX_31_13_21_12_21_12
-        - w13_cX_31_13_21_12_21_12_31
+        - shifted_map["X:w13_cX_31"] - shifted_map["X:w21_cX_31_13"] - shifted_map["X:w12_cX_31_13_21"]
+        - shifted_map["X:w21_cX_31_13_21_12"] - shifted_map["X:w12_cX_31_13_21_12_21"]
+        - shifted_map["X:w31_cX_31_13_21_12_21_12"] - shifted_map["X:w13_cX_31_13_21_12_21_12_31"]
     )
 
-    # =====================================================================
-    # Y1/Z1 via template evaluation
-    # =====================================================================
-    W = {(2,1): w21, (3,2): w32, (1,3): w13, (3,1): w31, (2,3): w23, (1,2): w12}
-
-    def eval_from_template_wdm(shift_dict, c21, c21_12, c21_12_31, c21_12_31_13, c21_12_31_13_31, c21_12_31_13_31_13, c21_12_31_13_31_13_21,
-                               c31, c31_13, c31_13_21, c31_13_21_12, c31_13_21_12_21, c31_13_21_12_21_12, c31_13_21_12_21_12_31, k):
-
-        def R(link): return rot_link(link, k)
-
-        y231  = W[R((2,1))]
-        y13p2 = W[R((1,2))]
-        y32p1 = W[R((3,1))]
-        y123  = W[R((1,3))]
-
-        t1 = TS(y13p2, shift_dict, c21)
-        t2 = TS(y32p1, shift_dict, c21_12)
-        t3 = TS(y123,  shift_dict, c21_12_31)
-        t4 = TS(y32p1, shift_dict, c21_12_31_13)
-        t5 = TS(y123,  shift_dict, c21_12_31_13_31)
-        t6 = TS(y231,  shift_dict, c21_12_31_13_31_13)
-        t7 = TS(y13p2, shift_dict, c21_12_31_13_31_13_21)
-
-        n1 = TS(y123,  shift_dict, c31)
-        n2 = TS(y231,  shift_dict, c31_13)
-        n3 = TS(y13p2, shift_dict, c31_13_21)
-        n4 = TS(y231,  shift_dict, c31_13_21_12)
-        n5 = TS(y13p2, shift_dict, c31_13_21_12_21)
-        n6 = TS(y32p1, shift_dict, c31_13_21_12_21_12)
-        n7 = TS(y123,  shift_dict, c31_13_21_12_21_12_31)
-
-        return (y231 + t1+t2+t3+t4+t5+t6+t7) - (y32p1 + n1+n2+n3+n4+n5+n6+n7)
-
-    Y1 = eval_from_template_wdm(
-        shifts_Y,
-        cY_21, cY_21_12, cY_21_12_31, cY_21_12_31_13, cY_21_12_31_13_31, cY_21_12_31_13_31_13, cY_21_12_31_13_31_13_21,
-        cY_31, cY_31_13, cY_31_13_21, cY_31_13_21_12, cY_31_13_21_12_21, cY_31_13_21_12_21_12, cY_31_13_21_12_21_12_31,
-        k=1
+    Y1 = (
+        y_y231
+        + shifted_map["Y:t1"] + shifted_map["Y:t2"] + shifted_map["Y:t3"] + shifted_map["Y:t4"]
+        + shifted_map["Y:t5"] + shifted_map["Y:t6"] + shifted_map["Y:t7"]
+        - y_y32p1
+        - shifted_map["Y:n1"] - shifted_map["Y:n2"] - shifted_map["Y:n3"] - shifted_map["Y:n4"]
+        - shifted_map["Y:n5"] - shifted_map["Y:n6"] - shifted_map["Y:n7"]
     )
 
-    Z1 = eval_from_template_wdm(
-        shifts_Z,
-        cZ_21, cZ_21_12, cZ_21_12_31, cZ_21_12_31_13, cZ_21_12_31_13_31, cZ_21_12_31_13_31_13, cZ_21_12_31_13_31_13_21,
-        cZ_31, cZ_31_13, cZ_31_13_21, cZ_31_13_21_12, cZ_31_13_21_12_21, cZ_31_13_21_12_21_12, cZ_31_13_21_12_21_12_31,
-        k=2
+    Z1 = (
+        z_y231
+        + shifted_map["Z:t1"] + shifted_map["Z:t2"] + shifted_map["Z:t3"] + shifted_map["Z:t4"]
+        + shifted_map["Z:t5"] + shifted_map["Z:t6"] + shifted_map["Z:t7"]
+        - z_y32p1
+        - shifted_map["Z:n1"] - shifted_map["Z:n2"] - shifted_map["Z:n3"] - shifted_map["Z:n4"]
+        - shifted_map["Z:n5"] - shifted_map["Z:n6"] - shifted_map["Z:n7"]
     )
 
     return X1, Y1, Z1
@@ -963,9 +1154,6 @@ def gen2_michelson_td(
     times = np.asarray(times, dtype=float)
     dt = times[1] - times[0]
 
-    # -----------------------
-    # built-in shift precompute (on TD grid)
-    # -----------------------
     cache_key = ("michelson", id(orbits), len(times), float(times[0]), float(dt))
     if shifts_cache is not None and cache_key in shifts_cache:
         shifts_X, shifts_Y, shifts_Z = shifts_cache[cache_key]
@@ -974,9 +1162,6 @@ def gen2_michelson_td(
         if shifts_cache is not None:
             shifts_cache[cache_key] = (shifts_X, shifts_Y, shifts_Z)
 
-    # -----------------------
-    # unshifted one-arm responses (directed links)
-    # -----------------------
     dl_21 = one_arm_response_td(times, 2, 1, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
     dl_32 = one_arm_response_td(times, 3, 2, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
     dl_13 = one_arm_response_td(times, 1, 3, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
@@ -984,15 +1169,9 @@ def gen2_michelson_td(
     dl_23 = one_arm_response_td(times, 2, 3, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
     dl_12 = one_arm_response_td(times, 1, 2, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
 
-    # -----------------------
-    # generic time-shift helper: x(t) -> x(t - Δ(t)) via interpolation
-    # -----------------------
     def TS(x, shift_dict, chain):
         return interp_time_shift(x, dt, shift_dict[chain], order=order, mode=mode)
 
-    # -----------------------
-    # rotate helper
-    # -----------------------
     def rot_sc(i, k):
         return ((i - 1 + k) % 3) + 1
 
@@ -1003,26 +1182,22 @@ def gen2_michelson_td(
     def rot_chain(chain, k):
         return tuple(rot_link(lk, k) for lk in chain)
 
-    # =====================================================================
-    # Base chains for X (MUST match X_patterns in precompute_gen2_michelson_shifts)
-    # =====================================================================
-    cX_21                              = ((2, 1),)
-    cX_21_12                           = ((2, 1), (1, 2))
-    cX_21_12_31                        = ((2, 1), (1, 2), (3, 1))
-    cX_21_12_31_13                     = ((2, 1), (1, 2), (3, 1), (1, 3))
-    cX_21_12_31_13_31                  = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1))
-    cX_21_12_31_13_31_13               = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3))
-    cX_21_12_31_13_31_13_21            = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3), (2, 1))
+    cX_21 = ((2, 1),)
+    cX_21_12 = ((2, 1), (1, 2))
+    cX_21_12_31 = ((2, 1), (1, 2), (3, 1))
+    cX_21_12_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3))
+    cX_21_12_31_13_31 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1))
+    cX_21_12_31_13_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3))
+    cX_21_12_31_13_31_13_21 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3), (2, 1))
 
-    cX_31                              = ((3, 1),)
-    cX_31_13                           = ((3, 1), (1, 3))
-    cX_31_13_21                        = ((3, 1), (1, 3), (2, 1))
-    cX_31_13_21_12                     = ((3, 1), (1, 3), (2, 1), (1, 2))
-    cX_31_13_21_12_21                  = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1))
-    cX_31_13_21_12_21_12               = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2))
-    cX_31_13_21_12_21_12_31            = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2), (3, 1))
+    cX_31 = ((3, 1),)
+    cX_31_13 = ((3, 1), (1, 3))
+    cX_31_13_21 = ((3, 1), (1, 3), (2, 1))
+    cX_31_13_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2))
+    cX_31_13_21_12_21 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1))
+    cX_31_13_21_12_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2))
+    cX_31_13_21_12_21_12_31 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2), (3, 1))
 
-    # Y/Z chains (rotations of X)
     cY_21 = rot_chain(cX_21, 1);  cZ_21 = rot_chain(cX_21, 2)
     cY_21_12 = rot_chain(cX_21_12, 1);  cZ_21_12 = rot_chain(cX_21_12, 2)
     cY_21_12_31 = rot_chain(cX_21_12_31, 1);  cZ_21_12_31 = rot_chain(cX_21_12_31, 2)
@@ -1039,24 +1214,21 @@ def gen2_michelson_td(
     cY_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 1);  cZ_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 2)
     cY_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 1);  cZ_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 2)
 
-    # =====================================================================
-    # X1 (use shifts_X)
-    # =====================================================================
-    dl_12_cX_21                           = TS(dl_12, shifts_X, cX_21)
-    dl_31_cX_21_12                        = TS(dl_31, shifts_X, cX_21_12)
-    dl_13_cX_21_12_31                     = TS(dl_13, shifts_X, cX_21_12_31)
-    dl_31_cX_21_12_31_13                  = TS(dl_31, shifts_X, cX_21_12_31_13)
-    dl_13_cX_21_12_31_13_31               = TS(dl_13, shifts_X, cX_21_12_31_13_31)
-    dl_21_cX_21_12_31_13_31_13            = TS(dl_21, shifts_X, cX_21_12_31_13_31_13)
-    dl_12_cX_21_12_31_13_31_13_21         = TS(dl_12, shifts_X, cX_21_12_31_13_31_13_21)
+    dl_12_cX_21 = TS(dl_12, shifts_X, cX_21)
+    dl_31_cX_21_12 = TS(dl_31, shifts_X, cX_21_12)
+    dl_13_cX_21_12_31 = TS(dl_13, shifts_X, cX_21_12_31)
+    dl_31_cX_21_12_31_13 = TS(dl_31, shifts_X, cX_21_12_31_13)
+    dl_13_cX_21_12_31_13_31 = TS(dl_13, shifts_X, cX_21_12_31_13_31)
+    dl_21_cX_21_12_31_13_31_13 = TS(dl_21, shifts_X, cX_21_12_31_13_31_13)
+    dl_12_cX_21_12_31_13_31_13_21 = TS(dl_12, shifts_X, cX_21_12_31_13_31_13_21)
 
-    dl_13_cX_31                           = TS(dl_13, shifts_X, cX_31)
-    dl_21_cX_31_13                        = TS(dl_21, shifts_X, cX_31_13)
-    dl_12_cX_31_13_21                     = TS(dl_12, shifts_X, cX_31_13_21)
-    dl_21_cX_31_13_21_12                  = TS(dl_21, shifts_X, cX_31_13_21_12)
-    dl_12_cX_31_13_21_12_21               = TS(dl_12, shifts_X, cX_31_13_21_12_21)
-    dl_31_cX_31_13_21_12_21_12            = TS(dl_31, shifts_X, cX_31_13_21_12_21_12)
-    dl_13_cX_31_13_21_12_21_12_31         = TS(dl_13, shifts_X, cX_31_13_21_12_21_12_31)
+    dl_13_cX_31 = TS(dl_13, shifts_X, cX_31)
+    dl_21_cX_31_13 = TS(dl_21, shifts_X, cX_31_13)
+    dl_12_cX_31_13_21 = TS(dl_12, shifts_X, cX_31_13_21)
+    dl_21_cX_31_13_21_12 = TS(dl_21, shifts_X, cX_31_13_21_12)
+    dl_12_cX_31_13_21_12_21 = TS(dl_12, shifts_X, cX_31_13_21_12_21)
+    dl_31_cX_31_13_21_12_21_12 = TS(dl_31, shifts_X, cX_31_13_21_12_21_12)
+    dl_13_cX_31_13_21_12_21_12_31 = TS(dl_13, shifts_X, cX_31_13_21_12_21_12_31)
 
     X1 = (
         dl_21
@@ -1077,15 +1249,13 @@ def gen2_michelson_td(
         - dl_13_cX_31_13_21_12_21_12_31
     )
 
-    # =====================================================================
-    # Y1, Z1 via template evaluation (same structure you already used)
-    # =====================================================================
     DL = {(2,1): dl_21, (3,2): dl_32, (1,3): dl_13, (3,1): dl_31, (2,3): dl_23, (1,2): dl_12}
 
     def eval_from_template(shift_dict, c21, c21_12, c21_12_31, c21_12_31_13, c21_12_31_13_31, c21_12_31_13_31_13, c21_12_31_13_31_13_21,
                            c31, c31_13, c31_13_21, c31_13_21_12, c31_13_21_12_21, c31_13_21_12_21_12, c31_13_21_12_21_12_31, k):
 
-        def R(link): return rot_link(link, k)
+        def R(link):
+            return rot_link(link, k)
 
         y231  = DL[R((2,1))]
         y13p2 = DL[R((1,2))]
