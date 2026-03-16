@@ -6,6 +6,7 @@ import numpy as np
 # Add your utility functions here
 
 def compare_response_signals(h_ref, h_test):
+    """Compute overlap, mismatch, and residual diagnostics between responses."""
     h_ref  = np.asarray(h_ref).reshape(-1)
     h_test = np.asarray(h_test).reshape(-1)
 
