@@ -26,7 +26,7 @@ def waveform_polarisations(A_plus, A_cross, phase):
     h_cross = A_cross * np.sin(phase)
     return h_plus, h_cross
 
-def generate_windowed_padded_waveform_monochromatic(A_plus, A_cross, f, phi_0, dt, t0, N, alpha):
+def generate_windowed_padded_waveform_monochromatic(A_plus, A_cross, f, phi_0, dt, t0, N, alpha, tukey_factor=1.0):
     """
     Generates an monochromatic input waveform with tukey window and padding.
 
@@ -48,6 +48,10 @@ def generate_windowed_padded_waveform_monochromatic(A_plus, A_cross, f, phi_0, d
         number of data points of the waveform
     alpha : float
         tukey window parameter 
+    tukey_factor : float, optional
+        Multiplier for the padding length relative to the Tukey-affected
+        half-segment. Padding on each side is
+        int(tukey_factor * alpha * 0.5 * N). Default is 1.0.
 
     Returns
     -------
@@ -71,8 +75,9 @@ def generate_windowed_padded_waveform_monochromatic(A_plus, A_cross, f, phi_0, d
     w_h_plus_td = w* h_plus_td
     w_h_cross_td = w* h_cross_td
 
-    P_left =  int(alpha*0.5 * N)
-    P_right =  int(alpha*0.5 * N)   
+    pad_half = max(0, int(tukey_factor * alpha * 0.5 * N))
+    P_left = pad_half
+    P_right = pad_half
 
     w_h_plus_td_pad = np.pad(w_h_plus_td, (P_left, P_right), mode="constant", constant_values=0.0)
     w_h_cross_td_pad = np.pad(w_h_cross_td, (P_left, P_right), mode="constant", constant_values=0.0)
@@ -85,7 +90,7 @@ def generate_windowed_padded_waveform_monochromatic(A_plus, A_cross, f, phi_0, d
 
     return times_pad, w_h_plus_td_pad, w_h_cross_td_pad
 
-def generate_windowed_padded_waveform_linear_freq(A_plus, A_cross, f_start, f_end, phi_0, dt, t0, N, alpha):
+def generate_windowed_padded_waveform_linear_freq(A_plus, A_cross, f_start, f_end, phi_0, dt, t0, N, alpha, tukey_factor=1.0):
     """
     Generates an input sine waveform with changing frequency from f_start to f_end and adds tukey window and padding.
 
@@ -109,6 +114,10 @@ def generate_windowed_padded_waveform_linear_freq(A_plus, A_cross, f_start, f_en
         number of data points of the waveform
     alpha : float
         tukey window parameter 
+    tukey_factor : float, optional
+        Multiplier for the padding length relative to the Tukey-affected
+        half-segment. Padding on each side is
+        int(tukey_factor * alpha * 0.5 * N). Default is 1.0.
 
     Returns
     -------
@@ -138,8 +147,9 @@ def generate_windowed_padded_waveform_linear_freq(A_plus, A_cross, f_start, f_en
     w_h_plus_td = w* h_plus_td
     w_h_cross_td = w* h_cross_td
 
-    P_left =  int(alpha*0.5 * N)
-    P_right =  int(alpha*0.5 * N)   
+    pad_half = max(0, int(tukey_factor * alpha * 0.5 * N))
+    P_left = pad_half
+    P_right = pad_half
 
     w_h_plus_td_pad = np.pad(w_h_plus_td, (P_left, P_right), mode="constant", constant_values=0.0)
     w_h_cross_td_pad = np.pad(w_h_cross_td, (P_left, P_right), mode="constant", constant_values=0.0)
