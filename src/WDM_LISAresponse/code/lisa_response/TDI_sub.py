@@ -36,6 +36,7 @@ def gen1_time_shift(s, r, orbits, t0, npts=2000, year_days=365.25):
     return shift_val
 
 def normalize_links(links):
+    """Convert a sequence of signed links to canonical ``(s, r)`` arm pairs."""
     # word can be [(s,r), ...] or np.ndarray shape (k,2)
     w = np.asarray(links, dtype=np.int16)
     if w.ndim != 2 or w.shape[1] != 2:
