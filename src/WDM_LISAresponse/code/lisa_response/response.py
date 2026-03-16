@@ -2,19 +2,15 @@
 LISA response calculations for WDM_LISAresponse
 """
 
-import jax
-import jax.numpy as jnp
 import numpy as np 
 from lisaconstants import c
-from typing import Tuple
-import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 import WDM
-from WDM.code.time_delay_filters.time_shift_fast import wdm_time_shift_variable
+from WDM.code.time_delay_filters.time_shift_fast import wdm_time_shift_variable, wdm_time_shift_variable_batch
 from numpy.fft import fft, fftfreq
 from .response_sub import (
-    basis_vectors,
-    basis_tensors,
+    antenna_pattern_factors,
+    build_sky_basis,
     _compute_ltt_iterative,
     rhat, 
     gnm_at_times_grid_np_interp,
@@ -24,33 +20,36 @@ from .response_sub import (
 
 def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, num_int_points=10):
     """
-    Eq. 12
+    Evaluate the time-domain one-arm response for a single directed link.
 
-    Parameters 
+    Parameters
     ----------
     times : ndarray
-        the sample times of the LISA response
-        this is the time at which the signal is sent by SC 
+        Sample times of the LISA response. Each entry is the emission time at
+        the sending spacecraft.
     s : int
-        sending SC
+        Sending spacecraft index.
     r : int
-        sending SC
-    orbits : LISA orbits class objects
-        computes the positions of all the SC
+        Receiving spacecraft index.
+    orbits : object
+        Orbit object used to evaluate spacecraft positions.
     theta : float
-        polar angle [rad]
+        Source polar angle in radians.
     phi : float
-        azimuthal angle [rad]
+        Source azimuthal angle in radians.
     td_waveform_plus : ndarray
-        time domain waveform of the plus polarisation of len = times  
-    td_waveform_cross :
-        time domain waveform of the cross polarisation of len = times 
+        Plus-polarization waveform sampled on ``times``.
+    td_waveform_cross : ndarray
+        Cross-polarization waveform sampled on ``times``.
     num_int_points : int
-        number of points used for trapezium rule integration 
+        Number of quadrature points used in the trapezoidal integration.
 
     Returns
     -------
+    ndarray
+        Time-domain one-arm response sampled on ``times``.
     """
+    sky_basis = build_sky_basis(theta, phi)
     x_s = orbits.compute_position(times, sc=[s])[:,0,:]
 
     l_sr = _compute_ltt_iterative(times, s, r, orbits)
@@ -59,11 +58,7 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
     t_rec = times + l_sr
     x_r_rec = orbits.compute_position(t_rec, sc=[r])[:,0,:]
 
-    D = np.einsum('tx,tX->txX', rhat_sr, rhat_sr)
-
-    _, _, n = basis_vectors(theta, phi)
-
-    Omega = -n 
+    Omega = sky_basis.Omega
 
     Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
 
@@ -80,12 +75,8 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
     H_plus = np.trapezoid(h_plus, x=xi, axis=0)
     H_cross = np.trapezoid(h_cross, x=xi, axis=0)
 
-    e_plus, e_cross = basis_tensors(theta, phi)
-
-    H = H_plus[:, np.newaxis, np.newaxis] * e_plus[np.newaxis, :, :] + \
-        H_cross[:, np.newaxis, np.newaxis] * e_cross[np.newaxis, :, :]
-
-    dl_sr = 0.5 * (1-Om_dot_rhat)**(-1) * np.einsum('txX,txX->t', D, H)
+    F_plus, F_cross = antenna_pattern_factors(rhat_sr, sky_basis)
+    dl_sr = 0.5 * (1-Om_dot_rhat)**(-1) * (F_plus * H_plus + F_cross * H_cross)
 
     return c* dl_sr
 
@@ -95,13 +86,15 @@ def one_arm_response_freq_domain(
     chunk_size=512
 ):
     """
-    Faster FD one-arm response:
-    - avoids building 4D tensors (Nt x Nw x 3 x 3)
-    - avoids large Nt x Nw arrays via frequency chunking
-    - uses scalar antenna factors F_plus(t), F_cross(t)
+    Evaluate the frequency-domain one-arm response with chunked frequency work.
+
+    This implementation uses direct scalar antenna factors rather than explicit
+    polarization-tensor contractions and processes the frequency axis in
+    chunks to limit peak memory use.
     """
     times = np.asarray(times)
     Nt = times.size
+    sky_basis = build_sky_basis(theta, phi)
 
     # Assume uniform sampling
     dt = times[1] - times[0]
@@ -111,8 +104,7 @@ def one_arm_response_freq_domain(
     l_sr = _compute_ltt_iterative(times, s, r, orbits)              # (Nt,)
     rhat_sr = rhat(times, s, r, orbits)                             # (Nt,3)
 
-    _, _, n = basis_vectors(theta, phi)
-    Omega = -n
+    Omega = sky_basis.Omega
 
     Om_dot_rhat = np.einsum('i,ti->t', Omega, rhat_sr)              # (Nt,)
     xi_s = times - np.einsum('i,ti->t', Omega, x_s / c)             # (Nt,)
@@ -125,9 +117,7 @@ def one_arm_response_freq_domain(
     omega = 2.0 * np.pi * h_freq                                    # (Nt,)
 
     # Antenna scalars: F_+(t) = rhat^T e_+ rhat, same for cross
-    e_plus, e_cross = basis_tensors(theta, phi)
-    F_plus  = np.einsum('ti,ij,tj->t', rhat_sr, e_plus,  rhat_sr)   # (Nt,)
-    F_cross = np.einsum('ti,ij,tj->t', rhat_sr, e_cross, rhat_sr)   # (Nt,)
+    F_plus, F_cross = antenna_pattern_factors(rhat_sr, sky_basis)   # (Nt,)
 
     # Combine constant phase shift into one term
     phase_t = (xi_s - times[0])                                     # (Nt,)
@@ -164,34 +154,44 @@ def one_arm_response_freq_domain(
 
 def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4):
     """
-    Implementation of the wdm one arm response as coded in the Overleaf, equation 20.  
+    Evaluate the one-arm WDM response on the native sample grid.
 
-    Parameters 
+    Parameters
     ----------
     times : ndarray
-        the sample times of the LISA response
-        this is the time at which the signal is sent by SC 
+        Sample times of the LISA response. Each entry is the emission time at
+        the sending spacecraft.
     s : int
-        sending SC
+        Sending spacecraft index.
     r : int
-        sending SC
-    orbits : LISA orbits class objects
-        computes the positions of all the SC
+        Receiving spacecraft index.
+    orbits : object
+        Orbit object used to evaluate spacecraft positions.
     theta : float
-        polar angle [rad]
+        Source polar angle in radians.
     phi : float
-        azimuthal angle [rad]
+        Source azimuthal angle in radians.
     td_waveform_plus : ndarray
-        time domain waveform of the plus polarisation of len = times  
+        Plus-polarization waveform sampled on ``times``.
     td_waveform_cross : ndarray
-        time domain waveform of the cross polarisation of len = times 
+        Cross-polarization waveform sampled on ``times``.
     Nf : int
-        number of basis element in the frequency dimension 
+        Number of basis elements in the frequency dimension.
+    gnm_method : str, optional
+        Interpolation method used for the WDM basis evaluation.
+    gnm_wrap : bool, optional
+        Boundary handling flag passed to the WDM basis interpolator.
+    d : int, optional
+        WDM oversampling/filter parameter.
 
     Returns
     -------
+    ndarray
+        One-arm WDM response evaluated on ``times``. The sky basis is built
+        once and reused for both the phase geometry and antenna factors.
     """
     N = len(times)
+    sky_basis = build_sky_basis(theta, phi)
 
     dt = np.mean(np.diff(times)) 
 
@@ -217,11 +217,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
         
     rhat_sr = rhat(times, s, r, orbits)
 
-    rhat_cross = np.einsum('tx,tX->txX', rhat_sr, rhat_sr)
-
-    _, _, n = basis_vectors(theta, phi)
-
-    Omega = -n 
+    Omega = sky_basis.Omega
 
     Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
         
@@ -232,7 +228,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     tau_s = l_sr * (1 - Om_dot_rhat) * 0.5
     sinc_arg = 2.0 * np.pi * freq_vals[np.newaxis, :] * tau_s[:, np.newaxis]
 
-    e_plus, e_cross = basis_tensors(theta, phi)
+    F_plus, F_cross = antenna_pattern_factors(rhat_sr, sky_basis)
 
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(wdm.Nf), indexing="ij")
 
@@ -241,92 +237,179 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     sum_nm_plus = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t_plus[np.newaxis, :, :] * vals
     sum_nm_cross = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t_cross[np.newaxis, :, :] * vals
 
-    dl_sr_wdm = 0.5 * c * l_sr * ( np.einsum('tXx,Xx->t', rhat_cross, e_plus) * np.einsum("tnm->t", sum_nm_plus) + np.einsum('tXx,Xx->t', rhat_cross, e_cross) * np.einsum("tnm->t", sum_nm_cross))
+    dl_sr_wdm = 0.5 * c * l_sr * (
+        F_plus * np.einsum("tnm->t", sum_nm_plus)
+        + F_cross * np.einsum("tnm->t", sum_nm_cross)
+    )
 
     return dl_sr_wdm
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None):
-    """
-    WDM response function where we also approximate the times t_i as t_n, see equation 21 for details
 
-    Parameters 
+def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, m_offset=0.0):
+    """Build reusable WDM objects and waveform projections for dT responses.
+
+    Parameters
     ----------
     times : ndarray
-        the sample times of the LISA response
-        this is the time at which the signal is sent by SC 
-    s : int
-        sending SC
-    r : int
-        sending SC
-    orbits : LISA orbits class objects
-        computes the positions of all the SC
-    theta : float
-        polar angle [rad]
-    phi : float
-        azimuthal angle [rad]
+        Uniformly sampled time grid.
     td_waveform_plus : ndarray
-        time domain waveform of the plus polarisation of len = times  
+        Plus-polarization time series.
     td_waveform_cross : ndarray
-        time domain waveform of the cross polarisation of len = times 
-    Nf : int
-        number of basis element in the frequency dimension 
-    return_td : bool
-        indicate whether we also want the time domain lisa response
-    L_trunc : int 
-        indicate how much do you want to truncate your time shifts 
+        Cross-polarization time series.
+    Nf : int, optional
+        Number of WDM frequency bins.
+    d : int, optional
+        WDM oversampling/filter parameter.
+    m_offset : float, optional
+        Optional frequency-index offset used in some WDM conventions.
 
     Returns
     -------
-    dl_sr : ndarray 
-        ndarray of length N of the lisa response 
-    w_sr : ndarray 
-        Nt x Nf ndarray of the shifted 
-
+    dict
+        Dictionary containing precomputed WDM object, transformed waveforms,
+        and grids used repeatedly by one-arm response calls.
     """
+    times = np.asarray(times, dtype=float)
     N = len(times)
     dt = np.mean(np.diff(times))
 
-    q_val = 1 if int(N/Nf) == 2 else int(0.5 * N/Nf)
+    q_val = 1 if int(N / Nf) == 2 else int(0.5 * N / Nf)
 
     wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d, A_frac=0.25)
-    #print(wdm)
-    
-    w_t_plus = wdm.dwt(td_waveform_plus)  # shape (Nt, Nf) presumably
-    w_t_cross = wdm.dwt(td_waveform_cross)  # shape (Nt, Nf) presumably
-
-    x_s = orbits.compute_position(times, sc=[s])[:, 0, :]
-
-    _, _, n = basis_vectors(theta, phi)
-    Omega = -n
-
-    # faster than einsum in many cases
-    xi_s = times - (x_s @ (Omega / c))
+    w_t_plus = wdm.dwt(td_waveform_plus)
+    w_t_cross = wdm.dwt(td_waveform_cross)
 
     freq_vals = (np.arange(wdm.Nf) + m_offset) * wdm.dF
     times_vals = np.arange(wdm.Nt) * wdm.dT
     int_times_vals = times[0] + times_vals
 
-    l_sr = _compute_ltt_iterative(times, s, r, orbits)
-    l_sr_dT = _compute_ltt_iterative(int_times_vals, s, r, orbits)
+    return {
+        "times": times,
+        "wdm": wdm,
+        "w_t_plus": w_t_plus,
+        "w_t_cross": w_t_cross,
+        "freq_vals": freq_vals,
+        "int_times_vals": int_times_vals,
+    }
 
-    rhat_sr = rhat(times, s, r, orbits)
-    rhat_sr_dT = rhat(int_times_vals, s, r, orbits)
 
-    Om_dot_rhat = rhat_sr @ Omega
+def _one_arm_response_wdm_dT_from_context(
+    context,
+    s,
+    r,
+    orbits,
+    theta,
+    phi,
+    return_td=False,
+    gnm_method="cubic",
+    gnm_wrap=True,
+    L_trunc=None,
+    variable_shift_kwargs=None,
+    sky_basis=None,
+):
+    """Evaluate one-arm dT WDM response from precomputed context data.
+
+    The coefficient-space time shift uses ``wdm_time_shift_variable`` and can
+    be configured through ``variable_shift_kwargs`` to use exact or
+    interpolated ``Tl/Tp`` construction. A precomputed ``sky_basis`` can be
+    supplied to avoid rebuilding the source-direction basis.
+    """
+    times = context["times"]
+    wdm = context["wdm"]
+    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+
+    xi_s, tau_s, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
+        context,
+        s,
+        r,
+        orbits,
+        theta,
+        phi,
+        include_time_domain_geometry=bool(return_td),
+        sky_basis=sky_basis,
+    )
+
+    w_sr = wdm_time_shift_variable(
+        wdm,
+        w_xi,
+        -time_shift,
+        Nf=wdm.Nf,
+        delta_mode="target",
+        L_trunc=L_trunc,
+        **shift_kwargs,
+    )
+
+    if not return_td:
+        return w_sr
+
+    n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(wdm.Nf), indexing="ij")
+    tq = xi_s + tau_s - times[0]
+    vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, tq, method=gnm_method, wrap=gnm_wrap)
+    dl_sr = np.einsum("tnm,nm->t", vals, w_xi)
+    return dl_sr, w_sr
+
+
+def _one_arm_wdm_dT_components_from_context(
+    context,
+    s,
+    r,
+    orbits,
+    theta,
+    phi,
+    include_time_domain_geometry=False,
+    sky_basis=None,
+):
+    """Build unshifted one-arm WDM coefficients and time-shift vector for a link.
+
+    When ``include_time_domain_geometry`` is false, the full-sample ``times``
+    geometry needed only for ``return_td=True`` is skipped. In that case the
+    returned ``xi_s`` and ``tau_s`` entries are ``None``. When ``sky_basis`` is
+    provided, the same source-direction basis is reused for all projections.
+    """
+    times = context["times"]
+    wdm = context["wdm"]
+    w_t_plus = context["w_t_plus"]
+    w_t_cross = context["w_t_cross"]
+    freq_vals = context["freq_vals"]
+    int_times_vals = context["int_times_vals"]
+
+    if sky_basis is None:
+        sky_basis = build_sky_basis(theta, phi)
+
+    Omega = sky_basis.Omega
+    x_s_dT = orbits.compute_position(int_times_vals, sc=[s])[:, 0, :]
+    l_sr_dT, x_r_rec_dT = _compute_ltt_iterative(
+        int_times_vals,
+        s,
+        r,
+        orbits,
+        x_s=x_s_dT,
+        return_receiver_position=True,
+    )
+    rhat_sr_dT = rhat(int_times_vals, s, r, orbits, x_s=x_s_dT, x_r_rec=x_r_rec_dT)
     Om_dot_rhat_dT = rhat_sr_dT @ Omega
-
-    tau_s = 0.5 * l_sr * (1 - Om_dot_rhat)
     tau_n = 0.5 * l_sr_dT * (1 - Om_dot_rhat_dT)
 
-    e_plus, e_cross= basis_tensors(theta, phi)
+    if include_time_domain_geometry:
+        x_s = orbits.compute_position(times, sc=[s])[:, 0, :]
+        xi_s = times - (x_s @ (Omega / c))
+        l_sr, x_r_rec = _compute_ltt_iterative(
+            times,
+            s,
+            r,
+            orbits,
+            x_s=x_s,
+            return_receiver_position=True,
+        )
+        rhat_sr = rhat(times, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec)
+        Om_dot_rhat = rhat_sr @ Omega
+        tau_s = 0.5 * l_sr * (1 - Om_dot_rhat)
+    else:
+        xi_s = None
+        tau_s = None
 
-    # rhat_cross_dT is (Nt,3,3); proj_dT -> (Nt,)
-    # compute outer products + projection
-    rhat_cross_dT = rhat_sr_dT[:, :, None] * rhat_sr_dT[:, None, :]
-    proj_dT_plus = np.einsum("tij,ij->t", rhat_cross_dT, e_plus)
-    proj_dT_cross = np.einsum("tij,ij->t", rhat_cross_dT, e_cross)
+    proj_dT_plus, proj_dT_cross = antenna_pattern_factors(rhat_sr_dT, sky_basis)
 
-    # sinc simplification: np.sinc(2 f tau)
     sinc_mat = np.sinc(2.0 * freq_vals[None, :] * tau_n[:, None])
 
     A_nm_plus = 0.5 * c * l_sr_dT[:, None] * proj_dT_plus[:, None] * sinc_mat
@@ -334,20 +417,221 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
 
     w_xi = A_nm_plus * w_t_plus + A_nm_cross * w_t_cross
 
-    time_shift = generate_time_shifts(wdm.Nt, times[0], wdm.dT, theta, phi, s, r, orbits)
-
-    w_sr = wdm_time_shift_variable(wdm, w_xi, -time_shift, Nf=Nf, delta_mode = "target", L_trunc=L_trunc) #pass -time_shift to agree
-
-    if not return_td:
-        return w_sr
-
-    # For return_td: strongly consider chunking if gnm_at_times_grid_np_interp is heavy
-    n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(Nf), indexing="ij")
-    tq = xi_s + tau_s - times[0]
-    vals = gnm_at_times_grid_np_interp(
-        wdm, n_grid, m_grid, tq, method=gnm_method, wrap=False
+    time_shift = generate_time_shifts(
+        wdm.Nt,
+        times[0],
+        wdm.dT,
+        theta,
+        phi,
+        s,
+        r,
+        orbits,
+        sky_basis=sky_basis,
     )
-    dl_sr = np.einsum("tnm,nm->t", vals, w_xi)
-    return dl_sr, w_sr
+    return xi_s, tau_s, w_xi, time_shift
+
+
+def precompute_one_arm_wdm_dT_links(
+    times,
+    orbits,
+    theta,
+    phi,
+    td_waveform_plus,
+    td_waveform_cross,
+    Nf=500,
+    d=4,
+    m_offset=0.0,
+    L_trunc=None,
+    links=None,
+    cache=None,
+    variable_shift_kwargs=None,
+):
+    """Precompute directed one-arm dT WDM responses and return them as a map.
+
+    Parameters
+    ----------
+    times : ndarray
+        Uniformly sampled time grid.
+    orbits : object
+        Orbit object used to evaluate spacecraft positions.
+    theta : float
+        Source polar angle in radians.
+    phi : float
+        Source azimuthal angle in radians.
+    td_waveform_plus : ndarray
+        Plus-polarization time-domain waveform.
+    td_waveform_cross : ndarray
+        Cross-polarization time-domain waveform.
+    Nf : int, optional
+        Number of WDM frequency bins.
+    d : int, optional
+        WDM oversampling/filter parameter.
+    m_offset : float, optional
+        Optional frequency-index offset.
+    L_trunc : int or None, optional
+        Time-shift truncation parameter forwarded to fast shifting.
+    links : iterable of tuple[int, int] or None
+        Directed links to compute. Defaults to the six LISA arms.
+    cache : dict or None
+        Optional cache dictionary for reuse across multiple TDI calls.
+    variable_shift_kwargs : dict or None
+        Optional keyword arguments forwarded to
+        ``wdm_time_shift_variable_batch``. This can enable interpolated Tl/Tp
+        construction for the one-arm coefficient-space shifts.
+
+    Returns
+    -------
+    tuple
+        ``(wdm, responses)`` where ``wdm`` is the WDM transform object and
+        ``responses`` maps directed links ``(s, r)`` to WDM arrays.
+
+    Notes
+    -----
+    ``L_trunc`` is forwarded to the shifter and limits the lag range used
+    during assembly when provided. ``variable_shift_kwargs`` controls whether
+    the one-arm shifts use exact or interpolated Tl/Tp construction. The sky
+    basis for ``theta`` and ``phi`` is built once and reused across all links.
+    """
+    times = np.asarray(times, dtype=float)
+    sky_basis = build_sky_basis(theta, phi)
+    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
+    if links is None:
+        links = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2))
+    links = tuple((int(s), int(r)) for s, r in links)
+
+    cache_key = (
+        id(orbits),
+        float(theta),
+        float(phi),
+        int(Nf),
+        int(d),
+        float(m_offset),
+        None if L_trunc is None else int(L_trunc),
+        int(times.size),
+        float(times[0]),
+        float(times[1] - times[0]),
+        id(td_waveform_plus),
+        id(td_waveform_cross),
+        links,
+        shift_key,
+    )
+
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    context = _build_wdm_dT_context(
+        times,
+        td_waveform_plus,
+        td_waveform_cross,
+        Nf=Nf,
+        d=d,
+        m_offset=m_offset,
+    )
+
+    shift_jobs = []
+    for s, r in links:
+        _, _, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
+            context,
+            s,
+            r,
+            orbits,
+            theta,
+            phi,
+            include_time_domain_geometry=False,
+            sky_basis=sky_basis,
+        )
+        shift_jobs.append((w_xi, -time_shift))
+
+    shifted_links = wdm_time_shift_variable_batch(
+        context["wdm"],
+        shift_jobs,
+        Nf=context["wdm"].Nf,
+        L_trunc=L_trunc,
+        batch_chunk=shift_kwargs.pop("batch_chunk", max(1, len(shift_jobs))),
+        **shift_kwargs,
+    )
+    responses = {link: shifted for link, shifted in zip(links, shifted_links)}
+
+    payload = (context["wdm"], responses)
+    if cache is not None:
+        cache[cache_key] = payload
+    return payload
+
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None):
+    """
+    Evaluate the one-arm dT WDM response for a single directed link.
+
+    This path builds the unshifted WDM coefficients on the ``dT`` grid,
+    applies the fast coefficient-space time shift, and optionally reconstructs
+    the time-domain response.
+
+    Parameters
+    ----------
+    times : ndarray
+        Sample times of the LISA response. Each entry is the emission time at
+        the sending spacecraft.
+    s : int
+        Sending spacecraft index.
+    r : int
+        Receiving spacecraft index.
+    orbits : object
+        Orbit object used to evaluate spacecraft positions.
+    theta : float
+        Source polar angle in radians.
+    phi : float
+        Source azimuthal angle in radians.
+    td_waveform_plus : ndarray
+        Plus-polarization waveform sampled on ``times``.
+    td_waveform_cross : ndarray
+        Cross-polarization waveform sampled on ``times``.
+    Nf : int
+        Number of basis elements in the frequency dimension.
+    return_td : bool
+        Whether to also reconstruct and return the time-domain response.
+    gnm_method : str
+        Interpolation method used only when ``return_td=True``.
+    gnm_wrap : bool
+        Boundary handling used only when ``return_td=True``.
+    d : int
+        WDM oversampling/filter parameter.
+    m_offset : float
+        Optional frequency-index offset.
+    L_trunc : int or None
+        Optional lag truncation forwarded to the coefficient-space time shift.
+    variable_shift_kwargs : dict or None
+        Optional keyword arguments forwarded to ``wdm_time_shift_variable``.
+        This can enable interpolated Tl/Tp construction for the one-arm shift.
+
+    Returns
+    -------
+    ndarray or tuple
+        Returns ``w_sr`` when ``return_td`` is false, otherwise
+        ``(dl_sr, w_sr)``. The source-direction basis is built once and reused
+        across the coefficient and time-shift calculations.
+    """
+    sky_basis = build_sky_basis(theta, phi)
+    context = _build_wdm_dT_context(
+        times,
+        td_waveform_plus,
+        td_waveform_cross,
+        Nf=Nf,
+        d=d,
+        m_offset=m_offset,
+    )
+    return _one_arm_response_wdm_dT_from_context(
+        context,
+        s,
+        r,
+        orbits,
+        theta,
+        phi,
+        return_td=return_td,
+        gnm_method=gnm_method,
+        gnm_wrap=gnm_wrap,
+        L_trunc=L_trunc,
+        variable_shift_kwargs=variable_shift_kwargs,
+        sky_basis=sky_basis,
+    )
 
 

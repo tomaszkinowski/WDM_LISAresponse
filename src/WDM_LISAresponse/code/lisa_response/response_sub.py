@@ -1,129 +1,223 @@
-import jax
-import jax.numpy as jnp
 import numpy as np 
 from lisaconstants import c
-from typing import Tuple
+from typing import NamedTuple, Tuple
 #functions used to compute lisa responses 
 
-def basis_vectors(theta : float, 
-                  phi : float) -> Tuple[jnp.ndarray, 
-                                        jnp.ndarray, 
-                                        jnp.ndarray]:
-    """
-    Set up an orthonormal set of basis vectors (u,v,n) at a point on the sphere
-    of the sky given by the spherical polar angles (theta,phi).
+class SkyBasis(NamedTuple):
+    """Reusable sky-frame quantities for a fixed source direction."""
+
+    u: np.ndarray
+    v: np.ndarray
+    n: np.ndarray
+    Omega: np.ndarray
+    e_plus: np.ndarray
+    e_cross: np.ndarray
+
+
+def build_sky_basis(theta: float, phi: float) -> SkyBasis:
+    """Build reusable sky-frame vectors, propagation direction, and GW tensors.
 
     Parameters
     ----------
     theta : float
-        polar angle [rad]
+        Polar angle of the source direction in radians.
     phi : float
-        azimuthal angle [rad]
+        Azimuthal angle of the source direction in radians.
 
     Returns
     -------
-    u : jnp.ndarray
-        North/South basis vector, shape=(3,)
-    v : jnp.ndarray
-        East/West basis vector, shape=(3,)
-    n : jnp.ndarray
-        Radial basis vector, shape=(3,)
+    SkyBasis
+        Precomputed sky-frame basis vectors ``(u, v, n)``, propagation
+        direction ``Omega = -n``, and GW polarization tensors ``e_plus`` and
+        ``e_cross``.
     """
-    u = jnp.array([jnp.cos(theta)*jnp.cos(phi), jnp.cos(theta)*jnp.sin(phi), - jnp.sin(theta)])
-    v = jnp.array([jnp.sin(phi), -jnp.cos(phi), 0.])
-    n = jnp.array([jnp.sin(theta)*jnp.cos(phi), jnp.sin(theta)*jnp.sin(phi), jnp.cos(theta)])
-    return u, v, n
+    cos_theta = np.cos(theta)
+    sin_theta = np.sin(theta)
+    cos_phi = np.cos(phi)
+    sin_phi = np.sin(phi)
+
+    u = np.array([cos_theta * cos_phi, cos_theta * sin_phi, -sin_theta], dtype=float)
+    v = np.array([sin_phi, -cos_phi, 0.0], dtype=float)
+    n = np.array([sin_theta * cos_phi, sin_theta * sin_phi, cos_theta], dtype=float)
+    Omega = -n
+    e_plus = np.outer(u, u) - np.outer(v, v)
+    e_cross = np.outer(u, v) + np.outer(v, u)
+    return SkyBasis(u=u, v=v, n=n, Omega=Omega, e_plus=e_plus, e_cross=e_cross)
+
+
+def basis_vectors(theta : float, 
+                  phi : float) -> Tuple[np.ndarray, 
+                                        np.ndarray, 
+                                        np.ndarray]:
+    """
+    Return the orthonormal sky-frame basis vectors ``(u, v, n)``.
+
+    Parameters
+    ----------
+    theta : float
+        Polar angle of the source direction in radians.
+    phi : float
+        Azimuthal angle of the source direction in radians.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        The ``u``, ``v``, and ``n`` basis vectors, each with shape ``(3,)``.
+    """
+    sky_basis = build_sky_basis(theta, phi)
+    return sky_basis.u, sky_basis.v, sky_basis.n
 
 def basis_tensors(theta : float, 
-                  phi : float) -> Tuple[jnp.ndarray, 
-                                        jnp.ndarray]:
+                  phi : float) -> Tuple[np.ndarray, 
+                                        np.ndarray]:
     """
-    Set up an two GW polarisation basis tensors at a point on the sphere
-    of the sky given by the spherical polar angles (theta,phi).
+    Return the GW polarization tensors for a fixed sky direction.
 
     Parameters
     ----------
     theta : float
-        polar angle [rad]
+        Polar angle of the source direction in radians.
     phi : float
-        azimuthal angle [rad]
+        Azimuthal angle of the source direction in radians.
 
     Returns
     -------
-    e_plus : jnp.ndarray
-        plus polarised tensor, shape=(3,3)
-    e_cross : jnp.ndarray
-        cross polarised tensor, shape=(3,3)
+    tuple[np.ndarray, np.ndarray]
+        The plus and cross polarization tensors, each with shape ``(3, 3)``.
     """
-    u, v, n = basis_vectors(theta, phi)
-    e_plus = jnp.tensordot(u, u, axes=0) - jnp.tensordot(v, v, axes=0)
-    e_cross = jnp.tensordot(u, v, axes=0) + jnp.tensordot(v, u, axes=0)
-    return e_plus, e_cross
+    sky_basis = build_sky_basis(theta, phi)
+    return sky_basis.e_plus, sky_basis.e_cross
 
 
-def _compute_ltt_iterative(times, s, r, orbits):
+def antenna_pattern_factors(rhat_vec: np.ndarray, sky_basis: SkyBasis) -> Tuple[np.ndarray, np.ndarray]:
+    """Project link directions onto the GW polarization basis without tensors.
+
+    Parameters
+    ----------
+    rhat_vec : ndarray
+        Link unit vector array with shape ``(num_times, 3)`` or ``(3,)``.
+    sky_basis : SkyBasis
+        Precomputed sky-basis quantities for the source direction.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        The plus and cross antenna-pattern factors evaluated on ``rhat_vec``.
     """
-    Interate Newton-Raphson to find light-travel times between SC.
+    rhat_vec = np.asarray(rhat_vec, dtype=float)
+    ru = rhat_vec @ sky_basis.u
+    rv = rhat_vec @ sky_basis.v
+    return ru**2 - rv**2, 2.0 * ru * rv
+
+
+def _solve_link_geometry(times, s, r, orbits, x_s=None):
+    """Solve sender/receiver geometry for a directed link on a time grid."""
+    times = np.asarray(times, dtype=float)
+    tt_niter = 4
+
+    if x_s is None:
+        x_s = orbits.compute_position(times, sc=[s])[:, 0, :]
+    else:
+        x_s = np.asarray(x_s, dtype=float)
+
+    x_r = orbits.compute_position(times, sc=[r])[:, 0, :]
+    tt = np.linalg.norm(x_s - x_r, axis=1) / c
+
+    for _ in range(tt_niter):
+        t_rec = times + tt
+        x_r = orbits.compute_position(t_rec, sc=[r])[:, 0, :]
+        tt = np.linalg.norm(x_s - x_r, axis=1) / c
+
+    return x_s, x_r, tt
+
+
+def _compute_ltt_iterative(times, s, r, orbits, x_s=None, return_receiver_position=False):
+    """
+    Iterate the light-travel-time solve for a directed LISA link.
 
     Parameters
     ----------
     times : ndarray
-        the sample times of the LISA response [s]
-        this is the time at which the signal is sent by SC 
+        Sample times at which the signal leaves the sender spacecraft, in
+        seconds.
     s : int
-        sending SC
+        Sending spacecraft index.
     r : int
-        sending SC
-    orbits : LISA orbits class objects
-        computes the positions of all the SC
+        Receiving spacecraft index.
+    orbits : object
+        Orbit object used to evaluate spacecraft positions.
+    x_s : ndarray or None, optional
+        Optional precomputed sender positions with shape ``(num_times, 3)``.
+    return_receiver_position : bool, optional
+        When true, also return the receiver position evaluated at reception
+        time.
 
     Returns
     -------
-    tt : ndarray
-        light travel time, shaped like times [s]
+    ndarray or tuple
+        The light-travel time array. When ``return_receiver_position`` is true,
+        returns ``(tt, x_r_rec)``.
     """
-    tt_niter = 4 #number of iterations of technique (need to have order greater than 2)
+    _, x_r, tt = _solve_link_geometry(times, s, r, orbits, x_s=x_s)
 
-    x_s = orbits.compute_position(times, sc=[s])[:,0,:]
-    x_r = orbits.compute_position(times, sc=[r])[:,0,:]
-    
-    # First the iteration to find the flat spacetime travel time
-    tt = np.linalg.norm(x_s - x_r, axis=1) / c  
-    
-    for _ in range(tt_niter):
-        t_rec = times + tt  
-        x_r = orbits.compute_position(t_rec, sc=[r])[:,0,:]
-        tt = np.linalg.norm(x_s - x_r, axis=1) / c  
-
+    if return_receiver_position:
+        return tt, x_r
     return tt 
 
 
-def rhat(times, s, r, orbits):
+def rhat(times, s, r, orbits, tt=None, x_s=None, x_r_rec=None):
     """
-    compute arm unit vectors
+    Compute the directed link unit vector from sender to receiver.
 
     Parameters
     ----------
     times : ndarray
-        the sample times of the LISA response [s]
-        this is the time at which the signal is sent by SC 
+        Sample times at which the signal leaves the sender spacecraft, in
+        seconds.
     s : int
-        sending SC
+        Sending spacecraft index.
     r : int
-        sending SC
-    orbits : LISA orbits class objects
-        computes the positions of all the SC
+        Receiving spacecraft index.
+    orbits : object
+        Orbit object used to evaluate spacecraft positions.
+    tt : ndarray or None, optional
+        Optional light-travel time array corresponding to ``times``.
+    x_s : ndarray or None, optional
+        Optional precomputed sender positions with shape ``(num_times, 3)``.
+    x_r_rec : ndarray or None, optional
+        Optional precomputed receiver positions at reception time with shape
+        ``(num_times, 3)``.
 
     Returns
     -------
-    r_hat : ndarray
-        light travel time, shape=(num_times, 3)
+    ndarray
+        Directed link unit vectors with shape ``(num_times, 3)``.
     """
-    tt = _compute_ltt_iterative(times, s, r, orbits)
-    x_s = orbits.compute_position(times, [s])[:,0,:] 
-    t_rec = times + tt  
-    x_r = orbits.compute_position(t_rec, [r])[:,0,:]
-    r_hat = (x_r - x_s) 
+    if x_s is None and x_r_rec is None and tt is None:
+        x_s, x_r_rec, _ = _solve_link_geometry(times, s, r, orbits)
+    else:
+        if x_s is None:
+            x_s = orbits.compute_position(times, [s])[:, 0, :]
+        else:
+            x_s = np.asarray(x_s, dtype=float)
+
+        if x_r_rec is None:
+            if tt is None:
+                tt, x_r_rec = _compute_ltt_iterative(
+                    times,
+                    s,
+                    r,
+                    orbits,
+                    x_s=x_s,
+                    return_receiver_position=True,
+                )
+            else:
+                t_rec = np.asarray(times, dtype=float) + np.asarray(tt, dtype=float)
+                x_r_rec = orbits.compute_position(t_rec, [r])[:, 0, :]
+        else:
+            x_r_rec = np.asarray(x_r_rec, dtype=float)
+
+    r_hat = (x_r_rec - x_s) 
     r_hat = r_hat / np.linalg.norm(r_hat, axis=1)[:, np.newaxis]
     return r_hat
 
@@ -390,40 +484,45 @@ def gnm_at_times_grid_np_interp(
 
     return values
 
-def generate_time_shifts(Nt, times_0, dT, theta, phi, s, r, orbits):
+def generate_time_shifts(Nt, times_0, dT, theta, phi, s, r, orbits, sky_basis=None):
     """
-    Generates timeshifts for wdm method.
+    Generate coefficient-space time shifts for the dT-grid WDM response.
 
     Parameters
     ----------
     Nt : int
-        Numer of grids in time resolution
+        Number of samples on the WDM time grid.
     times_0 : float
-        Reference zero time of series
+        Start time of the grid in seconds.
     dT : float
-        wdm time resolution
+        WDM time resolution in seconds.
     theta : float
-        polar angle of incoming waveform [rad]
+        Polar angle of the incoming waveform in radians.
     phi : float
-        azimuthal angle of incoming waveform [rad]
+        Azimuthal angle of the incoming waveform in radians.
     s : int
-        sending SC
+        Sending spacecraft index.
     r : int
-        sending SC
-    orbits : LISA orbits class objects
-        computes the positions of all the SC
+        Receiving spacecraft index.
+    orbits : object
+        Orbit object used to evaluate spacecraft positions.
+    sky_basis : SkyBasis or None, optional
+        Optional precomputed sky basis for ``theta`` and ``phi``. When omitted,
+        it is built internally.
 
     Returns
     -------
-    t_shifts : ndarray
-        array of timeshifts to use for wdm method
-        same length as Nt.
+    ndarray
+        Time-shift array with length ``Nt``.
     """
 
     t_p = times_0 + np.arange(Nt) * dT
 
-    _, _, n = basis_vectors(theta, phi)
-    Omega = -n
+    if sky_basis is None:
+        sky_basis = build_sky_basis(theta, phi)
+
+    n = sky_basis.n
+    Omega = sky_basis.Omega
     x_s = orbits.compute_position(t_p, sc=[s])[:, 0, :]
     l_sr_tp = _compute_ltt_iterative(t_p, s, r, orbits)
     rhat_sr_tp = rhat(t_p, s, r, orbits)
