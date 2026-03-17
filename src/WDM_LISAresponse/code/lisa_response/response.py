@@ -418,9 +418,9 @@ def _one_arm_wdm_dT_components_from_context(
     w_xi = A_nm_plus * w_t_plus + A_nm_cross * w_t_cross
 
     time_shift = generate_time_shifts(
-        Nt_wdm,
-        times_0,
-        dT,
+        wdm.Nt,
+        times[0],
+        wdm.dT,
         theta,
         phi,
         s,
