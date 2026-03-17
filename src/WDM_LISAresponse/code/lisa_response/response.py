@@ -14,6 +14,7 @@ from .response_sub import (
     _compute_ltt_iterative,
     rhat, 
     gnm_at_times_grid_np_interp,
+    generate_time_shifts,
 )
 # Add your LISA response functions here
 
@@ -416,8 +417,17 @@ def _one_arm_wdm_dT_components_from_context(
 
     w_xi = A_nm_plus * w_t_plus + A_nm_cross * w_t_cross
 
-    # Reuse dT-grid geometry already computed above and avoid a second orbit/ltt/rhat pass.
-    time_shift = x_s_dT @ (sky_basis.n / c) + tau_n
+    time_shift = generate_time_shifts(
+        Nt_wdm,
+        times_0,
+        dT,
+        theta,
+        phi,
+        s,
+        r,
+        orbits,
+        sky_basis=sky_basis,
+    )
     return xi_s, tau_s, w_xi, time_shift
 
 
