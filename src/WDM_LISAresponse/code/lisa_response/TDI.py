@@ -17,6 +17,20 @@ def _resolve_one_arm_cache(one_arm_cache):
     """
     return one_arm_cache
 
+
+def _resolve_variable_shift_batch_kwargs(variable_shift_kwargs, default_batch_chunk=32):
+    """Build kwargs for ``wdm_time_shift_variable_batch`` with stable defaults.
+
+    ``batch_chunk`` can be overridden by the caller through
+    ``variable_shift_kwargs``. When omitted, the previous Gen-2 behavior
+    (chunk size 32) is preserved.
+    """
+    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    batch_chunk = shift_kwargs.pop("batch_chunk", default_batch_chunk)
+    if batch_chunk is not None:
+        shift_kwargs["batch_chunk"] = int(batch_chunk)
+    return shift_kwargs
+
 def gen1_sagnac_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf, Lbar, return_zeta = False, L_trunc=None, one_arm_cache=None, variable_shift_kwargs=None):
     """
     Implement the generation 1 version of the sagnac-type variables in the wdm domain.
@@ -810,14 +824,13 @@ def gen2_sagnac_wdm(
     all_jobs.extend(build_jobs("B", shifts_beta, beta_jobs_local))
     all_jobs.extend(build_jobs("G", shifts_gamma, gamma_jobs_local))
 
-    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    shift_kwargs = _resolve_variable_shift_batch_kwargs(variable_shift_kwargs)
 
     all_shifted = wdm_time_shift_variable_batch(
         wdm,
         [(w, t_shift) for _, w, t_shift in all_jobs],
         Nf=Nf,
         L_trunc=L_trunc,
-        batch_chunk=32,
         **shift_kwargs,
     )
     shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
@@ -1085,14 +1098,13 @@ def gen2_michelson_wdm(
         k=2,
     )
 
-    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    shift_kwargs = _resolve_variable_shift_batch_kwargs(variable_shift_kwargs)
 
     all_shifted = wdm_time_shift_variable_batch(
         wdm,
         [(w, t_shift) for _, w, t_shift in all_jobs],
         Nf=Nf,
         L_trunc=L_trunc,
-        batch_chunk=32,
         **shift_kwargs,
     )
     shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
