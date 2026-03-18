@@ -151,8 +151,30 @@ def one_arm_response_freq_domain(
     return dl_sr
 
 
+def _resolve_wdm_q_value(N, Nf, q=None):
+    """Resolve WDM truncation parameter q with an auto-max default.
 
-def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4):
+    When ``q`` is ``None``, use the largest value supported by the current
+    WDM tiling, i.e. ``floor(Nt/2)`` where ``Nt = floor(N / Nf)``.
+    """
+    Nt = int(N // Nf)
+    if Nt < 2:
+        raise ValueError(f"Invalid WDM tiling for q resolution: Nt={Nt} (from N={N}, Nf={Nf}).")
+
+    q_max = max(1, Nt // 2)
+    if q is None:
+        return q_max
+
+    q_val = int(q)
+    if q_val < 1:
+        raise ValueError(f"q must be >= 1, got {q_val}.")
+    if q_val > q_max:
+        raise ValueError(f"q={q_val} exceeds max allowed q={q_max} for Nt={Nt}.")
+    return q_val
+
+
+
+def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4, q=None):
     """
     Evaluate the one-arm WDM response on the native sample grid.
 
@@ -183,6 +205,9 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
         Boundary handling flag passed to the WDM basis interpolator.
     d : int, optional
         WDM oversampling/filter parameter.
+    q : int or None, optional
+        WDM truncation parameter. When ``None``, it is set to the maximum
+        allowed value for the current tiling.
 
     Returns
     -------
@@ -195,10 +220,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     dt = np.mean(np.diff(times)) 
 
-    if int(N/Nf) == 2:
-        q_val = 1
-    else:
-        q_val = int(0.5 * N/Nf)
+    q_val = _resolve_wdm_q_value(N, Nf, q=q)
 
     wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d = d)
     #print(wdm)
@@ -245,7 +267,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     return dl_sr_wdm
 
 
-def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, m_offset=0.0):
+def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, m_offset=0.0, q=None):
     """Build reusable WDM objects and waveform projections for dT responses.
 
     Parameters
@@ -262,6 +284,9 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
         WDM oversampling/filter parameter.
     m_offset : float, optional
         Optional frequency-index offset used in some WDM conventions.
+    q : int or None, optional
+        WDM truncation parameter. When ``None``, it is set to the maximum
+        allowed value for the current tiling.
 
     Returns
     -------
@@ -273,7 +298,7 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
     N = len(times)
     dt = np.mean(np.diff(times))
 
-    q_val = 1 if int(N / Nf) == 2 else int(0.5 * N / Nf)
+    q_val = _resolve_wdm_q_value(N, Nf, q=q)
 
     wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d, A_frac=0.25)
     w_t_plus = wdm.dwt(td_waveform_plus)
@@ -445,6 +470,7 @@ def precompute_one_arm_wdm_dT_links(
     links=None,
     cache=None,
     variable_shift_kwargs=None,
+    q=None,
 ):
     """Precompute directed one-arm dT WDM responses and return them as a map.
 
@@ -478,6 +504,9 @@ def precompute_one_arm_wdm_dT_links(
         Optional keyword arguments forwarded to
         ``wdm_time_shift_variable_batch``. This can enable interpolated Tl/Tp
         construction for the one-arm coefficient-space shifts.
+    q : int or None, optional
+        WDM truncation parameter. When ``None``, it is set to the maximum
+        allowed value for the current tiling.
 
     Returns
     -------
@@ -495,6 +524,7 @@ def precompute_one_arm_wdm_dT_links(
     times = np.asarray(times, dtype=float)
     sky_basis = build_sky_basis(theta, phi)
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    q_val = _resolve_wdm_q_value(int(times.size), int(Nf), q=q)
     shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
     if links is None:
         links = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2))
@@ -506,6 +536,7 @@ def precompute_one_arm_wdm_dT_links(
         float(phi),
         int(Nf),
         int(d),
+        int(q_val),
         float(m_offset),
         None if L_trunc is None else int(L_trunc),
         int(times.size),
@@ -527,6 +558,7 @@ def precompute_one_arm_wdm_dT_links(
         Nf=Nf,
         d=d,
         m_offset=m_offset,
+        q=q_val,
     )
 
     shift_jobs = []
@@ -558,7 +590,7 @@ def precompute_one_arm_wdm_dT_links(
         cache[cache_key] = payload
     return payload
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None):
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, q=None):
     """
     Evaluate the one-arm dT WDM response for a single directed link.
 
@@ -602,6 +634,9 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     variable_shift_kwargs : dict or None
         Optional keyword arguments forwarded to ``wdm_time_shift_variable``.
         This can enable interpolated Tl/Tp construction for the one-arm shift.
+    q : int or None, optional
+        WDM truncation parameter. When ``None``, it is set to the maximum
+        allowed value for the current tiling.
 
     Returns
     -------
@@ -618,6 +653,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         Nf=Nf,
         d=d,
         m_offset=m_offset,
+        q=q,
     )
     return _one_arm_response_wdm_dT_from_context(
         context,
