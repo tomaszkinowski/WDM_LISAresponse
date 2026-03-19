@@ -174,7 +174,7 @@ def _resolve_wdm_q_value(N, Nf, q=None):
 
 
 
-def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4, q=None):
+def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4, q=None, calc_m0=True):
     """
     Evaluate the one-arm WDM response on the native sample grid.
 
@@ -208,6 +208,9 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     q : int or None, optional
         WDM truncation parameter. When ``None``, it is set to the maximum
         allowed value for the current tiling.
+    calc_m0 : bool, optional
+        Whether to include the ``m=0`` WDM component when constructing the
+        transform.
 
     Returns
     -------
@@ -222,7 +225,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     q_val = _resolve_wdm_q_value(N, Nf, q=q)
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d = d)
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=calc_m0, d = d)
     #print(wdm)
 
 
@@ -267,7 +270,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     return dl_sr_wdm
 
 
-def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, m_offset=0.0, q=None):
+def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, m_offset=0.0, q=None, calc_m0=True):
     """Build reusable WDM objects and waveform projections for dT responses.
 
     Parameters
@@ -287,6 +290,9 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
     q : int or None, optional
         WDM truncation parameter. When ``None``, it is set to the maximum
         allowed value for the current tiling.
+    calc_m0 : bool, optional
+        Whether to include the ``m=0`` WDM component when constructing the
+        transform.
 
     Returns
     -------
@@ -300,7 +306,7 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
 
     q_val = _resolve_wdm_q_value(N, Nf, q=q)
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=True, d=d, A_frac=0.25)
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=calc_m0, d=d, A_frac=0.25)
     w_t_plus = wdm.dwt(td_waveform_plus)
     w_t_cross = wdm.dwt(td_waveform_cross)
 
@@ -471,6 +477,7 @@ def precompute_one_arm_wdm_dT_links(
     cache=None,
     variable_shift_kwargs=None,
     q=None,
+    calc_m0=True,
 ):
     """Precompute directed one-arm dT WDM responses and return them as a map.
 
@@ -507,6 +514,9 @@ def precompute_one_arm_wdm_dT_links(
     q : int or None, optional
         WDM truncation parameter. When ``None``, it is set to the maximum
         allowed value for the current tiling.
+    calc_m0 : bool, optional
+        Whether to include the ``m=0`` WDM component when constructing the
+        transform.
 
     Returns
     -------
@@ -537,6 +547,7 @@ def precompute_one_arm_wdm_dT_links(
         int(Nf),
         int(d),
         int(q_val),
+        bool(calc_m0),
         float(m_offset),
         None if L_trunc is None else int(L_trunc),
         int(times.size),
@@ -559,6 +570,7 @@ def precompute_one_arm_wdm_dT_links(
         d=d,
         m_offset=m_offset,
         q=q_val,
+        calc_m0=calc_m0,
     )
 
     shift_jobs = []
@@ -590,7 +602,7 @@ def precompute_one_arm_wdm_dT_links(
         cache[cache_key] = payload
     return payload
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, q=None):
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, q=None, calc_m0=True):
     """
     Evaluate the one-arm dT WDM response for a single directed link.
 
@@ -637,6 +649,9 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     q : int or None, optional
         WDM truncation parameter. When ``None``, it is set to the maximum
         allowed value for the current tiling.
+    calc_m0 : bool, optional
+        Whether to include the ``m=0`` WDM component when constructing the
+        transform.
 
     Returns
     -------
@@ -654,6 +669,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         d=d,
         m_offset=m_offset,
         q=q,
+        calc_m0=calc_m0,
     )
     return _one_arm_response_wdm_dT_from_context(
         context,

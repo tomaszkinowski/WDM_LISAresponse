@@ -44,7 +44,7 @@ def wdm_mismatch(w1, w2):
     ----------
     w1 : ndarray
         wdm coefficients 1 (Nt x Nf)
-    w2 : float
+    w2 : ndarray
         wdm coefficients 2 (Nt x Nf)
 
     Returns
@@ -55,10 +55,11 @@ def wdm_mismatch(w1, w2):
         mismatch between the two wdm coefficient arrays 
     """
 
-    inner_prod = np.abs(np.einsum("nm,nm->", np.conj(w1), w2))
-    w1_mag = np.sqrt(np.einsum("nm,nm->", np.conj(w1), w1))
-    w2_mag = np.sqrt(np.einsum("nm,nm->", np.conj(w2), w2))
-    overlap = inner_prod / (w1_mag * w2_mag)
-    mismatch = 1 - overlap
+    inner_prod = np.real(np.vdot(w1, w2))
+    w1_mag = np.sqrt(max(np.real(np.vdot(w1, w1)), 0.0))
+    w2_mag = np.sqrt(max(np.real(np.vdot(w2, w2)), 0.0))
+
+    overlap = float(inner_prod / (w1_mag * w2_mag))
+    mismatch = float(1 - overlap)
     
     return overlap, mismatch
