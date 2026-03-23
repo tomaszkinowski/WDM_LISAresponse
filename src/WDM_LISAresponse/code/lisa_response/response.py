@@ -15,6 +15,7 @@ from .response_sub import (
     rhat, 
     gnm_at_times_grid_np_interp,
     generate_time_shifts,
+    wdm_pad_inputs_right,
 )
 # Add your LISA response functions here
 
@@ -52,11 +53,17 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
     sky_basis = build_sky_basis(theta, phi)
     x_s = orbits.compute_position(times, sc=[s])[:,0,:]
 
-    l_sr = _compute_ltt_iterative(times, s, r, orbits)
-    rhat_sr = rhat(times, s, r, orbits)
+    l_sr, x_r_rec = _compute_ltt_iterative(
+        times,
+        s,
+        r,
+        orbits,
+        x_s=x_s,
+        return_receiver_position=True,
+    )
+    rhat_sr = rhat(times, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec)
 
     t_rec = times + l_sr
-    x_r_rec = orbits.compute_position(t_rec, sc=[r])[:,0,:]
 
     Omega = sky_basis.Omega
 
@@ -211,17 +218,25 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     calc_m0 : bool, optional
         Whether to include the ``m=0`` WDM component when constructing the
         transform.
-
     Returns
     -------
     ndarray
         One-arm WDM response evaluated on ``times``. The sky basis is built
         once and reused for both the phase geometry and antenna factors.
     """
-    N = len(times)
+    times = np.asarray(times, dtype=float)
+    N_in = len(times)
     sky_basis = build_sky_basis(theta, phi)
 
-    dt = np.mean(np.diff(times)) 
+    times_wdm, td_plus_wdm, td_cross_wdm, _ = wdm_pad_inputs_right(
+        times,
+        td_waveform_plus,
+        td_waveform_cross,
+        Nf,
+    )
+
+    N = len(times_wdm)
+    dt = times_wdm[1] - times_wdm[0]
 
     q_val = _resolve_wdm_q_value(N, Nf, q=q)
 
@@ -231,16 +246,22 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     #print(f"How much padding was added: {(N-current_length)*wdm.dt}")
 
-    w_t_plus = wdm.dwt(td_waveform_plus)
-    w_t_cross = wdm.dwt(td_waveform_cross)
+    w_t_plus = wdm.dwt(td_plus_wdm)
+    w_t_cross = wdm.dwt(td_cross_wdm)
 
     #basic implementation of wdm transform 
 
     x_s = orbits.compute_position(times, sc=[s])[:,0,:]
 
-    l_sr = _compute_ltt_iterative(times, s, r, orbits) 
-        
-    rhat_sr = rhat(times, s, r, orbits)
+    l_sr, x_r_rec = _compute_ltt_iterative(
+        times,
+        s,
+        r,
+        orbits,
+        x_s=x_s,
+        return_receiver_position=True,
+    )
+    rhat_sr = rhat(times, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec)
 
     Omega = sky_basis.Omega
 
@@ -257,7 +278,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(wdm.Nf), indexing="ij")
 
-    vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_s + tau_s - times[0], method=gnm_method, wrap=True)
+    vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_s + tau_s - times[0], method=gnm_method, wrap=gnm_wrap)
 
     sum_nm_plus = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t_plus[np.newaxis, :, :] * vals
     sum_nm_cross = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t_cross[np.newaxis, :, :] * vals
@@ -267,7 +288,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
         + F_cross * np.einsum("tnm->t", sum_nm_cross)
     )
 
-    return dl_sr_wdm
+    return dl_sr_wdm[:N_in]
 
 
 def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, m_offset=0.0, q=None, calc_m0=True):
@@ -293,7 +314,6 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
     calc_m0 : bool, optional
         Whether to include the ``m=0`` WDM component when constructing the
         transform.
-
     Returns
     -------
     dict
@@ -301,14 +321,20 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
         and grids used repeatedly by one-arm response calls.
     """
     times = np.asarray(times, dtype=float)
-    N = len(times)
-    dt = np.mean(np.diff(times))
+    times_wdm, td_plus_wdm, td_cross_wdm, _ = wdm_pad_inputs_right(
+        times,
+        td_waveform_plus,
+        td_waveform_cross,
+        Nf,
+    )
+    N = len(times_wdm)
+    dt = times_wdm[1] - times_wdm[0]
 
     q_val = _resolve_wdm_q_value(N, Nf, q=q)
 
     wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=calc_m0, d=d, A_frac=0.25)
-    w_t_plus = wdm.dwt(td_waveform_plus)
-    w_t_cross = wdm.dwt(td_waveform_cross)
+    w_t_plus = wdm.dwt(td_plus_wdm)
+    w_t_cross = wdm.dwt(td_cross_wdm)
 
     freq_vals = (np.arange(wdm.Nf) + m_offset) * wdm.dF
     times_vals = np.arange(wdm.Nt) * wdm.dT
@@ -517,7 +543,6 @@ def precompute_one_arm_wdm_dT_links(
     calc_m0 : bool, optional
         Whether to include the ``m=0`` WDM component when constructing the
         transform.
-
     Returns
     -------
     tuple
@@ -652,7 +677,6 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     calc_m0 : bool, optional
         Whether to include the ``m=0`` WDM component when constructing the
         transform.
-
     Returns
     -------
     ndarray or tuple

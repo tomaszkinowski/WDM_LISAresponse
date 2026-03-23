@@ -1,7 +1,44 @@
 import numpy as np 
 from lisaconstants import c
 from typing import NamedTuple, Tuple
+import WDM
+from ..utils.utils import wdm_tail_padding_info
 #functions used to compute lisa responses 
+
+
+def wdm_pad_inputs_right(times, td_waveform_plus, td_waveform_cross, Nf):
+    """Pad plus/cross waveforms on the right using ``WDM.utils.pad_signal``."""
+    times = np.asarray(times, dtype=float)
+    td_waveform_plus = np.asarray(td_waveform_plus)
+    td_waveform_cross = np.asarray(td_waveform_cross)
+
+    if times.ndim != 1 or td_waveform_plus.ndim != 1 or td_waveform_cross.ndim != 1:
+        raise ValueError("times, td_waveform_plus, and td_waveform_cross must be 1D arrays.")
+    if not (len(times) == len(td_waveform_plus) == len(td_waveform_cross)):
+        raise ValueError("times, td_waveform_plus, and td_waveform_cross must have the same length.")
+    if len(times) < 2:
+        raise ValueError("Need at least two time samples for WDM input padding.")
+
+    dt = times[1] - times[0]
+    if not np.allclose(np.diff(times), dt):
+        raise ValueError("times must be uniformly sampled for WDM transforms.")
+
+    info = wdm_tail_padding_info(len(times), int(Nf))
+    target_length = int(info["target_length"])
+
+    td_plus_pad, mask = WDM.utils.pad_signal(td_waveform_plus, target_length)
+    td_cross_pad, _ = WDM.utils.pad_signal(td_waveform_cross, target_length)
+
+    pad_right = int(target_length - len(times))
+    if pad_right == 0:
+        times_pad = times.copy()
+    else:
+        times_right = times[-1] + dt * np.arange(1, pad_right + 1)
+        times_pad = np.concatenate((times, times_right))
+
+    info["mask"] = mask
+    return times_pad, np.asarray(td_plus_pad), np.asarray(td_cross_pad), info
+
 
 class SkyBasis(NamedTuple):
     """Reusable sky-frame quantities for a fixed source direction."""
@@ -220,21 +257,6 @@ def rhat(times, s, r, orbits, tt=None, x_s=None, x_r_rec=None):
     r_hat = (x_r_rec - x_s) 
     r_hat = r_hat / np.linalg.norm(r_hat, axis=1)[:, np.newaxis]
     return r_hat
-
-def _cubic_kernel_keys(t, a=-0.5):
-    """
-    Keys cubic convolution kernel.
-    a = -0.5 -> Catmull–Rom (good default)
-    """
-    t = np.abs(t)
-    w = np.zeros_like(t, dtype=np.float64)
-
-    m1 = (t < 1)
-    m2 = (t >= 1) & (t < 2)
-
-    w[m1] = (a + 2)*t[m1]**3 - (a + 3)*t[m1]**2 + 1
-    w[m2] = a*t[m2]**3 - 5*a*t[m2]**2 + 8*a*t[m2] - 4*a
-    return w
 
 def _cubic_kernel_keys(t, a=-0.5):
     """Keys cubic convolution kernel (Catmull–Rom when a=-0.5)."""
@@ -524,8 +546,15 @@ def generate_time_shifts(Nt, times_0, dT, theta, phi, s, r, orbits, sky_basis=No
     n = sky_basis.n
     Omega = sky_basis.Omega
     x_s = orbits.compute_position(t_p, sc=[s])[:, 0, :]
-    l_sr_tp = _compute_ltt_iterative(t_p, s, r, orbits)
-    rhat_sr_tp = rhat(t_p, s, r, orbits)
+    l_sr_tp, x_r_rec_tp = _compute_ltt_iterative(
+        t_p,
+        s,
+        r,
+        orbits,
+        x_s=x_s,
+        return_receiver_position=True,
+    )
+    rhat_sr_tp = rhat(t_p, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec_tp)
     Om_dot_rhat_tp = rhat_sr_tp @ Omega
     tau_p = 0.5 * l_sr_tp * (1 - Om_dot_rhat_tp)
 
