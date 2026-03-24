@@ -31,7 +31,21 @@ def _resolve_variable_shift_batch_kwargs(variable_shift_kwargs, default_batch_ch
         shift_kwargs["batch_chunk"] = int(batch_chunk)
     return shift_kwargs
 
-def gen1_sagnac_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf, Lbar, return_zeta = False, L_trunc=None, one_arm_cache=None, variable_shift_kwargs=None):
+def gen1_sagnac_wdm(
+    times,
+    waveform_plus,
+    waveform_cross,
+    theta,
+    phi,
+    orbits,
+    Nf,
+    Lbar,
+    return_zeta=False,
+    L_trunc=None,
+    one_arm_cache=None,
+    variable_shift_kwargs=None,
+    q=None,
+):
     """
     Implement the generation 1 version of the sagnac-type variables in the wdm domain.
 
@@ -62,6 +76,10 @@ def gen1_sagnac_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf
     variable_shift_kwargs : dict or None
         Optional keyword arguments forwarded to the one-arm variable-delay shift
         used when constructing the directed link responses.
+    q : int or None, optional
+        WDM truncation parameter for one-arm response construction. When
+        ``None``, the maximal allowed q is used (same behavior as one-arm
+        response helpers and Gen-2 APIs).
     
     
     
@@ -89,6 +107,7 @@ def gen1_sagnac_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf
         L_trunc=L_trunc,
         cache=cache,
         variable_shift_kwargs=variable_shift_kwargs,
+        q=q,
     )
 
     w21 = link_w[(2, 1)]
@@ -247,7 +266,20 @@ def gen1_sagnac_td(times, waveform_plus, waveform_cross, theta, phi, orbits, Lba
     else:
         return alpha, beta, gamma
     
-def gen1_michelson_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits, Nf, Lbar, L_trunc=None, one_arm_cache=None, variable_shift_kwargs=None):
+def gen1_michelson_wdm(
+    times,
+    waveform_plus,
+    waveform_cross,
+    theta,
+    phi,
+    orbits,
+    Nf,
+    Lbar,
+    L_trunc=None,
+    one_arm_cache=None,
+    variable_shift_kwargs=None,
+    q=None,
+):
     """
     Implement the generation 1 Michelson-type variables (X, Y, Z) in the WDM domain.
 
@@ -282,6 +314,10 @@ def gen1_michelson_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits,
     variable_shift_kwargs : dict or None
         Optional keyword arguments forwarded to the one-arm variable-delay shift
         used when constructing the directed link responses.
+    q : int or None, optional
+        WDM truncation parameter for one-arm response construction. When
+        ``None``, the maximal allowed q is used (same behavior as one-arm
+        response helpers and Gen-2 APIs).
 
     Returns
     -------
@@ -301,6 +337,7 @@ def gen1_michelson_wdm(times, waveform_plus, waveform_cross, theta, phi, orbits,
         L_trunc=L_trunc,
         cache=cache,
         variable_shift_kwargs=variable_shift_kwargs,
+        q=q,
     )
 
     w21 = link_w[(2, 1)]
