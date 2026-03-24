@@ -651,6 +651,7 @@ def gen2_sagnac_wdm(
     L_trunc=None,
     one_arm_cache=None,
     variable_shift_kwargs=None,
+    q=None,
 ):
     """
     Gen-2 Sagnac-type variables (alpha1, beta1, gamma1) in WDM DOMAIN,
@@ -684,6 +685,10 @@ def gen2_sagnac_wdm(
         Optional keyword arguments forwarded to
         ``wdm_time_shift_variable_batch`` (e.g. ``tl_tp_mode='interp'``,
         ``tl_tp_interp_kind='linear'|'cubic'``, ``tl_tp_interp_points=...``).
+    q : int or None, optional
+        WDM truncation parameter for one-arm response construction. When
+        ``None``, the maximal allowed q is used (same behavior as one-arm
+        response helpers).
 
     Returns
     -------
@@ -704,6 +709,7 @@ def gen2_sagnac_wdm(
         L_trunc=L_trunc,
         cache=one_arm_cache,
         variable_shift_kwargs=variable_shift_kwargs,
+        q=q,
     )
 
     # Build WDM time grid internally
@@ -927,6 +933,7 @@ def gen2_michelson_wdm(
     L_trunc=None,
     one_arm_cache=None,
     variable_shift_kwargs=None,
+    q=None,
 ):
     """
     Gen-2 Michelson-type variables (X1, Y1, Z1) in the WDM domain,
@@ -960,6 +967,10 @@ def gen2_michelson_wdm(
         Optional keyword arguments forwarded to
         ``wdm_time_shift_variable_batch`` (e.g. ``tl_tp_mode='interp'``,
         ``tl_tp_interp_kind='linear'|'cubic'``, ``tl_tp_interp_points=...``).
+    q : int or None, optional
+        WDM truncation parameter for one-arm response construction. When
+        ``None``, the maximal allowed q is used (same behavior as one-arm
+        response helpers).
 
     Returns
     -------
@@ -980,6 +991,7 @@ def gen2_michelson_wdm(
         L_trunc=L_trunc,
         cache=one_arm_cache,
         variable_shift_kwargs=variable_shift_kwargs,
+        q=q,
     )
 
     times_p = float(times[0]) + np.arange(wdm.Nt, dtype=float) * float(wdm.dT)
