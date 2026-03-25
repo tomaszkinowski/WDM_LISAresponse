@@ -1,7 +1,7 @@
 #code to generate TDI signals in TD and WDM domains 
 import numpy as np
 from WDM_LISAresponse.code.lisa_response.response import one_arm_response_td, precompute_one_arm_wdm_dT_links
-from WDM_GW_wavelets.src.WDM.code.time_delay_filters.time_shift_fast import (
+from WDM.code.time_delay_filters.time_shift_fast import (
     wdm_time_shift_fixed_batch,
     wdm_time_shift_variable,
     wdm_time_shift_variable_batch,
