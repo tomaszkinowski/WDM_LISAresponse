@@ -14,7 +14,6 @@ from .response_sub import (
     _compute_ltt_iterative,
     rhat, 
     gnm_at_times_grid_np_interp,
-    generate_time_shifts,
     wdm_pad_inputs_right,
 )
 # Add your LISA response functions here
@@ -65,6 +64,7 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
 
     t_rec = times + l_sr
 
+    n = sky_basis.n
     Omega = sky_basis.Omega
 
     Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
@@ -362,6 +362,7 @@ def _one_arm_response_wdm_dT_from_context(
     gnm_wrap=True,
     L_trunc=None,
     variable_shift_kwargs=None,
+    use_jax=None,
     sky_basis=None,
 ):
     """Evaluate one-arm dT WDM response from precomputed context data.
@@ -374,6 +375,7 @@ def _one_arm_response_wdm_dT_from_context(
     times = context["times"]
     wdm = context["wdm"]
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    shift_kwargs.pop("use_jax", None)
 
     xi_s, tau_s, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
         context,
@@ -393,6 +395,7 @@ def _one_arm_response_wdm_dT_from_context(
         Nf=wdm.Nf,
         delta_mode="target",
         L_trunc=L_trunc,
+        use_jax=use_jax,
         **shift_kwargs,
     )
 
@@ -433,6 +436,7 @@ def _one_arm_wdm_dT_components_from_context(
     if sky_basis is None:
         sky_basis = build_sky_basis(theta, phi)
 
+    n = sky_basis.n
     Omega = sky_basis.Omega
     x_s_dT = orbits.compute_position(int_times_vals, sc=[s])[:, 0, :]
     l_sr_dT, x_r_rec_dT = _compute_ltt_iterative(
@@ -474,17 +478,8 @@ def _one_arm_wdm_dT_components_from_context(
 
     w_xi = A_nm_plus * w_t_plus + A_nm_cross * w_t_cross
 
-    time_shift = generate_time_shifts(
-        wdm.Nt,
-        times[0],
-        wdm.dT,
-        theta,
-        phi,
-        s,
-        r,
-        orbits,
-        sky_basis=sky_basis,
-    )
+    # Reuse dT-grid geometry already computed above to avoid a second orbit/LTT pass.
+    time_shift = x_s_dT @ (n / c) + tau_n
     return xi_s, tau_s, w_xi, time_shift
 
 
@@ -502,6 +497,7 @@ def precompute_one_arm_wdm_dT_links(
     links=None,
     cache=None,
     variable_shift_kwargs=None,
+    use_jax=None,
     q=None,
     calc_m0=True,
 ):
@@ -559,6 +555,7 @@ def precompute_one_arm_wdm_dT_links(
     times = np.asarray(times, dtype=float)
     sky_basis = build_sky_basis(theta, phi)
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    shift_kwargs.pop("use_jax", None)
     q_val = _resolve_wdm_q_value(int(times.size), int(Nf), q=q)
     shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
     if links is None:
@@ -618,6 +615,7 @@ def precompute_one_arm_wdm_dT_links(
         Nf=context["wdm"].Nf,
         L_trunc=L_trunc,
         batch_chunk=shift_kwargs.pop("batch_chunk", max(1, len(shift_jobs))),
+        use_jax=use_jax,
         **shift_kwargs,
     )
     responses = {link: shifted for link, shifted in zip(links, shifted_links)}
@@ -627,7 +625,7 @@ def precompute_one_arm_wdm_dT_links(
         cache[cache_key] = payload
     return payload
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, q=None, calc_m0=True):
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, use_jax=None, q=None, calc_m0=True):
     """
     Evaluate the one-arm dT WDM response for a single directed link.
 
@@ -707,6 +705,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         gnm_wrap=gnm_wrap,
         L_trunc=L_trunc,
         variable_shift_kwargs=variable_shift_kwargs,
+        use_jax=use_jax,
         sky_basis=sky_basis,
     )
 

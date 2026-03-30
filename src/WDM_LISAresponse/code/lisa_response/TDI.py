@@ -18,18 +18,192 @@ def _resolve_one_arm_cache(one_arm_cache):
     return one_arm_cache
 
 
-def _resolve_variable_shift_batch_kwargs(variable_shift_kwargs, default_batch_chunk=32):
+def _resolve_variable_shift_batch_kwargs(
+    variable_shift_kwargs,
+    default_batch_chunk=32,
+):
     """Build kwargs for ``wdm_time_shift_variable_batch`` with stable defaults.
 
     ``batch_chunk`` can be overridden by the caller through
     ``variable_shift_kwargs``. When omitted, the previous Gen-2 behavior
     (chunk size 32) is preserved.
+
+    Parameters
+    ----------
+    variable_shift_kwargs : dict or None
+        User-provided variable shift options.
+    default_batch_chunk : int or None
+        Default ``batch_chunk`` when not explicitly provided.
     """
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    # ``use_jax`` is passed explicitly at call sites; drop legacy duplicate key.
+    shift_kwargs.pop("use_jax", None)
     batch_chunk = shift_kwargs.pop("batch_chunk", default_batch_chunk)
     if batch_chunk is not None:
         shift_kwargs["batch_chunk"] = int(batch_chunk)
     return shift_kwargs
+
+
+def _rot_sc(i, k):
+    """Rotate a spacecraft index by ``k`` steps in {1,2,3} cyclic order."""
+    return ((i - 1 + k) % 3) + 1
+
+
+def _rot_link(link, k):
+    """Rotate a directed link ``(s, r)`` by ``k`` spacecraft steps."""
+    s, r = link
+    return (_rot_sc(s, k), _rot_sc(r, k))
+
+
+def _rot_chain(chain, k):
+    """Rotate each directed link in a delay chain by ``k`` steps."""
+    return tuple(_rot_link(lk, k) for lk in chain)
+
+
+def _build_gen2_sagnac_job_templates():
+    """Build static Gen-2 Sagnac shift job templates for alpha/beta/gamma."""
+    # Base chains for alpha.
+    cA_21 = ((2, 1),)
+    cA_21_32 = ((2, 1), (3, 2))
+    cA_21_32_13 = ((2, 1), (3, 2), (1, 3))
+    cA_21_32_13_31 = ((2, 1), (3, 2), (1, 3), (3, 1))
+    cA_21_32_13_31_23 = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3))
+
+    cA_31 = ((3, 1),)
+    cA_31_23 = ((3, 1), (2, 3))
+    cA_31_23_12 = ((3, 1), (2, 3), (1, 2))
+    cA_31_23_12_21 = ((3, 1), (2, 3), (1, 2), (2, 1))
+    cA_31_23_12_21_32 = ((3, 1), (2, 3), (1, 2), (2, 1), (3, 2))
+
+    cB_21 = _rot_chain(cA_21, 1)
+    cB_21_32 = _rot_chain(cA_21_32, 1)
+    cB_21_32_13 = _rot_chain(cA_21_32_13, 1)
+    cB_21_32_13_31 = _rot_chain(cA_21_32_13_31, 1)
+    cB_21_32_13_31_23 = _rot_chain(cA_21_32_13_31_23, 1)
+
+    cB_31 = _rot_chain(cA_31, 1)
+    cB_31_23 = _rot_chain(cA_31_23, 1)
+    cB_31_23_12 = _rot_chain(cA_31_23_12, 1)
+    cB_31_23_12_21 = _rot_chain(cA_31_23_12_21, 1)
+    cB_31_23_12_21_32 = _rot_chain(cA_31_23_12_21_32, 1)
+
+    cG_21 = _rot_chain(cA_21, 2)
+    cG_21_32 = _rot_chain(cA_21_32, 2)
+    cG_21_32_13 = _rot_chain(cA_21_32_13, 2)
+    cG_21_32_13_31 = _rot_chain(cA_21_32_13_31, 2)
+    cG_21_32_13_31_23 = _rot_chain(cA_21_32_13_31_23, 2)
+
+    cG_31 = _rot_chain(cA_31, 2)
+    cG_31_23 = _rot_chain(cA_31_23, 2)
+    cG_31_23_12 = _rot_chain(cA_31_23_12, 2)
+    cG_31_23_12_21 = _rot_chain(cA_31_23_12_21, 2)
+    cG_31_23_12_21_32 = _rot_chain(cA_31_23_12_21_32, 2)
+
+    alpha_jobs = [
+        ("w32_c21", (3, 2), cA_21),
+        ("w13_c21_32", (1, 3), cA_21_32),
+        ("w31_c21_32_13", (3, 1), cA_21_32_13),
+        ("w23_c21_32_13_31", (2, 3), cA_21_32_13_31),
+        ("w12_c21_32_13_31_23", (1, 2), cA_21_32_13_31_23),
+        ("w23_c31", (2, 3), cA_31),
+        ("w12_c31_23", (1, 2), cA_31_23),
+        ("w21_c31_23_12", (2, 1), cA_31_23_12),
+        ("w32_c31_23_12_21", (3, 2), cA_31_23_12_21),
+        ("w13_c31_23_12_21_32", (1, 3), cA_31_23_12_21_32),
+    ]
+    beta_jobs = [
+        ("w13b_c21", (1, 3), cB_21),
+        ("w21b_c21_32", (2, 1), cB_21_32),
+        ("w12b_c21_32_13", (1, 2), cB_21_32_13),
+        ("w31b_c21_32_13_31", (3, 1), cB_21_32_13_31),
+        ("w23b_c21_32_13_31_23", (2, 3), cB_21_32_13_31_23),
+        ("w31b_c31", (3, 1), cB_31),
+        ("w23b_c31_23", (2, 3), cB_31_23),
+        ("w32b_c31_23_12", (3, 2), cB_31_23_12),
+        ("w13b_c31_23_12_21", (1, 3), cB_31_23_12_21),
+        ("w21b_c31_23_12_21_32", (2, 1), cB_31_23_12_21_32),
+    ]
+    gamma_jobs = [
+        ("w21g_c21", (2, 1), cG_21),
+        ("w32g_c21_32", (3, 2), cG_21_32),
+        ("w23g_c21_32_13", (2, 3), cG_21_32_13),
+        ("w12g_c21_32_13_31", (1, 2), cG_21_32_13_31),
+        ("w31g_c21_32_13_31_23", (3, 1), cG_21_32_13_31_23),
+        ("w12g_c31", (1, 2), cG_31),
+        ("w31g_c31_23", (3, 1), cG_31_23),
+        ("w13g_c31_23_12", (1, 3), cG_31_23_12),
+        ("w21g_c31_23_12_21", (2, 1), cG_31_23_12_21),
+        ("w32g_c31_23_12_21_32", (3, 2), cG_31_23_12_21_32),
+    ]
+
+    return alpha_jobs, beta_jobs, gamma_jobs
+
+
+_GEN2_SAGNAC_JOB_TEMPLATES = _build_gen2_sagnac_job_templates()
+
+
+def _build_gen2_michelson_job_templates():
+    """Build static Gen-2 Michelson shift job templates for X/Y/Z."""
+    # Base X-arm chains.
+    cX_21 = ((2, 1),)
+    cX_21_12 = ((2, 1), (1, 2))
+    cX_21_12_31 = ((2, 1), (1, 2), (3, 1))
+    cX_21_12_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3))
+    cX_21_12_31_13_31 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1))
+    cX_21_12_31_13_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3))
+    cX_21_12_31_13_31_13_21 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3), (2, 1))
+
+    cX_31 = ((3, 1),)
+    cX_31_13 = ((3, 1), (1, 3))
+    cX_31_13_21 = ((3, 1), (1, 3), (2, 1))
+    cX_31_13_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2))
+    cX_31_13_21_12_21 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1))
+    cX_31_13_21_12_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2))
+    cX_31_13_21_12_21_12_31 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2), (3, 1))
+
+    x_jobs = [
+        ("w12_cX_21", (1, 2), cX_21),
+        ("w31_cX_21_12", (3, 1), cX_21_12),
+        ("w13_cX_21_12_31", (1, 3), cX_21_12_31),
+        ("w31_cX_21_12_31_13", (3, 1), cX_21_12_31_13),
+        ("w13_cX_21_12_31_13_31", (1, 3), cX_21_12_31_13_31),
+        ("w21_cX_21_12_31_13_31_13", (2, 1), cX_21_12_31_13_31_13),
+        ("w12_cX_21_12_31_13_31_13_21", (1, 2), cX_21_12_31_13_31_13_21),
+        ("w13_cX_31", (1, 3), cX_31),
+        ("w21_cX_31_13", (2, 1), cX_31_13),
+        ("w12_cX_31_13_21", (1, 2), cX_31_13_21),
+        ("w21_cX_31_13_21_12", (2, 1), cX_31_13_21_12),
+        ("w12_cX_31_13_21_12_21", (1, 2), cX_31_13_21_12_21),
+        ("w31_cX_31_13_21_12_21_12", (3, 1), cX_31_13_21_12_21_12),
+        ("w13_cX_31_13_21_12_21_12_31", (1, 3), cX_31_13_21_12_21_12_31),
+    ]
+
+    yz_skeleton = [
+        ("t1", (1, 2), cX_21),
+        ("t2", (3, 1), cX_21_12),
+        ("t3", (1, 3), cX_21_12_31),
+        ("t4", (3, 1), cX_21_12_31_13),
+        ("t5", (1, 3), cX_21_12_31_13_31),
+        ("t6", (2, 1), cX_21_12_31_13_31_13),
+        ("t7", (1, 2), cX_21_12_31_13_31_13_21),
+        ("n1", (1, 3), cX_31),
+        ("n2", (2, 1), cX_31_13),
+        ("n3", (1, 2), cX_31_13_21),
+        ("n4", (2, 1), cX_31_13_21_12),
+        ("n5", (1, 2), cX_31_13_21_12_21),
+        ("n6", (3, 1), cX_31_13_21_12_21_12),
+        ("n7", (1, 3), cX_31_13_21_12_21_12_31),
+    ]
+
+    def rot_jobs(k):
+        return [(name, _rot_link(link, k), _rot_chain(chain, k)) for name, link, chain in yz_skeleton]
+
+    y_jobs = rot_jobs(1)
+    z_jobs = rot_jobs(2)
+    return x_jobs, y_jobs, z_jobs
+
+
+_GEN2_MICHELSON_JOB_TEMPLATES = _build_gen2_michelson_job_templates()
 
 def gen1_sagnac_wdm(
     times,
@@ -44,6 +218,7 @@ def gen1_sagnac_wdm(
     L_trunc=None,
     one_arm_cache=None,
     variable_shift_kwargs=None,
+    use_jax=None,
     q=None,
 ):
     """
@@ -107,6 +282,7 @@ def gen1_sagnac_wdm(
         L_trunc=L_trunc,
         cache=cache,
         variable_shift_kwargs=variable_shift_kwargs,
+        use_jax=use_jax,
         q=q,
     )
 
@@ -136,6 +312,7 @@ def gen1_sagnac_wdm(
         [(w, delta) for _, w, delta in jobs],
         Nf=Nf,
         L_trunc=L_trunc,
+        use_jax=use_jax,
     )
     shifted_map = {name: arr for (name, _, _), arr in zip(jobs, shifted)}
 
@@ -170,6 +347,7 @@ def gen1_sagnac_wdm(
             zeta_jobs,
             Nf=Nf,
             L_trunc=L_trunc,
+            use_jax=use_jax,
         )
 
         zeta = w21_L32 - w31_L32 + w32_L13 - w12_L13 + w13_L21 - w23_L21
@@ -278,6 +456,7 @@ def gen1_michelson_wdm(
     L_trunc=None,
     one_arm_cache=None,
     variable_shift_kwargs=None,
+    use_jax=None,
     q=None,
 ):
     """
@@ -337,6 +516,7 @@ def gen1_michelson_wdm(
         L_trunc=L_trunc,
         cache=cache,
         variable_shift_kwargs=variable_shift_kwargs,
+        use_jax=use_jax,
         q=q,
     )
 
@@ -372,6 +552,7 @@ def gen1_michelson_wdm(
         [(w, delta) for _, w, delta in jobs],
         Nf=Nf,
         L_trunc=L_trunc,
+        use_jax=use_jax,
     )
     shifted_map = {name: arr for (name, _, _), arr in zip(jobs, shifted)}
 
@@ -688,6 +869,7 @@ def gen2_sagnac_wdm(
     L_trunc=None,
     one_arm_cache=None,
     variable_shift_kwargs=None,
+    use_jax=None,
     q=None,
 ):
     """
@@ -735,6 +917,10 @@ def gen2_sagnac_wdm(
 
     times = np.asarray(times, dtype=float)
     one_arm_cache = _resolve_one_arm_cache(one_arm_cache)
+    shift_kwargs = _resolve_variable_shift_batch_kwargs(
+        variable_shift_kwargs,
+        default_batch_chunk=None,
+    )
     wdm, link_w = precompute_one_arm_wdm_dT_links(
         times,
         orbits,
@@ -745,7 +931,8 @@ def gen2_sagnac_wdm(
         Nf=Nf,
         L_trunc=L_trunc,
         cache=one_arm_cache,
-        variable_shift_kwargs=variable_shift_kwargs,
+        variable_shift_kwargs=shift_kwargs,
+        use_jax=use_jax,
         q=q,
     )
 
@@ -770,110 +957,25 @@ def gen2_sagnac_wdm(
     w23 = link_w[(2, 3)]
     w12 = link_w[(1, 2)]
 
+    alpha_jobs_template, beta_jobs_template, gamma_jobs_template = _GEN2_SAGNAC_JOB_TEMPLATES
+
     def build_jobs(prefix, shift_dict, jobs):
-        return [(f"{prefix}:{name}", w, shift_dict[chain]) for name, w, chain in jobs]
-
-    # -----------------------
-    # rotate helper
-    # -----------------------
-    def rot_sc(i, k):
-        return ((i - 1 + k) % 3) + 1
-
-    def rot_link(link, k):
-        s, r = link
-        return (rot_sc(s, k), rot_sc(r, k))
-
-    def rot_chain(chain, k):
-        return tuple(rot_link(lk, k) for lk in chain)
-
-    # =====================================================================
-    # Base chains for ALPHA (must match your alpha_patterns in precompute)
-    # =====================================================================
-    cA_21                  = ((2, 1),)
-    cA_21_32               = ((2, 1), (3, 2))
-    cA_21_32_13            = ((2, 1), (3, 2), (1, 3))
-    cA_21_32_13_31         = ((2, 1), (3, 2), (1, 3), (3, 1))
-    cA_21_32_13_31_23      = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3))
-
-    cA_31                  = ((3, 1),)
-    cA_31_23               = ((3, 1), (2, 3))
-    cA_31_23_12            = ((3, 1), (2, 3), (1, 2))
-    cA_31_23_12_21         = ((3, 1), (2, 3), (1, 2), (2, 1))
-    cA_31_23_12_21_32      = ((3, 1), (2, 3), (1, 2), (2, 1), (3, 2))
-
-    cB_21                  = rot_chain(cA_21, 1)
-    cB_21_32               = rot_chain(cA_21_32, 1)
-    cB_21_32_13            = rot_chain(cA_21_32_13, 1)
-    cB_21_32_13_31         = rot_chain(cA_21_32_13_31, 1)
-    cB_21_32_13_31_23      = rot_chain(cA_21_32_13_31_23, 1)
-
-    cB_31                  = rot_chain(cA_31, 1)
-    cB_31_23               = rot_chain(cA_31_23, 1)
-    cB_31_23_12            = rot_chain(cA_31_23_12, 1)
-    cB_31_23_12_21         = rot_chain(cA_31_23_12_21, 1)
-    cB_31_23_12_21_32      = rot_chain(cA_31_23_12_21_32, 1)
-
-    cG_21                  = rot_chain(cA_21, 2)
-    cG_21_32               = rot_chain(cA_21_32, 2)
-    cG_21_32_13            = rot_chain(cA_21_32_13, 2)
-    cG_21_32_13_31         = rot_chain(cA_21_32_13_31, 2)
-    cG_21_32_13_31_23      = rot_chain(cA_21_32_13_31_23, 2)
-
-    cG_31                  = rot_chain(cA_31, 2)
-    cG_31_23               = rot_chain(cA_31_23, 2)
-    cG_31_23_12            = rot_chain(cA_31_23_12, 2)
-    cG_31_23_12_21         = rot_chain(cA_31_23_12_21, 2)
-    cG_31_23_12_21_32      = rot_chain(cA_31_23_12_21_32, 2)
-
-    alpha_jobs_local = [
-        ("w32_c21", w32, cA_21),
-        ("w13_c21_32", w13, cA_21_32),
-        ("w31_c21_32_13", w31, cA_21_32_13),
-        ("w23_c21_32_13_31", w23, cA_21_32_13_31),
-        ("w12_c21_32_13_31_23", w12, cA_21_32_13_31_23),
-        ("w23_c31", w23, cA_31),
-        ("w12_c31_23", w12, cA_31_23),
-        ("w21_c31_23_12", w21, cA_31_23_12),
-        ("w32_c31_23_12_21", w32, cA_31_23_12_21),
-        ("w13_c31_23_12_21_32", w13, cA_31_23_12_21_32),
-    ]
-    beta_jobs_local = [
-        ("w13b_c21", w13, cB_21),
-        ("w21b_c21_32", w21, cB_21_32),
-        ("w12b_c21_32_13", w12, cB_21_32_13),
-        ("w31b_c21_32_13_31", w31, cB_21_32_13_31),
-        ("w23b_c21_32_13_31_23", w23, cB_21_32_13_31_23),
-        ("w31b_c31", w31, cB_31),
-        ("w23b_c31_23", w23, cB_31_23),
-        ("w32b_c31_23_12", w32, cB_31_23_12),
-        ("w13b_c31_23_12_21", w13, cB_31_23_12_21),
-        ("w21b_c31_23_12_21_32", w21, cB_31_23_12_21_32),
-    ]
-    gamma_jobs_local = [
-        ("w21g_c21", w21, cG_21),
-        ("w32g_c21_32", w32, cG_21_32),
-        ("w23g_c21_32_13", w23, cG_21_32_13),
-        ("w12g_c21_32_13_31", w12, cG_21_32_13_31),
-        ("w31g_c21_32_13_31_23", w31, cG_21_32_13_31_23),
-        ("w12g_c31", w12, cG_31),
-        ("w31g_c31_23", w31, cG_31_23),
-        ("w13g_c31_23_12", w13, cG_31_23_12),
-        ("w21g_c31_23_12_21", w21, cG_31_23_12_21),
-        ("w32g_c31_23_12_21_32", w32, cG_31_23_12_21_32),
-    ]
+        return [(f"{prefix}:{name}", link_w[link], shift_dict[chain]) for name, link, chain in jobs]
 
     all_jobs = []
-    all_jobs.extend(build_jobs("A", shifts_alpha, alpha_jobs_local))
-    all_jobs.extend(build_jobs("B", shifts_beta, beta_jobs_local))
-    all_jobs.extend(build_jobs("G", shifts_gamma, gamma_jobs_local))
+    all_jobs.extend(build_jobs("A", shifts_alpha, alpha_jobs_template))
+    all_jobs.extend(build_jobs("B", shifts_beta, beta_jobs_template))
+    all_jobs.extend(build_jobs("G", shifts_gamma, gamma_jobs_template))
 
-    shift_kwargs = _resolve_variable_shift_batch_kwargs(variable_shift_kwargs)
+    if "batch_chunk" not in shift_kwargs:
+        shift_kwargs["batch_chunk"] = max(1, len(all_jobs))
 
     all_shifted = wdm_time_shift_variable_batch(
         wdm,
         [(w, t_shift) for _, w, t_shift in all_jobs],
         Nf=Nf,
         L_trunc=L_trunc,
+        use_jax=use_jax,
         **shift_kwargs,
     )
     shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
@@ -970,6 +1072,7 @@ def gen2_michelson_wdm(
     L_trunc=None,
     one_arm_cache=None,
     variable_shift_kwargs=None,
+    use_jax=None,
     q=None,
 ):
     """
@@ -1017,6 +1120,10 @@ def gen2_michelson_wdm(
 
     times = np.asarray(times, dtype=float)
     one_arm_cache = _resolve_one_arm_cache(one_arm_cache)
+    shift_kwargs = _resolve_variable_shift_batch_kwargs(
+        variable_shift_kwargs,
+        default_batch_chunk=None,
+    )
     wdm, link_w = precompute_one_arm_wdm_dT_links(
         times,
         orbits,
@@ -1027,7 +1134,8 @@ def gen2_michelson_wdm(
         Nf=Nf,
         L_trunc=L_trunc,
         cache=one_arm_cache,
-        variable_shift_kwargs=variable_shift_kwargs,
+        variable_shift_kwargs=shift_kwargs,
+        use_jax=use_jax,
         q=q,
     )
 
@@ -1040,120 +1148,36 @@ def gen2_michelson_wdm(
         if shifts_cache is not None:
             shifts_cache[cache_key] = (shifts_X, shifts_Y, shifts_Z)
 
-    def rot_sc(i, k):
-        return ((i - 1 + k) % 3) + 1
-
-    def rot_link(link, k):
-        s, r = link
-        return (rot_sc(s, k), rot_sc(r, k))
-
-    def rot_chain(chain, k):
-        return tuple(rot_link(lk, k) for lk in chain)
-
     w21 = link_w[(2, 1)]
     w32 = link_w[(3, 2)]
     w13 = link_w[(1, 3)]
     w31 = link_w[(3, 1)]
     w23 = link_w[(2, 3)]
     w12 = link_w[(1, 2)]
+    x_jobs_template, y_jobs_template, z_jobs_template = _GEN2_MICHELSON_JOB_TEMPLATES
 
-    cX_21 = ((2, 1),)
-    cX_21_12 = ((2, 1), (1, 2))
-    cX_21_12_31 = ((2, 1), (1, 2), (3, 1))
-    cX_21_12_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3))
-    cX_21_12_31_13_31 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1))
-    cX_21_12_31_13_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3))
-    cX_21_12_31_13_31_13_21 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3), (2, 1))
-
-    cX_31 = ((3, 1),)
-    cX_31_13 = ((3, 1), (1, 3))
-    cX_31_13_21 = ((3, 1), (1, 3), (2, 1))
-    cX_31_13_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2))
-    cX_31_13_21_12_21 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1))
-    cX_31_13_21_12_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2))
-    cX_31_13_21_12_21_12_31 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2), (3, 1))
-
-    cY_21 = rot_chain(cX_21, 1); cZ_21 = rot_chain(cX_21, 2)
-    cY_21_12 = rot_chain(cX_21_12, 1); cZ_21_12 = rot_chain(cX_21_12, 2)
-    cY_21_12_31 = rot_chain(cX_21_12_31, 1); cZ_21_12_31 = rot_chain(cX_21_12_31, 2)
-    cY_21_12_31_13 = rot_chain(cX_21_12_31_13, 1); cZ_21_12_31_13 = rot_chain(cX_21_12_31_13, 2)
-    cY_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 1); cZ_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 2)
-    cY_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 1); cZ_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 2)
-    cY_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 1); cZ_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 2)
-
-    cY_31 = rot_chain(cX_31, 1); cZ_31 = rot_chain(cX_31, 2)
-    cY_31_13 = rot_chain(cX_31_13, 1); cZ_31_13 = rot_chain(cX_31_13, 2)
-    cY_31_13_21 = rot_chain(cX_31_13_21, 1); cZ_31_13_21 = rot_chain(cX_31_13_21, 2)
-    cY_31_13_21_12 = rot_chain(cX_31_13_21_12, 1); cZ_31_13_21_12 = rot_chain(cX_31_13_21_12, 2)
-    cY_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 1); cZ_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 2)
-    cY_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 1); cZ_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 2)
-    cY_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 1); cZ_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 2)
+    def build_jobs(prefix, shift_dict, jobs):
+        return [(f"{prefix}:{name}", link_w[link], shift_dict[chain]) for name, link, chain in jobs]
 
     all_jobs = []
+    all_jobs.extend(build_jobs("X", shifts_X, x_jobs_template))
+    all_jobs.extend(build_jobs("Y", shifts_Y, y_jobs_template))
+    all_jobs.extend(build_jobs("Z", shifts_Z, z_jobs_template))
 
-    def add_jobs(prefix, shift_dict, jobs):
-        for name, w, chain in jobs:
-            all_jobs.append((f"{prefix}:{name}", w, shift_dict[chain]))
+    y_y231 = link_w[_rot_link((2, 1), 1)]
+    y_y32p1 = link_w[_rot_link((3, 1), 1)]
+    z_y231 = link_w[_rot_link((2, 1), 2)]
+    z_y32p1 = link_w[_rot_link((3, 1), 2)]
 
-    add_jobs("X", shifts_X, [
-        ("w12_cX_21", w12, cX_21),
-        ("w31_cX_21_12", w31, cX_21_12),
-        ("w13_cX_21_12_31", w13, cX_21_12_31),
-        ("w31_cX_21_12_31_13", w31, cX_21_12_31_13),
-        ("w13_cX_21_12_31_13_31", w13, cX_21_12_31_13_31),
-        ("w21_cX_21_12_31_13_31_13", w21, cX_21_12_31_13_31_13),
-        ("w12_cX_21_12_31_13_31_13_21", w12, cX_21_12_31_13_31_13_21),
-        ("w13_cX_31", w13, cX_31),
-        ("w21_cX_31_13", w21, cX_31_13),
-        ("w12_cX_31_13_21", w12, cX_31_13_21),
-        ("w21_cX_31_13_21_12", w21, cX_31_13_21_12),
-        ("w12_cX_31_13_21_12_21", w12, cX_31_13_21_12_21),
-        ("w31_cX_31_13_21_12_21_12", w31, cX_31_13_21_12_21_12),
-        ("w13_cX_31_13_21_12_21_12_31", w13, cX_31_13_21_12_21_12_31),
-    ])
-
-    W = {(2,1): w21, (3,2): w32, (1,3): w13, (3,1): w31, (2,3): w23, (1,2): w12}
-
-    def add_template_jobs(prefix, shift_dict, c21, c21_12, c21_12_31, c21_12_31_13, c21_12_31_13_31, c21_12_31_13_31_13, c21_12_31_13_31_13_21,
-                          c31, c31_13, c31_13_21, c31_13_21_12, c31_13_21_12_21, c31_13_21_12_21_12, c31_13_21_12_21_12_31, k):
-        def R(link):
-            return rot_link(link, k)
-
-        y231 = W[R((2, 1))]
-        y13p2 = W[R((1, 2))]
-        y32p1 = W[R((3, 1))]
-        y123 = W[R((1, 3))]
-
-        add_jobs(prefix, shift_dict, [
-            ("t1", y13p2, c21), ("t2", y32p1, c21_12), ("t3", y123, c21_12_31),
-            ("t4", y32p1, c21_12_31_13), ("t5", y123, c21_12_31_13_31),
-            ("t6", y231, c21_12_31_13_31_13), ("t7", y13p2, c21_12_31_13_31_13_21),
-            ("n1", y123, c31), ("n2", y231, c31_13), ("n3", y13p2, c31_13_21),
-            ("n4", y231, c31_13_21_12), ("n5", y13p2, c31_13_21_12_21),
-            ("n6", y32p1, c31_13_21_12_21_12), ("n7", y123, c31_13_21_12_21_12_31),
-        ])
-        return y231, y32p1
-
-    y_y231, y_y32p1 = add_template_jobs(
-        "Y", shifts_Y,
-        cY_21, cY_21_12, cY_21_12_31, cY_21_12_31_13, cY_21_12_31_13_31, cY_21_12_31_13_31_13, cY_21_12_31_13_31_13_21,
-        cY_31, cY_31_13, cY_31_13_21, cY_31_13_21_12, cY_31_13_21_12_21, cY_31_13_21_12_21_12, cY_31_13_21_12_21_12_31,
-        k=1,
-    )
-    z_y231, z_y32p1 = add_template_jobs(
-        "Z", shifts_Z,
-        cZ_21, cZ_21_12, cZ_21_12_31, cZ_21_12_31_13, cZ_21_12_31_13_31, cZ_21_12_31_13_31_13, cZ_21_12_31_13_31_13_21,
-        cZ_31, cZ_31_13, cZ_31_13_21, cZ_31_13_21_12, cZ_31_13_21_12_21, cZ_31_13_21_12_21_12, cZ_31_13_21_12_21_12_31,
-        k=2,
-    )
-
-    shift_kwargs = _resolve_variable_shift_batch_kwargs(variable_shift_kwargs)
+    if "batch_chunk" not in shift_kwargs:
+        shift_kwargs["batch_chunk"] = max(1, len(all_jobs))
 
     all_shifted = wdm_time_shift_variable_batch(
         wdm,
         [(w, t_shift) for _, w, t_shift in all_jobs],
         Nf=Nf,
         L_trunc=L_trunc,
+        use_jax=use_jax,
         **shift_kwargs,
     )
     shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
