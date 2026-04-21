@@ -3,7 +3,6 @@ import numpy as np
 from WDM_LISAresponse.code.lisa_response.response import one_arm_response_td, precompute_one_arm_wdm_dT_links
 from WDM.code.time_delay_filters.time_shift_fast import (
     wdm_time_shift_fixed_batch,
-    wdm_time_shift_variable,
     wdm_time_shift_variable_batch,
 )
 from WDM_LISAresponse.code.lisa_response.TDI_sub import fft_time_shift, interp_time_shift, precompute_gen2_michelson_shifts, precompute_gen2_sagnac_shifts
@@ -38,10 +37,29 @@ def _resolve_variable_shift_batch_kwargs(
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
     # ``use_jax`` is passed explicitly at call sites; drop legacy duplicate key.
     shift_kwargs.pop("use_jax", None)
+    # Preserve validated baseline behavior unless caller explicitly overrides.
+    if "assembly_vmap" not in shift_kwargs:
+        shift_kwargs["assembly_vmap"] = True
     batch_chunk = shift_kwargs.pop("batch_chunk", default_batch_chunk)
     if batch_chunk is not None:
-        shift_kwargs["batch_chunk"] = int(batch_chunk)
+        shift_kwargs["batch_chunk"] = batch_chunk
     return shift_kwargs
+
+
+def _finalize_variable_shift_batch_kwargs(shift_kwargs, job_count):
+    """Finalize batch kwargs once the total variable-shift job count is known.
+    """
+    out = {} if shift_kwargs is None else dict(shift_kwargs)
+    n_jobs = max(1, int(job_count))
+
+    batch_chunk = out.get("batch_chunk", None)
+
+    if batch_chunk is None:
+        out.pop("batch_chunk", None)
+    else:
+        out["batch_chunk"] = int(min(max(1, int(batch_chunk)), n_jobs))
+
+    return out
 
 
 def _rot_sc(i, k):
@@ -967,8 +985,7 @@ def gen2_sagnac_wdm(
     all_jobs.extend(build_jobs("B", shifts_beta, beta_jobs_template))
     all_jobs.extend(build_jobs("G", shifts_gamma, gamma_jobs_template))
 
-    if "batch_chunk" not in shift_kwargs:
-        shift_kwargs["batch_chunk"] = max(1, len(all_jobs))
+    shift_kwargs = _finalize_variable_shift_batch_kwargs(shift_kwargs, len(all_jobs))
 
     all_shifted = wdm_time_shift_variable_batch(
         wdm,
@@ -1156,6 +1173,11 @@ def gen2_michelson_wdm(
     w12 = link_w[(1, 2)]
     x_jobs_template, y_jobs_template, z_jobs_template = _GEN2_MICHELSON_JOB_TEMPLATES
 
+    y_y231 = link_w[_rot_link((2, 1), 1)]
+    y_y32p1 = link_w[_rot_link((3, 1), 1)]
+    z_y231 = link_w[_rot_link((2, 1), 2)]
+    z_y32p1 = link_w[_rot_link((3, 1), 2)]
+
     def build_jobs(prefix, shift_dict, jobs):
         return [(f"{prefix}:{name}", link_w[link], shift_dict[chain]) for name, link, chain in jobs]
 
@@ -1164,13 +1186,7 @@ def gen2_michelson_wdm(
     all_jobs.extend(build_jobs("Y", shifts_Y, y_jobs_template))
     all_jobs.extend(build_jobs("Z", shifts_Z, z_jobs_template))
 
-    y_y231 = link_w[_rot_link((2, 1), 1)]
-    y_y32p1 = link_w[_rot_link((3, 1), 1)]
-    z_y231 = link_w[_rot_link((2, 1), 2)]
-    z_y32p1 = link_w[_rot_link((3, 1), 2)]
-
-    if "batch_chunk" not in shift_kwargs:
-        shift_kwargs["batch_chunk"] = max(1, len(all_jobs))
+    shift_kwargs = _finalize_variable_shift_batch_kwargs(shift_kwargs, len(all_jobs))
 
     all_shifted = wdm_time_shift_variable_batch(
         wdm,

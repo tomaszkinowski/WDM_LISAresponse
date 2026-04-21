@@ -258,6 +258,7 @@ def rhat(times, s, r, orbits, tt=None, x_s=None, x_r_rec=None):
     r_hat = r_hat / np.linalg.norm(r_hat, axis=1)[:, np.newaxis]
     return r_hat
 
+
 def _cubic_kernel_keys(t, a=-0.5):
     """Keys cubic convolution kernel (Catmull–Rom when a=-0.5)."""
     t = np.abs(t)

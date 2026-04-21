@@ -376,6 +376,8 @@ def _one_arm_response_wdm_dT_from_context(
     wdm = context["wdm"]
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
     shift_kwargs.pop("use_jax", None)
+    if "assembly_vmap" not in shift_kwargs:
+        shift_kwargs["assembly_vmap"] = True
 
     xi_s, tau_s, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
         context,
@@ -438,6 +440,7 @@ def _one_arm_wdm_dT_components_from_context(
 
     n = sky_basis.n
     Omega = sky_basis.Omega
+
     x_s_dT = orbits.compute_position(int_times_vals, sc=[s])[:, 0, :]
     l_sr_dT, x_r_rec_dT = _compute_ltt_iterative(
         int_times_vals,
@@ -450,6 +453,8 @@ def _one_arm_wdm_dT_components_from_context(
     rhat_sr_dT = rhat(int_times_vals, s, r, orbits, x_s=x_s_dT, x_r_rec=x_r_rec_dT)
     Om_dot_rhat_dT = rhat_sr_dT @ Omega
     tau_n = 0.5 * l_sr_dT * (1 - Om_dot_rhat_dT)
+    proj_dT_plus, proj_dT_cross = antenna_pattern_factors(rhat_sr_dT, sky_basis)
+    time_shift = x_s_dT @ (n / c) + tau_n
 
     if include_time_domain_geometry:
         x_s = orbits.compute_position(times, sc=[s])[:, 0, :]
@@ -469,8 +474,6 @@ def _one_arm_wdm_dT_components_from_context(
         xi_s = None
         tau_s = None
 
-    proj_dT_plus, proj_dT_cross = antenna_pattern_factors(rhat_sr_dT, sky_basis)
-
     sinc_mat = np.sinc(2.0 * freq_vals[None, :] * tau_n[:, None])
 
     A_nm_plus = 0.5 * c * l_sr_dT[:, None] * proj_dT_plus[:, None] * sinc_mat
@@ -478,8 +481,6 @@ def _one_arm_wdm_dT_components_from_context(
 
     w_xi = A_nm_plus * w_t_plus + A_nm_cross * w_t_cross
 
-    # Reuse dT-grid geometry already computed above to avoid a second orbit/LTT pass.
-    time_shift = x_s_dT @ (n / c) + tau_n
     return xi_s, tau_s, w_xi, time_shift
 
 
@@ -556,6 +557,8 @@ def precompute_one_arm_wdm_dT_links(
     sky_basis = build_sky_basis(theta, phi)
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
     shift_kwargs.pop("use_jax", None)
+    if "assembly_vmap" not in shift_kwargs:
+        shift_kwargs["assembly_vmap"] = True
     q_val = _resolve_wdm_q_value(int(times.size), int(Nf), q=q)
     shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
     if links is None:
@@ -614,7 +617,6 @@ def precompute_one_arm_wdm_dT_links(
         shift_jobs,
         Nf=context["wdm"].Nf,
         L_trunc=L_trunc,
-        batch_chunk=shift_kwargs.pop("batch_chunk", max(1, len(shift_jobs))),
         use_jax=use_jax,
         **shift_kwargs,
     )
