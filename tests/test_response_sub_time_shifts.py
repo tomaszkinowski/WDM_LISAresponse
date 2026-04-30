@@ -47,7 +47,7 @@ def test_generate_time_shifts_constant_geometry_matches_formula():
     _, _, n = basis_vectors(theta, phi)
     rhat_x = 1.0
     l_sr = 2.5e9
-    tau = 0.5 * l_sr * (1.0 + rhat_x * n[0])
+    tau = 0.5 * (l_sr / c) * (1.0 + rhat_x * n[0])
 
     x_s = 0.0
     expected = np.full(Nt, x_s * n[0] / c + tau)

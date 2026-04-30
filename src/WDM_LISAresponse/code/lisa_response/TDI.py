@@ -1,6 +1,13 @@
 #code to generate TDI signals in TD and WDM domains 
+import time
 import numpy as np
-from WDM_LISAresponse.code.lisa_response.response import one_arm_response_td, precompute_one_arm_wdm_dT_links
+from WDM_LISAresponse.code.lisa_response.response import (
+    one_arm_response_td,
+    precompute_one_arm_wdm_dT_links,
+    precompute_one_arm_wdm_dT_links_from_context,
+    _build_wdm_dT_context_from_wdm,
+    _split_variable_shift_kwargs,
+)
 from WDM.code.time_delay_filters.time_shift_fast import (
     wdm_time_shift_fixed_batch,
     wdm_time_shift_variable_batch,
@@ -225,6 +232,337 @@ def _build_gen2_michelson_job_templates():
 
 
 _GEN2_MICHELSON_JOB_TEMPLATES = _build_gen2_michelson_job_templates()
+
+
+def _build_gen2_michelson_job_records(link_w, shifts_X, shifts_Y, shifts_Z):
+    """Resolve the static Gen-2 Michelson templates into concrete shift jobs."""
+    x_jobs_template, y_jobs_template, z_jobs_template = _GEN2_MICHELSON_JOB_TEMPLATES
+
+    def build_jobs(prefix, shift_dict, jobs):
+        return [(f"{prefix}:{name}", link_w[link], shift_dict[chain]) for name, link, chain in jobs]
+
+    x_jobs = build_jobs("X", shifts_X, x_jobs_template)
+    y_jobs = build_jobs("Y", shifts_Y, y_jobs_template)
+    z_jobs = build_jobs("Z", shifts_Z, z_jobs_template)
+    all_jobs = x_jobs + y_jobs + z_jobs
+    return x_jobs, y_jobs, z_jobs, all_jobs
+
+
+def _assemble_gen2_michelson_from_shifted_map(link_w, shifted_map):
+    """Assemble the Gen-2 Michelson X/Y/Z combinations from shifted jobs."""
+    w21 = link_w[(2, 1)]
+    w32 = link_w[(3, 2)]
+    w13 = link_w[(1, 3)]
+    w31 = link_w[(3, 1)]
+    w23 = link_w[(2, 3)]
+    w12 = link_w[(1, 2)]
+
+    y_y231 = link_w[_rot_link((2, 1), 1)]
+    y_y32p1 = link_w[_rot_link((3, 1), 1)]
+    z_y231 = link_w[_rot_link((2, 1), 2)]
+    z_y32p1 = link_w[_rot_link((3, 1), 2)]
+
+    X1 = (
+        w21
+        + shifted_map["X:w12_cX_21"] + shifted_map["X:w31_cX_21_12"] + shifted_map["X:w13_cX_21_12_31"]
+        + shifted_map["X:w31_cX_21_12_31_13"] + shifted_map["X:w13_cX_21_12_31_13_31"]
+        + shifted_map["X:w21_cX_21_12_31_13_31_13"] + shifted_map["X:w12_cX_21_12_31_13_31_13_21"]
+        - w31
+        - shifted_map["X:w13_cX_31"] - shifted_map["X:w21_cX_31_13"] - shifted_map["X:w12_cX_31_13_21"]
+        - shifted_map["X:w21_cX_31_13_21_12"] - shifted_map["X:w12_cX_31_13_21_12_21"]
+        - shifted_map["X:w31_cX_31_13_21_12_21_12"] - shifted_map["X:w13_cX_31_13_21_12_21_12_31"]
+    )
+
+    Y1 = (
+        y_y231
+        + shifted_map["Y:t1"] + shifted_map["Y:t2"] + shifted_map["Y:t3"] + shifted_map["Y:t4"]
+        + shifted_map["Y:t5"] + shifted_map["Y:t6"] + shifted_map["Y:t7"]
+        - y_y32p1
+        - shifted_map["Y:n1"] - shifted_map["Y:n2"] - shifted_map["Y:n3"] - shifted_map["Y:n4"]
+        - shifted_map["Y:n5"] - shifted_map["Y:n6"] - shifted_map["Y:n7"]
+    )
+
+    Z1 = (
+        z_y231
+        + shifted_map["Z:t1"] + shifted_map["Z:t2"] + shifted_map["Z:t3"] + shifted_map["Z:t4"]
+        + shifted_map["Z:t5"] + shifted_map["Z:t6"] + shifted_map["Z:t7"]
+        - z_y32p1
+        - shifted_map["Z:n1"] - shifted_map["Z:n2"] - shifted_map["Z:n3"] - shifted_map["Z:n4"]
+        - shifted_map["Z:n5"] - shifted_map["Z:n6"] - shifted_map["Z:n7"]
+    )
+
+    return X1, Y1, Z1
+
+
+def precompute_gen2_michelson_wdm_inputs(
+    times,
+    waveform_plus,
+    waveform_cross,
+    theta,
+    phi,
+    orbits,
+    Nf,
+    L_trunc=None,
+    variable_shift_kwargs=None,
+    use_jax=None,
+    q=None,
+    one_arm_cache=None,
+    shifts_cache=None,
+):
+    """Backward-compatible staged Gen-2 Michelson precompute wrapper.
+
+    This wrapper now builds:
+    A0 geometry/static precompute -> A1 waveform precompute.
+    """
+    geom_precomp = precompute_gen2_michelson_wdm_geometry(
+        times,
+        theta,
+        phi,
+        orbits,
+        Nf=Nf,
+        L_trunc=L_trunc,
+        q=q,
+        d=4,
+        use_jax=use_jax,
+        variable_shift_kwargs=variable_shift_kwargs,
+        shifts_cache=shifts_cache,
+    )
+    return precompute_gen2_michelson_wdm_waveform(
+        geom_precomp,
+        waveform_plus,
+        waveform_cross,
+        variable_shift_kwargs=variable_shift_kwargs,
+        one_arm_cache=one_arm_cache,
+    )
+
+
+def precompute_gen2_michelson_wdm_geometry(
+    times,
+    theta,
+    phi,
+    orbits,
+    *,
+    Nf,
+    L_trunc=None,
+    q=None,
+    d=4,
+    use_jax=None,
+    variable_shift_kwargs=None,
+    shifts_cache=None,
+):
+    """A0 precompute: build geometry/static Gen-2 Michelson state.
+
+    This stage is waveform-independent and reusable across many waveforms on
+    the same time grid, sky location, orbit object, and WDM settings.
+    """
+    from WDM_LISAresponse.code.lisa_response.response import _build_wdm_dT_context
+
+    times = np.asarray(times, dtype=float)
+    one_arm_shift_kwargs, tdi_batch_shift_kwargs = _split_variable_shift_kwargs(variable_shift_kwargs)
+
+    # Build only WDM/grid metadata using dummy waveforms (no one-arm responses).
+    dummy = np.zeros(times.shape[0], dtype=float)
+    wdm_context = _build_wdm_dT_context(
+        times,
+        dummy,
+        dummy,
+        Nf=Nf,
+        d=d,
+        q=q,
+        calc_m0=True,
+    )
+    wdm = wdm_context["wdm"]
+    times_p = float(times[0]) + np.arange(wdm.Nt, dtype=float) * float(wdm.dT)
+
+    cache_key = ("michelson_wdm", id(orbits), int(wdm.Nt), float(times[0]), float(wdm.dT), int(Nf))
+    if shifts_cache is not None and cache_key in shifts_cache:
+        shifts_X, shifts_Y, shifts_Z = shifts_cache[cache_key]
+    else:
+        shifts_X, shifts_Y, shifts_Z = precompute_gen2_michelson_shifts(times_p, orbits)
+        if shifts_cache is not None:
+            shifts_cache[cache_key] = (shifts_X, shifts_Y, shifts_Z)
+
+    return {
+        "kind": "gen2_michelson_wdm_geometry",
+        "times": times,
+        "theta": float(theta),
+        "phi": float(phi),
+        "orbits": orbits,
+        "wdm": wdm,
+        "times_p": times_p,
+        "shifts_X": shifts_X,
+        "shifts_Y": shifts_Y,
+        "shifts_Z": shifts_Z,
+        "job_templates": _GEN2_MICHELSON_JOB_TEMPLATES,
+        "one_arm_shift_kwargs": one_arm_shift_kwargs,
+        "tdi_batch_shift_kwargs": tdi_batch_shift_kwargs,
+        "Nf": int(Nf),
+        "L_trunc": None if L_trunc is None else int(L_trunc),
+        "q": q,
+        "d": int(d),
+        "use_jax": use_jax,
+    }
+
+
+def precompute_gen2_michelson_wdm_waveform(
+    geom_precomp,
+    waveform_plus,
+    waveform_cross,
+    *,
+    variable_shift_kwargs=None,
+    one_arm_cache=None,
+):
+    """A1 precompute: build waveform-specific one-arm links and TDI jobs."""
+    times = geom_precomp["times"]
+    theta = geom_precomp["theta"]
+    phi = geom_precomp["phi"]
+    orbits = geom_precomp["orbits"]
+    Nf = int(geom_precomp["Nf"])
+    L_trunc = geom_precomp.get("L_trunc")
+    use_jax = geom_precomp.get("use_jax")
+    q = geom_precomp.get("q")
+
+    one_arm_shift_kwargs = dict(geom_precomp.get("one_arm_shift_kwargs", {}))
+    tdi_batch_shift_kwargs = dict(geom_precomp.get("tdi_batch_shift_kwargs", {}))
+
+    if variable_shift_kwargs is not None:
+        one_arm_override, tdi_override = _split_variable_shift_kwargs(variable_shift_kwargs)
+        one_arm_shift_kwargs.update(one_arm_override)
+        tdi_batch_shift_kwargs.update(tdi_override)
+
+    t_ctx0 = time.perf_counter()
+    wave_context = _build_wdm_dT_context_from_wdm(
+        times,
+        waveform_plus,
+        waveform_cross,
+        geom_precomp["wdm"],
+        m_offset=0.0,
+    )
+    waveform_context_build_s = time.perf_counter() - t_ctx0
+
+    cache = _resolve_one_arm_cache(one_arm_cache)
+    t_links0 = time.perf_counter()
+    wdm, link_w = precompute_one_arm_wdm_dT_links_from_context(
+        wave_context,
+        orbits,
+        theta,
+        phi,
+        L_trunc=L_trunc,
+        cache=cache,
+        variable_shift_kwargs=one_arm_shift_kwargs,
+        use_jax=use_jax,
+    )
+    six_link_compute_s = time.perf_counter() - t_links0
+
+    t_jobs0 = time.perf_counter()
+    x_jobs, y_jobs, z_jobs, all_jobs = _build_gen2_michelson_job_records(
+        link_w,
+        geom_precomp["shifts_X"],
+        geom_precomp["shifts_Y"],
+        geom_precomp["shifts_Z"],
+    )
+    job_build_s = time.perf_counter() - t_jobs0
+
+    return {
+        "kind": "gen2_michelson_wdm_waveform",
+        "geometry_precomp": geom_precomp,
+        "wdm": wdm,
+        "times_p": geom_precomp["times_p"],
+        "link_w": link_w,
+        "shifts_X": geom_precomp["shifts_X"],
+        "shifts_Y": geom_precomp["shifts_Y"],
+        "shifts_Z": geom_precomp["shifts_Z"],
+        "x_jobs": x_jobs,
+        "y_jobs": y_jobs,
+        "z_jobs": z_jobs,
+        "all_jobs": all_jobs,
+        "job_templates": geom_precomp["job_templates"],
+        "one_arm_shift_kwargs": one_arm_shift_kwargs,
+        "tdi_batch_shift_kwargs": tdi_batch_shift_kwargs,
+        "Nf": Nf,
+        "L_trunc": L_trunc,
+        "use_jax": use_jax,
+        "q": q,
+        "waveform_context_build_s": float(waveform_context_build_s),
+        "six_link_compute_s": float(six_link_compute_s),
+        "job_build_s": float(job_build_s),
+    }
+
+
+def gen2_michelson_wdm_from_waveform_precomputed(
+    wave_precomp,
+    *,
+    variable_shift_kwargs=None,
+    L_trunc=None,
+    Nf=None,
+    use_jax=None,
+):
+    """B stage: run downstream TDI batch shifts from waveform precompute."""
+    if "link_w" not in wave_precomp:
+        raise ValueError("wave_precomp is missing link_w; expected waveform-level precompute payload.")
+
+    wdm = wave_precomp["wdm"]
+    link_w = wave_precomp["link_w"]
+    all_jobs = wave_precomp.get("all_jobs")
+    if all_jobs is None:
+        all_jobs = wave_precomp["x_jobs"] + wave_precomp["y_jobs"] + wave_precomp["z_jobs"]
+
+    precomp_Nf = int(wave_precomp.get("Nf", wdm.Nf))
+    if Nf is not None and int(Nf) != precomp_Nf:
+        raise ValueError(f"Nf must match the precomputed WDM grid; expected {precomp_Nf}, got {Nf}.")
+
+    precomp_L_trunc = wave_precomp.get("L_trunc", None)
+    if L_trunc is not None:
+        if precomp_L_trunc is None:
+            raise ValueError("L_trunc cannot be changed after precomputing staged Gen-2 shifts.")
+        if int(L_trunc) != int(precomp_L_trunc):
+            raise ValueError(
+                f"L_trunc must match the precomputed shifts; expected {precomp_L_trunc}, got {L_trunc}."
+            )
+
+    resolved_use_jax = wave_precomp.get("use_jax", use_jax)
+    if use_jax is not None:
+        resolved_use_jax = use_jax
+
+    batch_shift_kwargs = dict(wave_precomp.get("tdi_batch_shift_kwargs", {}))
+    override_shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    override_shift_kwargs.pop("use_jax", None)
+    batch_shift_kwargs.update(override_shift_kwargs)
+
+    batch_shift_kwargs = _finalize_variable_shift_batch_kwargs(batch_shift_kwargs, len(all_jobs))
+    batch_L_trunc = L_trunc if L_trunc is not None else precomp_L_trunc
+
+    all_shifted = wdm_time_shift_variable_batch(
+        wdm,
+        [(w, t_shift) for _, w, t_shift in all_jobs],
+        Nf=precomp_Nf,
+        L_trunc=batch_L_trunc,
+        use_jax=resolved_use_jax,
+        **batch_shift_kwargs,
+    )
+
+    shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
+    return _assemble_gen2_michelson_from_shifted_map(link_w, shifted_map)
+
+
+def gen2_michelson_wdm_from_precomputed(
+    precomp,
+    variable_shift_kwargs=None,
+    L_trunc=None,
+    use_jax=None,
+    Nf=None,
+):
+    """Backward-compatible alias for waveform-level staged execution.
+
+    Accepts both old combined staged payloads and new waveform-level payloads.
+    """
+    return gen2_michelson_wdm_from_waveform_precomputed(
+        precomp,
+        variable_shift_kwargs=variable_shift_kwargs,
+        L_trunc=L_trunc,
+        Nf=Nf,
+        use_jax=use_jax,
+    )
 
 def gen1_sagnac_wdm(
     times,
@@ -1137,100 +1475,29 @@ def gen2_michelson_wdm(
     tuple of ndarray
         ``(X1, Y1, Z1)`` WDM coefficient arrays.
     """
-
     times = np.asarray(times, dtype=float)
-    one_arm_cache = _resolve_one_arm_cache(one_arm_cache)
-    shift_kwargs = _resolve_variable_shift_batch_kwargs(
-        variable_shift_kwargs,
-        default_batch_chunk=None,
-    )
-    wdm, link_w = precompute_one_arm_wdm_dT_links(
+    precomp = precompute_gen2_michelson_wdm_inputs(
         times,
-        orbits,
-        theta,
-        phi,
         waveform_plus,
         waveform_cross,
-        Nf=Nf,
+        theta,
+        phi,
+        orbits,
+        Nf,
+        shifts_cache=shifts_cache,
         L_trunc=L_trunc,
-        cache=one_arm_cache,
-        variable_shift_kwargs=shift_kwargs,
+        one_arm_cache=one_arm_cache,
+        variable_shift_kwargs=variable_shift_kwargs,
         use_jax=use_jax,
         q=q,
     )
-
-    times_p = float(times[0]) + np.arange(wdm.Nt, dtype=float) * float(wdm.dT)
-    cache_key = ("michelson_wdm", id(orbits), int(wdm.Nt), float(times[0]), float(wdm.dT), int(Nf))
-    if shifts_cache is not None and cache_key in shifts_cache:
-        shifts_X, shifts_Y, shifts_Z = shifts_cache[cache_key]
-    else:
-        shifts_X, shifts_Y, shifts_Z = precompute_gen2_michelson_shifts(times_p, orbits)
-        if shifts_cache is not None:
-            shifts_cache[cache_key] = (shifts_X, shifts_Y, shifts_Z)
-
-    w21 = link_w[(2, 1)]
-    w32 = link_w[(3, 2)]
-    w13 = link_w[(1, 3)]
-    w31 = link_w[(3, 1)]
-    w23 = link_w[(2, 3)]
-    w12 = link_w[(1, 2)]
-    x_jobs_template, y_jobs_template, z_jobs_template = _GEN2_MICHELSON_JOB_TEMPLATES
-
-    y_y231 = link_w[_rot_link((2, 1), 1)]
-    y_y32p1 = link_w[_rot_link((3, 1), 1)]
-    z_y231 = link_w[_rot_link((2, 1), 2)]
-    z_y32p1 = link_w[_rot_link((3, 1), 2)]
-
-    def build_jobs(prefix, shift_dict, jobs):
-        return [(f"{prefix}:{name}", link_w[link], shift_dict[chain]) for name, link, chain in jobs]
-
-    all_jobs = []
-    all_jobs.extend(build_jobs("X", shifts_X, x_jobs_template))
-    all_jobs.extend(build_jobs("Y", shifts_Y, y_jobs_template))
-    all_jobs.extend(build_jobs("Z", shifts_Z, z_jobs_template))
-
-    shift_kwargs = _finalize_variable_shift_batch_kwargs(shift_kwargs, len(all_jobs))
-
-    all_shifted = wdm_time_shift_variable_batch(
-        wdm,
-        [(w, t_shift) for _, w, t_shift in all_jobs],
-        Nf=Nf,
+    return gen2_michelson_wdm_from_precomputed(
+        precomp,
+        variable_shift_kwargs=variable_shift_kwargs,
         L_trunc=L_trunc,
         use_jax=use_jax,
-        **shift_kwargs,
+        Nf=Nf,
     )
-    shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
-
-    X1 = (
-        w21
-        + shifted_map["X:w12_cX_21"] + shifted_map["X:w31_cX_21_12"] + shifted_map["X:w13_cX_21_12_31"]
-        + shifted_map["X:w31_cX_21_12_31_13"] + shifted_map["X:w13_cX_21_12_31_13_31"]
-        + shifted_map["X:w21_cX_21_12_31_13_31_13"] + shifted_map["X:w12_cX_21_12_31_13_31_13_21"]
-        - w31
-        - shifted_map["X:w13_cX_31"] - shifted_map["X:w21_cX_31_13"] - shifted_map["X:w12_cX_31_13_21"]
-        - shifted_map["X:w21_cX_31_13_21_12"] - shifted_map["X:w12_cX_31_13_21_12_21"]
-        - shifted_map["X:w31_cX_31_13_21_12_21_12"] - shifted_map["X:w13_cX_31_13_21_12_21_12_31"]
-    )
-
-    Y1 = (
-        y_y231
-        + shifted_map["Y:t1"] + shifted_map["Y:t2"] + shifted_map["Y:t3"] + shifted_map["Y:t4"]
-        + shifted_map["Y:t5"] + shifted_map["Y:t6"] + shifted_map["Y:t7"]
-        - y_y32p1
-        - shifted_map["Y:n1"] - shifted_map["Y:n2"] - shifted_map["Y:n3"] - shifted_map["Y:n4"]
-        - shifted_map["Y:n5"] - shifted_map["Y:n6"] - shifted_map["Y:n7"]
-    )
-
-    Z1 = (
-        z_y231
-        + shifted_map["Z:t1"] + shifted_map["Z:t2"] + shifted_map["Z:t3"] + shifted_map["Z:t4"]
-        + shifted_map["Z:t5"] + shifted_map["Z:t6"] + shifted_map["Z:t7"]
-        - z_y32p1
-        - shifted_map["Z:n1"] - shifted_map["Z:n2"] - shifted_map["Z:n3"] - shifted_map["Z:n4"]
-        - shifted_map["Z:n5"] - shifted_map["Z:n6"] - shifted_map["Z:n7"]
-    )
-
-    return X1, Y1, Z1
 
 def gen2_michelson_td(
     times,

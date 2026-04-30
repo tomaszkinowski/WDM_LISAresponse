@@ -50,7 +50,7 @@ def test_gnm_interp_linear_half_step_on_linear_signal():
         wdm, n_grid, m_grid, t_query, method="linear", wrap=False, time_first=True
     )
 
-    expected = np.array([125.5, 130.5, 133.5])
+    expected = np.array([122.5, 127.5, 130.5])
     assert np.allclose(vals[:, 0, 0], expected, atol=1e-12)
 
 

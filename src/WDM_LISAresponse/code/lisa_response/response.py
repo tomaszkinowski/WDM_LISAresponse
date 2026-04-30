@@ -291,7 +291,52 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     return dl_sr_wdm[:N_in]
 
 
-def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, m_offset=0.0, q=None, calc_m0=True):
+def _build_wdm_dT_context_from_wdm(times, td_waveform_plus, td_waveform_cross, wdm, m_offset=0.0):
+    """Build reusable dT context using an existing WDM transform object.
+
+    This avoids rebuilding ``WDM.WDM.WDM_transform`` and is intended for
+    staged pipelines where geometry already precomputed the WDM tiling.
+    """
+    times = np.asarray(times, dtype=float)
+    Nf = int(wdm.Nf)
+
+    times_wdm, td_plus_wdm, td_cross_wdm, _ = wdm_pad_inputs_right(
+        times,
+        td_waveform_plus,
+        td_waveform_cross,
+        Nf,
+    )
+
+    if int(times_wdm.size) != int(wdm.N):
+        raise ValueError(
+            f"Padded waveform length {times_wdm.size} does not match precomputed WDM N={wdm.N}."
+        )
+
+    if times_wdm.size > 1:
+        dt_wdm = float(times_wdm[1] - times_wdm[0])
+        if not np.isclose(dt_wdm, float(wdm.dt), rtol=0.0, atol=1e-15):
+            raise ValueError(
+                f"Input dt={dt_wdm} does not match precomputed WDM dt={float(wdm.dt)}."
+            )
+
+    w_t_plus = wdm.dwt(td_plus_wdm)
+    w_t_cross = wdm.dwt(td_cross_wdm)
+
+    freq_vals = (np.arange(wdm.Nf) + m_offset) * wdm.dF
+    times_vals = np.arange(wdm.Nt) * wdm.dT
+    int_times_vals = times[0] + times_vals
+
+    return {
+        "times": times,
+        "wdm": wdm,
+        "w_t_plus": w_t_plus,
+        "w_t_cross": w_t_cross,
+        "freq_vals": freq_vals,
+        "int_times_vals": int_times_vals,
+    }
+
+
+def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, m_offset=0.0, q=None, calc_m0=True, wdm=None):
     """Build reusable WDM objects and waveform projections for dT responses.
 
     Parameters
@@ -314,12 +359,25 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
     calc_m0 : bool, optional
         Whether to include the ``m=0`` WDM component when constructing the
         transform.
+    wdm : object or None, optional
+        Existing ``WDM.WDM.WDM_transform`` instance to reuse. When provided,
+        the transform is not rebuilt and only waveform projections are
+        recomputed.
     Returns
     -------
     dict
         Dictionary containing precomputed WDM object, transformed waveforms,
         and grids used repeatedly by one-arm response calls.
     """
+    if wdm is not None:
+        return _build_wdm_dT_context_from_wdm(
+            times,
+            td_waveform_plus,
+            td_waveform_cross,
+            wdm,
+            m_offset=m_offset,
+        )
+
     times = np.asarray(times, dtype=float)
     times_wdm, td_plus_wdm, td_cross_wdm, _ = wdm_pad_inputs_right(
         times,
@@ -348,6 +406,79 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
         "freq_vals": freq_vals,
         "int_times_vals": int_times_vals,
     }
+
+
+def precompute_one_arm_wdm_dT_links_from_context(
+    context,
+    orbits,
+    theta,
+    phi,
+    *,
+    L_trunc=None,
+    links=None,
+    cache=None,
+    variable_shift_kwargs=None,
+    use_jax=None,
+):
+    """Precompute directed one-arm dT WDM responses from a prebuilt context."""
+    shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
+    sky_basis = build_sky_basis(theta, phi)
+
+    if links is None:
+        links = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2))
+    links = tuple((int(s), int(r)) for s, r in links)
+
+    context_times = np.asarray(context["times"], dtype=float)
+    wdm = context["wdm"]
+
+    shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
+    cache_key = (
+        id(wdm),
+        id(context.get("w_t_plus")),
+        id(context.get("w_t_cross")),
+        id(orbits),
+        float(theta),
+        float(phi),
+        int(wdm.Nf),
+        int(wdm.Nt),
+        float(context_times[0]),
+        float(wdm.dT),
+        None if L_trunc is None else int(L_trunc),
+        links,
+        shift_key,
+    )
+
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    shift_jobs = []
+    for s, r in links:
+        _, _, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
+            context,
+            s,
+            r,
+            orbits,
+            theta,
+            phi,
+            include_time_domain_geometry=False,
+            sky_basis=sky_basis,
+        )
+        shift_jobs.append((w_xi, -time_shift))
+
+    shifted_links = wdm_time_shift_variable_batch(
+        wdm,
+        shift_jobs,
+        Nf=wdm.Nf,
+        L_trunc=L_trunc,
+        use_jax=use_jax,
+        **shift_kwargs,
+    )
+    responses = {link: shifted for link, shifted in zip(links, shifted_links)}
+
+    payload = (wdm, responses)
+    if cache is not None:
+        cache[cache_key] = payload
+    return payload
 
 
 def _one_arm_response_wdm_dT_from_context(
@@ -412,6 +543,29 @@ def _one_arm_response_wdm_dT_from_context(
     vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, tq, method=gnm_method, wrap=gnm_wrap)
     dl_sr = np.einsum("tnm,nm->t", vals, w_xi)
     return dl_sr, w_sr
+
+
+def _split_variable_shift_kwargs(variable_shift_kwargs):
+    """Split variable-shift kwargs into one-arm and batch-friendly copies.
+
+    ``batch_chunk`` only affects batched downstream shifting, so it is removed
+    from the one-arm kwargs while remaining available in the batch kwargs.
+    """
+    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    shift_kwargs.pop("use_jax", None)
+    shift_kwargs.pop("batch_chunk", None)
+
+    if "assembly_backend" not in shift_kwargs and "assembly_vmap" not in shift_kwargs:
+        shift_kwargs["assembly_backend"] = "lagfirst_chunked"
+        shift_kwargs["assembly_precision"] = "complex64"
+        shift_kwargs["row_chunk_size"] = 128
+        shift_kwargs["tl_tp_mode"] = "exact"
+
+    one_arm_shift_kwargs = dict(shift_kwargs)
+    tdi_batch_shift_kwargs = dict(shift_kwargs)
+    if variable_shift_kwargs is not None and "batch_chunk" in variable_shift_kwargs:
+        tdi_batch_shift_kwargs["batch_chunk"] = variable_shift_kwargs["batch_chunk"]
+    return one_arm_shift_kwargs, tdi_batch_shift_kwargs
 
 
 def _one_arm_wdm_dT_components_from_context(
@@ -558,12 +712,7 @@ def precompute_one_arm_wdm_dT_links(
     """
     times = np.asarray(times, dtype=float)
     sky_basis = build_sky_basis(theta, phi)
-    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
-    shift_kwargs.pop("use_jax", None)
-    shift_kwargs.setdefault("assembly_backend", "lagfirst_chunked")
-    shift_kwargs.setdefault("assembly_precision", "complex64")
-    shift_kwargs.setdefault("row_chunk_size", 128)
-    shift_kwargs.setdefault("tl_tp_mode", "exact")
+    shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
     q_val = _resolve_wdm_q_value(int(times.size), int(Nf), q=q)
     shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
     if links is None:
@@ -603,31 +752,17 @@ def precompute_one_arm_wdm_dT_links(
         calc_m0=calc_m0,
     )
 
-    shift_jobs = []
-    for s, r in links:
-        _, _, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
-            context,
-            s,
-            r,
-            orbits,
-            theta,
-            phi,
-            include_time_domain_geometry=False,
-            sky_basis=sky_basis,
-        )
-        shift_jobs.append((w_xi, -time_shift))
-
-    shifted_links = wdm_time_shift_variable_batch(
-        context["wdm"],
-        shift_jobs,
-        Nf=context["wdm"].Nf,
+    payload = precompute_one_arm_wdm_dT_links_from_context(
+        context,
+        orbits,
+        theta,
+        phi,
         L_trunc=L_trunc,
+        links=links,
+        cache=None,
+        variable_shift_kwargs=shift_kwargs,
         use_jax=use_jax,
-        **shift_kwargs,
     )
-    responses = {link: shifted for link, shifted in zip(links, shifted_links)}
-
-    payload = (context["wdm"], responses)
     if cache is not None:
         cache[cache_key] = payload
     return payload
