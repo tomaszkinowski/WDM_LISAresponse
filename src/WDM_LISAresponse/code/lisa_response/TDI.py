@@ -25,21 +25,24 @@ def _resolve_variable_shift_batch_kwargs(
 
     ``batch_chunk`` can be overridden by the caller through
     ``variable_shift_kwargs``. When omitted, the previous Gen-2 behavior
-    (chunk size 32) is preserved.
+    (chunk size 32) is preserved. The default assembly backend uses the
+    lag-first chunked kernels unless overridden.
 
     Parameters
     ----------
     variable_shift_kwargs : dict or None
-        User-provided variable shift options.
+        User-provided variable shift options, including backend selection.
     default_batch_chunk : int or None
         Default ``batch_chunk`` when not explicitly provided.
     """
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
     # ``use_jax`` is passed explicitly at call sites; drop legacy duplicate key.
     shift_kwargs.pop("use_jax", None)
-    # Preserve validated baseline behavior unless caller explicitly overrides.
-    if "assembly_vmap" not in shift_kwargs:
-        shift_kwargs["assembly_vmap"] = True
+    if "assembly_backend" not in shift_kwargs and "assembly_vmap" not in shift_kwargs:
+        shift_kwargs["assembly_backend"] = "lagfirst_chunked"
+        shift_kwargs["assembly_precision"] = "complex64"
+        shift_kwargs["row_chunk_size"] = 128
+        shift_kwargs["tl_tp_mode"] = "exact"
     batch_chunk = shift_kwargs.pop("batch_chunk", default_batch_chunk)
     if batch_chunk is not None:
         shift_kwargs["batch_chunk"] = batch_chunk

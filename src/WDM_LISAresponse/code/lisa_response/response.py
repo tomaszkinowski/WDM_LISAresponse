@@ -368,16 +368,19 @@ def _one_arm_response_wdm_dT_from_context(
     """Evaluate one-arm dT WDM response from precomputed context data.
 
     The coefficient-space time shift uses ``wdm_time_shift_variable`` and can
-    be configured through ``variable_shift_kwargs`` to use exact or
-    interpolated ``Tl/Tp`` construction. A precomputed ``sky_basis`` can be
-    supplied to avoid rebuilding the source-direction basis.
+    be configured through ``variable_shift_kwargs`` to choose the chunked or
+    legacy assembly backends, along with exact or interpolated ``Tl/Tp``
+    construction. A precomputed ``sky_basis`` can be supplied to avoid
+    rebuilding the source-direction basis.
     """
     times = context["times"]
     wdm = context["wdm"]
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
     shift_kwargs.pop("use_jax", None)
-    if "assembly_vmap" not in shift_kwargs:
-        shift_kwargs["assembly_vmap"] = True
+    shift_kwargs.setdefault("assembly_backend", "lagfirst_chunked")
+    shift_kwargs.setdefault("assembly_precision", "complex64")
+    shift_kwargs.setdefault("row_chunk_size", 128)
+    shift_kwargs.setdefault("tl_tp_mode", "exact")
 
     xi_s, tau_s, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
         context,
@@ -533,7 +536,7 @@ def precompute_one_arm_wdm_dT_links(
     variable_shift_kwargs : dict or None
         Optional keyword arguments forwarded to
         ``wdm_time_shift_variable_batch``. This can enable interpolated Tl/Tp
-        construction for the one-arm coefficient-space shifts.
+        construction and select the chunked or legacy assembly backend.
     q : int or None, optional
         WDM truncation parameter. When ``None``, it is set to the maximum
         allowed value for the current tiling.
@@ -557,8 +560,10 @@ def precompute_one_arm_wdm_dT_links(
     sky_basis = build_sky_basis(theta, phi)
     shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
     shift_kwargs.pop("use_jax", None)
-    if "assembly_vmap" not in shift_kwargs:
-        shift_kwargs["assembly_vmap"] = True
+    shift_kwargs.setdefault("assembly_backend", "lagfirst_chunked")
+    shift_kwargs.setdefault("assembly_precision", "complex64")
+    shift_kwargs.setdefault("row_chunk_size", 128)
+    shift_kwargs.setdefault("tl_tp_mode", "exact")
     q_val = _resolve_wdm_q_value(int(times.size), int(Nf), q=q)
     shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
     if links is None:
@@ -670,7 +675,8 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         Optional lag truncation forwarded to the coefficient-space time shift.
     variable_shift_kwargs : dict or None
         Optional keyword arguments forwarded to ``wdm_time_shift_variable``.
-        This can enable interpolated Tl/Tp construction for the one-arm shift.
+        This can enable interpolated Tl/Tp construction and select the
+        chunked or legacy assembly backend for the one-arm shift.
     q : int or None, optional
         WDM truncation parameter. When ``None``, it is set to the maximum
         allowed value for the current tiling.

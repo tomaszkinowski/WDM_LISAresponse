@@ -55,6 +55,7 @@ def compute_wdm_cut_info(
     wdm_dT=None,
     wdm_Nt=None,
     drop_m0=True,
+    drop_freq_edges = False,
 ):
     """Build WDM-domain cut metadata for mismatch calculations."""
     original_length_i = int(original_length)
@@ -112,6 +113,13 @@ def compute_wdm_cut_info(
     if t_stop < t_start:
         t_stop = t_start
 
+    if drop_freq_edges:
+        freq_slice = slice(1, -1)
+    elif drop_m0:
+        freq_slice = slice(1, None)
+    else:
+        freq_slice = slice(None)
+
     return {
         "original_length": original_length_i,
         "Nf": Nf_i,
@@ -130,7 +138,7 @@ def compute_wdm_cut_info(
         "left_cut": left_cut,
         "right_cut": right_cut,
         "time_slice": slice(t_start, t_stop),
-        "freq_slice": slice(1, None) if drop_m0 else slice(None),
+        "freq_slice": freq_slice,
         "trim_m0": bool(drop_m0),
     }
 
@@ -177,28 +185,40 @@ def compare_response_signals(h_ref, h_test):
 
 def wdm_mismatch(w1, w2):
     """
-    Inner product in the wdm domain.
+    Robust normalized overlap/mismatch in the WDM domain.
 
     Parameters
     ----------
     w1 : ndarray
-        wdm coefficients 1 (Nt x Nf)
+        WDM coefficients 1, usually the reference array.
     w2 : ndarray
-        wdm coefficients 2 (Nt x Nf)
+        WDM coefficients 2, usually the test array.
 
     Returns
     -------
-    overlap : float 
-        overlap between the two wdm coefficient arrays
+    overlap : float
+        Phase-maximized normalized overlap between the two WDM coefficient arrays.
+        Uses abs(<w1|w2>) so it is robust to an arbitrary constant complex phase.
     mismatch : float
-        mismatch between the two wdm coefficient arrays 
+        mismatch = 1 - overlap, with overlap clipped to [0, 1] to remove
+        floating-point excursions.
     """
+    w1 = np.asarray(w1, dtype=np.complex128).ravel()
+    w2 = np.asarray(w2, dtype=np.complex128).ravel()
 
-    inner_prod = np.real(np.vdot(w1, w2))
-    w1_mag = np.sqrt(max(np.real(np.vdot(w1, w1)), 0.0))
-    w2_mag = np.sqrt(max(np.real(np.vdot(w2, w2)), 0.0))
+    n1 = float(np.real(np.vdot(w1, w1)))
+    n2 = float(np.real(np.vdot(w2, w2)))
 
-    overlap = float(inner_prod / (w1_mag * w2_mag))
-    mismatch = float(1 - overlap)
-    
+    if n1 <= 0.0 or n2 <= 0.0:
+        return np.nan, np.nan
+
+    inner_prod = np.vdot(w1, w2)
+
+    # Phase-maximized normalized overlap.
+    overlap_raw = float(np.abs(inner_prod) / np.sqrt(n1 * n2))
+
+    # Remove only mathematically impossible floating-point excursions.
+    overlap = float(np.clip(overlap_raw, 0.0, 1.0))
+    mismatch = float(1.0 - overlap)
+
     return overlap, mismatch
