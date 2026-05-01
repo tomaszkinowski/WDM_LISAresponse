@@ -57,6 +57,34 @@ def _exact_shift_kwargs(backend="lagfirst_chunked", batch_chunk=None):
     return out
 
 
+def _build_staged_wave_precomp(seed=1234, backend="lagfirst_chunked_lagblock", batch_chunk=2):
+    times, waveform_plus, waveform_cross = _build_inputs(seed=seed)
+    orbits = SimpleOrbits()
+    theta = 0.8
+    phi = 1.2
+    n_f = 8
+    kwargs = _exact_shift_kwargs(backend, batch_chunk=batch_chunk)
+
+    geom = precompute_gen2_michelson_wdm_geometry(
+        times,
+        theta,
+        phi,
+        orbits,
+        Nf=n_f,
+        L_trunc=2,
+        q=4,
+        use_jax=True,
+        variable_shift_kwargs=kwargs,
+    )
+    wave = precompute_gen2_michelson_wdm_waveform(
+        geom,
+        waveform_plus,
+        waveform_cross,
+        variable_shift_kwargs=kwargs,
+    )
+    return wave, kwargs, n_f
+
+
 def test_backward_compatible_wrapper_matches_direct_call():
     times, waveform_plus, waveform_cross = _build_inputs()
     orbits = SimpleOrbits()
@@ -299,6 +327,63 @@ def test_batch_chunk_independence_from_same_wave_precompute():
     _compare_triplet(output_batch_1, output_batch_4, atol=1e-12, rtol=1e-12)
     assert "batch_chunk" not in wave["one_arm_shift_kwargs"]
     assert wave["tdi_batch_shift_kwargs"]["batch_chunk"] == 1
+
+
+def test_tdi_assembly_accumulate_matches_batch_map_and_default():
+    wave, kwargs, n_f = _build_staged_wave_precomp(seed=7777)
+
+    default_out = gen2_michelson_wdm_from_waveform_precomputed(
+        wave,
+        variable_shift_kwargs=kwargs,
+        L_trunc=2,
+        use_jax=True,
+        Nf=n_f,
+    )
+    batch_map_out = gen2_michelson_wdm_from_waveform_precomputed(
+        wave,
+        variable_shift_kwargs=kwargs,
+        L_trunc=2,
+        use_jax=True,
+        Nf=n_f,
+        tdi_assembly_mode="batch_map",
+    )
+    accumulate_1 = gen2_michelson_wdm_from_waveform_precomputed(
+        wave,
+        variable_shift_kwargs=kwargs,
+        L_trunc=2,
+        use_jax=True,
+        Nf=n_f,
+        tdi_assembly_mode="accumulate",
+        accumulator_chunk=1,
+    )
+    accumulate_4 = gen2_michelson_wdm_from_waveform_precomputed(
+        wave,
+        variable_shift_kwargs=kwargs,
+        L_trunc=2,
+        use_jax=True,
+        Nf=n_f,
+        tdi_assembly_mode="accumulate",
+        accumulator_chunk=4,
+    )
+
+    _compare_triplet(default_out, batch_map_out, atol=1e-12, rtol=1e-12)
+    _compare_triplet(accumulate_1, batch_map_out, atol=1e-12, rtol=1e-12)
+    _compare_triplet(accumulate_4, batch_map_out, atol=1e-12, rtol=1e-12)
+    _compare_triplet(accumulate_1, accumulate_4, atol=1e-12, rtol=1e-12)
+
+
+def test_invalid_tdi_assembly_mode_raises():
+    wave, kwargs, n_f = _build_staged_wave_precomp(seed=8888)
+
+    with pytest.raises(ValueError, match="Unknown tdi_assembly_mode"):
+        gen2_michelson_wdm_from_waveform_precomputed(
+            wave,
+            variable_shift_kwargs=kwargs,
+            L_trunc=2,
+            use_jax=True,
+            Nf=n_f,
+            tdi_assembly_mode="not-a-mode",
+        )
 
 
 def test_one_arm_precompute_cache_ignores_batch_chunk():
