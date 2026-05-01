@@ -248,6 +248,35 @@ def _build_gen2_michelson_job_records(link_w, shifts_X, shifts_Y, shifts_Z):
     return x_jobs, y_jobs, z_jobs, all_jobs
 
 
+def _build_gen2_michelson_accumulator_job_specs(link_w, shifts_X, shifts_Y, shifts_Z):
+    """Build dense base terms and signed shift jobs for accumulator assembly."""
+    x_jobs_template, y_jobs_template, z_jobs_template = _GEN2_MICHELSON_JOB_TEMPLATES
+
+    w21 = link_w[(2, 1)]
+    w31 = link_w[(3, 1)]
+    y_y231 = link_w[_rot_link((2, 1), 1)]
+    y_y32p1 = link_w[_rot_link((3, 1), 1)]
+    z_y231 = link_w[_rot_link((2, 1), 2)]
+    z_y32p1 = link_w[_rot_link((3, 1), 2)]
+
+    base_X = w21 - w31
+    base_Y = y_y231 - y_y32p1
+    base_Z = z_y231 - z_y32p1
+
+    def build_acc_jobs(channel, shift_dict, jobs):
+        acc_jobs = []
+        for index, (name, link, chain) in enumerate(jobs):
+            sign = 1.0 if index < 7 else -1.0
+            acc_jobs.append((channel, sign, f"{channel}:{name}", link_w[link], shift_dict[chain]))
+        return acc_jobs
+
+    acc_jobs = build_acc_jobs("X", shifts_X, x_jobs_template)
+    acc_jobs.extend(build_acc_jobs("Y", shifts_Y, y_jobs_template))
+    acc_jobs.extend(build_acc_jobs("Z", shifts_Z, z_jobs_template))
+
+    return base_X, base_Y, base_Z, acc_jobs
+
+
 def _assemble_gen2_michelson_from_shifted_map(link_w, shifted_map):
     """Assemble the Gen-2 Michelson X/Y/Z combinations from shifted jobs."""
     w21 = link_w[(2, 1)]
@@ -292,6 +321,113 @@ def _assemble_gen2_michelson_from_shifted_map(link_w, shifted_map):
     )
 
     return X1, Y1, Z1
+
+
+def _gen2_michelson_wdm_accumulate_downstream(
+    wdm,
+    link_w,
+    x_jobs,
+    y_jobs,
+    z_jobs,
+    all_jobs,
+    *,
+    shifts_X,
+    shifts_Y,
+    shifts_Z,
+    precomp_Nf,
+    batch_L_trunc,
+    resolved_use_jax,
+    batch_shift_kwargs,
+    accumulator_chunk=1,
+    # profiling passthrough
+    profile_shift_stages=False,
+    profile_label=None,
+    return_shift_profile=False,
+):
+    """Assemble Gen-2 Michelson outputs by accumulating shifted jobs in chunks.
+
+    When ``profile_shift_stages`` is True, forward profiling flags into the
+    underlying batch shifter and aggregate per-chunk profiles. If
+    ``return_shift_profile`` is True, return ``((X,Y,Z), profile)``.
+    """
+    base_X, base_Y, base_Z, acc_jobs = _build_gen2_michelson_accumulator_job_specs(
+        link_w,
+        shifts_X,
+        shifts_Y,
+        shifts_Z,
+    )
+
+    if len(acc_jobs) != len(all_jobs):
+        raise RuntimeError(
+            f"Accumulator job count mismatch: expected {len(all_jobs)}, built {len(acc_jobs)}."
+        )
+
+    X = np.array(base_X, copy=True)
+    Y = np.array(base_Y, copy=True)
+    Z = np.array(base_Z, copy=True)
+
+    chunk_size = max(1, int(accumulator_chunk))
+    shift_kwargs = dict(batch_shift_kwargs)
+    shift_kwargs.pop("batch_chunk", None)
+
+    prof_chunk_profiles = []
+
+    for start in range(0, len(acc_jobs), chunk_size):
+        chunk = acc_jobs[start : start + chunk_size]
+        shifted_result = wdm_time_shift_variable_batch(
+            wdm,
+            [(w_input, t_shift) for _, _, _, w_input, t_shift in chunk],
+            Nf=precomp_Nf,
+            L_trunc=batch_L_trunc,
+            use_jax=resolved_use_jax,
+            batch_chunk=min(chunk_size, len(chunk)),
+            profile_shift_stages=profile_shift_stages,
+            profile_label=profile_label,
+            **shift_kwargs,
+        )
+
+        if profile_shift_stages:
+            try:
+                shifted_chunk, chunk_profile = shifted_result
+                prof_chunk_profiles.append(chunk_profile)
+            except Exception:
+                shifted_chunk = shifted_result
+        else:
+            shifted_chunk = shifted_result
+
+        if len(shifted_chunk) != len(chunk):
+            raise RuntimeError(
+                f"Expected {len(chunk)} shifted arrays, got {len(shifted_chunk)}."
+            )
+
+        for (channel, sign, _, _, _), shifted in zip(chunk, shifted_chunk):
+            shifted_arr = np.asarray(shifted)
+            if channel == "X":
+                X += sign * shifted_arr
+            elif channel == "Y":
+                Y += sign * shifted_arr
+            elif channel == "Z":
+                Z += sign * shifted_arr
+            else:
+                raise ValueError(f"Unknown Gen-2 Michelson channel: {channel}")
+
+    if profile_shift_stages and return_shift_profile:
+        try:
+            agg = {
+                "n_jobs": len(acc_jobs),
+                "batch_chunk": accumulator_chunk,
+                "total_s": sum(float(p.get("total_s", 0.0)) for p in prof_chunk_profiles) if prof_chunk_profiles else 0.0,
+                "tl_tp_prepare_s": sum(float(p.get("tl_tp_prepare_s", 0.0)) for p in prof_chunk_profiles) if prof_chunk_profiles else 0.0,
+                "jax_assembly_s": sum(float(p.get("jax_assembly_s", 0.0)) for p in prof_chunk_profiles) if prof_chunk_profiles else 0.0,
+                "postprocess_s": sum(float(p.get("postprocess_s", 0.0)) for p in prof_chunk_profiles) if prof_chunk_profiles else 0.0,
+                "other_s": sum(float(p.get("other_s", 0.0)) for p in prof_chunk_profiles) if prof_chunk_profiles else 0.0,
+                "label": profile_label,
+            }
+        except Exception:
+            agg = {"n_jobs": len(acc_jobs), "label": profile_label}
+        return (X, Y, Z), agg
+
+    return X, Y, Z
 
 
 def precompute_gen2_michelson_wdm_inputs(
@@ -496,6 +632,12 @@ def gen2_michelson_wdm_from_waveform_precomputed(
     L_trunc=None,
     Nf=None,
     use_jax=None,
+    tdi_assembly_mode="batch_map",
+    accumulator_chunk=1,
+    # profiling options (opt-in)
+    profile_shift_stages=False,
+    profile_label=None,
+    return_shift_profile=False,
 ):
     """B stage: run downstream TDI batch shifts from waveform precompute."""
     if "link_w" not in wave_precomp:
@@ -532,17 +674,53 @@ def gen2_michelson_wdm_from_waveform_precomputed(
     batch_shift_kwargs = _finalize_variable_shift_batch_kwargs(batch_shift_kwargs, len(all_jobs))
     batch_L_trunc = L_trunc if L_trunc is not None else precomp_L_trunc
 
-    all_shifted = wdm_time_shift_variable_batch(
-        wdm,
-        [(w, t_shift) for _, w, t_shift in all_jobs],
-        Nf=precomp_Nf,
-        L_trunc=batch_L_trunc,
-        use_jax=resolved_use_jax,
-        **batch_shift_kwargs,
-    )
+    if tdi_assembly_mode == "batch_map":
+        shifted_result = wdm_time_shift_variable_batch(
+            wdm,
+            [(w, t_shift) for _, w, t_shift in all_jobs],
+            Nf=precomp_Nf,
+            L_trunc=batch_L_trunc,
+            use_jax=resolved_use_jax,
+            profile_shift_stages=profile_shift_stages,
+            profile_label=profile_label,
+            **batch_shift_kwargs,
+        )
 
-    shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
-    return _assemble_gen2_michelson_from_shifted_map(link_w, shifted_map)
+        if profile_shift_stages:
+            all_shifted, shift_profile = shifted_result
+        else:
+            all_shifted = shifted_result
+
+        shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
+        assembled = _assemble_gen2_michelson_from_shifted_map(link_w, shifted_map)
+        if profile_shift_stages and return_shift_profile:
+            return assembled, shift_profile
+        return assembled
+
+    if tdi_assembly_mode == "accumulate":
+        return _gen2_michelson_wdm_accumulate_downstream(
+            wdm,
+            link_w,
+            wave_precomp["x_jobs"],
+            wave_precomp["y_jobs"],
+            wave_precomp["z_jobs"],
+            all_jobs,
+            shifts_X=wave_precomp["shifts_X"],
+            shifts_Y=wave_precomp["shifts_Y"],
+            shifts_Z=wave_precomp["shifts_Z"],
+            precomp_Nf=precomp_Nf,
+            batch_L_trunc=batch_L_trunc,
+            resolved_use_jax=resolved_use_jax,
+            batch_shift_kwargs=batch_shift_kwargs,
+            accumulator_chunk=accumulator_chunk,
+            profile_shift_stages=profile_shift_stages,
+            profile_label=profile_label,
+            return_shift_profile=return_shift_profile,
+        )
+
+    raise ValueError(
+        f"Unknown tdi_assembly_mode={tdi_assembly_mode!r}; expected 'batch_map' or 'accumulate'."
+    )
 
 
 def gen2_michelson_wdm_from_precomputed(
@@ -551,6 +729,11 @@ def gen2_michelson_wdm_from_precomputed(
     L_trunc=None,
     use_jax=None,
     Nf=None,
+    tdi_assembly_mode="batch_map",
+    accumulator_chunk=1,
+    profile_shift_stages=False,
+    profile_label=None,
+    return_shift_profile=False,
 ):
     """Backward-compatible alias for waveform-level staged execution.
 
@@ -562,6 +745,11 @@ def gen2_michelson_wdm_from_precomputed(
         L_trunc=L_trunc,
         Nf=Nf,
         use_jax=use_jax,
+        tdi_assembly_mode=tdi_assembly_mode,
+        accumulator_chunk=accumulator_chunk,
+        profile_shift_stages=profile_shift_stages,
+        profile_label=profile_label,
+        return_shift_profile=return_shift_profile,
     )
 
 def gen1_sagnac_wdm(
@@ -1432,6 +1620,11 @@ def gen2_michelson_wdm(
     variable_shift_kwargs=None,
     use_jax=None,
     q=None,
+    tdi_assembly_mode="batch_map",
+    accumulator_chunk=1,
+    profile_shift_stages=False,
+    profile_label=None,
+    return_shift_profile=False,
 ):
     """
     Gen-2 Michelson-type variables (X1, Y1, Z1) in the WDM domain,
@@ -1497,6 +1690,11 @@ def gen2_michelson_wdm(
         L_trunc=L_trunc,
         use_jax=use_jax,
         Nf=Nf,
+        tdi_assembly_mode=tdi_assembly_mode,
+        accumulator_chunk=accumulator_chunk,
+        profile_shift_stages=profile_shift_stages,
+        profile_label=profile_label,
+        return_shift_profile=return_shift_profile,
     )
 
 def gen2_michelson_td(
