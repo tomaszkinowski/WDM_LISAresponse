@@ -87,6 +87,72 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
 
     return c* dl_sr
 
+
+def one_arm_response_td_chunked(
+    times,
+    s,
+    r,
+    orbits,
+    theta,
+    phi,
+    td_waveform_plus,
+    td_waveform_cross,
+    num_int_points=10,
+    chunk_size=100_000,
+):
+    """Evaluate the time-domain one-arm response in chunks over the time axis.
+
+    This reproduces ``one_arm_response_td`` while limiting peak memory to the
+    chunked time window instead of the full time series.
+    """
+    times = np.asarray(times, dtype=float)
+    td_waveform_plus = np.asarray(td_waveform_plus)
+    td_waveform_cross = np.asarray(td_waveform_cross)
+
+    sky_basis = build_sky_basis(theta, phi)
+    Omega = sky_basis.Omega
+
+    h_plus_interp = interp1d(times, td_waveform_plus, kind="cubic", bounds_error=False, fill_value=0.0)
+    h_cross_interp = interp1d(times, td_waveform_cross, kind="cubic", bounds_error=False, fill_value=0.0)
+
+    out = np.empty_like(times, dtype=np.result_type(td_waveform_plus, td_waveform_cross, float))
+
+    total_times = times.size
+    for start in range(0, total_times, int(chunk_size)):
+        stop = min(start + int(chunk_size), total_times)
+        t_chunk = times[start:stop]
+
+        x_s = orbits.compute_position(t_chunk, sc=[s])[:, 0, :]
+
+        l_sr, x_r_rec = _compute_ltt_iterative(
+            t_chunk,
+            s,
+            r,
+            orbits,
+            x_s=x_s,
+            return_receiver_position=True,
+        )
+        rhat_sr = rhat(t_chunk, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec)
+        t_rec = t_chunk + l_sr
+
+        Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
+
+        xi_s = t_chunk - np.einsum('x,tx->t', Omega, x_s / c)
+        xi_r = t_rec - np.einsum('x,tx->t', Omega, x_r_rec / c)
+
+        xi = np.linspace(xi_s, xi_r, num_int_points)
+        h_plus = h_plus_interp(xi)
+        h_cross = h_cross_interp(xi)
+
+        H_plus = np.trapezoid(h_plus, x=xi, axis=0)
+        H_cross = np.trapezoid(h_cross, x=xi, axis=0)
+
+        F_plus, F_cross = antenna_pattern_factors(rhat_sr, sky_basis)
+        dl_chunk = 0.5 * (1 - Om_dot_rhat)**(-1) * (F_plus * H_plus + F_cross * H_cross)
+        out[start:stop] = c * dl_chunk
+
+    return out
+
 def one_arm_response_freq_domain(
     times, s, r, orbits, theta, phi,
     td_waveform_plus, td_waveform_cross,

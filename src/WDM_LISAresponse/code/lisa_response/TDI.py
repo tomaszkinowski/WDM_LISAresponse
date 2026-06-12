@@ -3,6 +3,7 @@ import time
 import numpy as np
 from WDM_LISAresponse.code.lisa_response.response import (
     one_arm_response_td,
+    one_arm_response_td_chunked,
     precompute_one_arm_wdm_dT_links,
     precompute_one_arm_wdm_dT_links_from_context,
     _build_wdm_dT_context_from_wdm,
@@ -442,8 +443,10 @@ def precompute_gen2_michelson_wdm_inputs(
     variable_shift_kwargs=None,
     use_jax=None,
     q=None,
+    d=4,
     one_arm_cache=None,
     shifts_cache=None,
+    calc_m0=True,
 ):
     """Backward-compatible staged Gen-2 Michelson precompute wrapper.
 
@@ -458,7 +461,8 @@ def precompute_gen2_michelson_wdm_inputs(
         Nf=Nf,
         L_trunc=L_trunc,
         q=q,
-        d=4,
+        d=d,
+        calc_m0=calc_m0,
         use_jax=use_jax,
         variable_shift_kwargs=variable_shift_kwargs,
         shifts_cache=shifts_cache,
@@ -482,6 +486,7 @@ def precompute_gen2_michelson_wdm_geometry(
     L_trunc=None,
     q=None,
     d=4,
+    calc_m0=True,
     use_jax=None,
     variable_shift_kwargs=None,
     shifts_cache=None,
@@ -505,7 +510,7 @@ def precompute_gen2_michelson_wdm_geometry(
         Nf=Nf,
         d=d,
         q=q,
-        calc_m0=True,
+        calc_m0=calc_m0,
     )
     wdm = wdm_context["wdm"]
     times_p = float(times[0]) + np.arange(wdm.Nt, dtype=float) * float(wdm.dT)
@@ -534,6 +539,7 @@ def precompute_gen2_michelson_wdm_geometry(
         "tdi_batch_shift_kwargs": tdi_batch_shift_kwargs,
         "Nf": int(Nf),
         "L_trunc": None if L_trunc is None else int(L_trunc),
+        "calc_m0": bool(calc_m0),
         "q": q,
         "d": int(d),
         "use_jax": use_jax,
@@ -555,8 +561,10 @@ def precompute_gen2_michelson_wdm_waveform(
     orbits = geom_precomp["orbits"]
     Nf = int(geom_precomp["Nf"])
     L_trunc = geom_precomp.get("L_trunc")
+    d = int(geom_precomp.get("d", 4))
     use_jax = geom_precomp.get("use_jax")
     q = geom_precomp.get("q")
+    calc_m0 = bool(geom_precomp.get("calc_m0", True))
 
     one_arm_shift_kwargs = dict(geom_precomp.get("one_arm_shift_kwargs", {}))
     tdi_batch_shift_kwargs = dict(geom_precomp.get("tdi_batch_shift_kwargs", {}))
@@ -617,8 +625,10 @@ def precompute_gen2_michelson_wdm_waveform(
         "tdi_batch_shift_kwargs": tdi_batch_shift_kwargs,
         "Nf": Nf,
         "L_trunc": L_trunc,
+        "d": d,
         "use_jax": use_jax,
         "q": q,
+        "calc_m0": calc_m0,
         "waveform_context_build_s": float(waveform_context_build_s),
         "six_link_compute_s": float(six_link_compute_s),
         "job_build_s": float(job_build_s),
@@ -734,6 +744,7 @@ def gen2_michelson_wdm_from_precomputed(
     profile_shift_stages=False,
     profile_label=None,
     return_shift_profile=False,
+    calc_m0=True,
 ):
     """Backward-compatible alias for waveform-level staged execution.
 
@@ -751,6 +762,272 @@ def gen2_michelson_wdm_from_precomputed(
         profile_label=profile_label,
         return_shift_profile=return_shift_profile,
     )
+
+def precompute_gen2_michelson_td_geometry(
+    times,
+    theta,
+    phi,
+    orbits,
+    *,
+    shifts_cache=None,
+):
+    """Precompute reusable Gen-2 Michelson TD geometry and shifts."""
+    times = np.asarray(times, dtype=float)
+    dt = float(times[1] - times[0])
+
+    cache_key = ("michelson", id(orbits), len(times), float(times[0]), float(dt))
+    if shifts_cache is not None and cache_key in shifts_cache:
+        shifts_X, shifts_Y, shifts_Z = shifts_cache[cache_key]
+    else:
+        shifts_X, shifts_Y, shifts_Z = precompute_gen2_michelson_shifts(times, orbits)
+        if shifts_cache is not None:
+            shifts_cache[cache_key] = (shifts_X, shifts_Y, shifts_Z)
+
+    return {
+        "kind": "gen2_michelson_td_geometry",
+        "times": times,
+        "dt": dt,
+        "theta": float(theta),
+        "phi": float(phi),
+        "orbits": orbits,
+        "shifts_X": shifts_X,
+        "shifts_Y": shifts_Y,
+        "shifts_Z": shifts_Z,
+    }
+
+
+def precompute_one_arm_td_links(
+    times,
+    waveform_plus,
+    waveform_cross,
+    theta,
+    phi,
+    orbits,
+    *,
+    links=((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2)),
+    num_int_points=10,
+    one_arm_cache=None,
+    chunk_size=None,
+):
+    """Precompute directed one-arm TD responses, optionally using chunking."""
+    times = np.asarray(times, dtype=float)
+    waveform_plus = np.asarray(waveform_plus)
+    waveform_cross = np.asarray(waveform_cross)
+    dt = float(times[1] - times[0])
+    cache = {} if one_arm_cache is None else one_arm_cache
+
+    out = {}
+    response_fn = one_arm_response_td_chunked if chunk_size is not None else one_arm_response_td
+    for link in links:
+        s, r = link
+        cache_key = (
+            "td_one_arm",
+            id(orbits),
+            len(times),
+            float(times[0]),
+            float(dt),
+            float(theta),
+            float(phi),
+            tuple(link),
+            int(num_int_points),
+            id(waveform_plus),
+            id(waveform_cross),
+            None if chunk_size is None else int(chunk_size),
+        )
+        if cache_key in cache:
+            out[link] = cache[cache_key]
+            continue
+
+        if chunk_size is None:
+            dl = response_fn(times, s, r, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
+        else:
+            dl = response_fn(
+                times,
+                s,
+                r,
+                orbits,
+                theta,
+                phi,
+                waveform_plus,
+                waveform_cross,
+                num_int_points=num_int_points,
+                chunk_size=chunk_size,
+            )
+        cache[cache_key] = dl
+        out[link] = dl
+
+    return out
+
+
+def precompute_gen2_michelson_td_waveform(
+    geom_precomp,
+    waveform_plus,
+    waveform_cross,
+    *,
+    num_int_points=10,
+    one_arm_cache=None,
+    chunk_size=None,
+):
+    """Precompute waveform-specific TD one-arm links for Gen-2 Michelson."""
+    links = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2))
+    link_precomp = precompute_one_arm_td_links(
+        geom_precomp["times"],
+        waveform_plus,
+        waveform_cross,
+        geom_precomp["theta"],
+        geom_precomp["phi"],
+        geom_precomp["orbits"],
+        links=links,
+        num_int_points=num_int_points,
+        one_arm_cache=one_arm_cache,
+        chunk_size=chunk_size,
+    )
+
+    return {
+        "kind": "gen2_michelson_td_waveform",
+        "geometry_precomp": geom_precomp,
+        "times": geom_precomp["times"],
+        "dt": geom_precomp["dt"],
+        "theta": geom_precomp["theta"],
+        "phi": geom_precomp["phi"],
+        "orbits": geom_precomp["orbits"],
+        "num_int_points": int(num_int_points),
+        "chunk_size": chunk_size,
+        "dl_21": link_precomp[(2, 1)],
+        "dl_32": link_precomp[(3, 2)],
+        "dl_13": link_precomp[(1, 3)],
+        "dl_31": link_precomp[(3, 1)],
+        "dl_23": link_precomp[(2, 3)],
+        "dl_12": link_precomp[(1, 2)],
+    }
+
+
+def gen2_michelson_td_from_precomputed(precomp, *, order=7, mode="zero"):
+    """Assemble Gen-2 Michelson TD variables from staged precomputed payload."""
+    times = np.asarray(precomp["times"], dtype=float)
+    dt = float(precomp["dt"])
+    geom_precomp = precomp["geometry_precomp"]
+    shifts_X = geom_precomp["shifts_X"]
+    shifts_Y = geom_precomp["shifts_Y"]
+    shifts_Z = geom_precomp["shifts_Z"]
+
+    dl_21 = precomp["dl_21"]
+    dl_32 = precomp["dl_32"]
+    dl_13 = precomp["dl_13"]
+    dl_31 = precomp["dl_31"]
+    dl_23 = precomp["dl_23"]
+    dl_12 = precomp["dl_12"]
+
+    def TS(x, shift_dict, chain):
+        return interp_time_shift(x, dt, shift_dict[chain], order=order, mode=mode)
+
+    def rot_sc(i, k):
+        return ((i - 1 + k) % 3) + 1
+
+    def rot_link(link, k):
+        s, r = link
+        return (rot_sc(s, k), rot_sc(r, k))
+
+    def rot_chain(chain, k):
+        return tuple(rot_link(lk, k) for lk in chain)
+
+    cX_21 = ((2, 1),)
+    cX_21_12 = ((2, 1), (1, 2))
+    cX_21_12_31 = ((2, 1), (1, 2), (3, 1))
+    cX_21_12_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3))
+    cX_21_12_31_13_31 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1))
+    cX_21_12_31_13_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3))
+    cX_21_12_31_13_31_13_21 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3), (2, 1))
+
+    cX_31 = ((3, 1),)
+    cX_31_13 = ((3, 1), (1, 3))
+    cX_31_13_21 = ((3, 1), (1, 3), (2, 1))
+    cX_31_13_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2))
+    cX_31_13_21_12_21 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1))
+    cX_31_13_21_12_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2))
+    cX_31_13_21_12_21_12_31 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2), (3, 1))
+
+    cY_21 = rot_chain(cX_21, 1);  cZ_21 = rot_chain(cX_21, 2)
+    cY_21_12 = rot_chain(cX_21_12, 1);  cZ_21_12 = rot_chain(cX_21_12, 2)
+    cY_21_12_31 = rot_chain(cX_21_12_31, 1);  cZ_21_12_31 = rot_chain(cX_21_12_31, 2)
+    cY_21_12_31_13 = rot_chain(cX_21_12_31_13, 1);  cZ_21_12_31_13 = rot_chain(cX_21_12_31_13, 2)
+    cY_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 1);  cZ_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 2)
+    cY_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 1);  cZ_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 2)
+    cY_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 1);  cZ_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 2)
+
+    cY_31 = rot_chain(cX_31, 1);  cZ_31 = rot_chain(cX_31, 2)
+    cY_31_13 = rot_chain(cX_31_13, 1);  cZ_31_13 = rot_chain(cX_31_13, 2)
+    cY_31_13_21 = rot_chain(cX_31_13_21, 1);  cZ_31_13_21 = rot_chain(cX_31_13_21, 2)
+    cY_31_13_21_12 = rot_chain(cX_31_13_21_12, 1);  cZ_31_13_21_12 = rot_chain(cX_31_13_21_12, 2)
+    cY_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 1);  cZ_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 2)
+    cY_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 1);  cZ_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 2)
+    cY_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 1);  cZ_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 2)
+
+    DL = {(2,1): dl_21, (3,2): dl_32, (1,3): dl_13, (3,1): dl_31, (2,3): dl_23, (1,2): dl_12}
+
+    def eval_from_template(shift_dict, c21, c21_12, c21_12_31, c21_12_31_13, c21_12_31_13_31, c21_12_31_13_31_13, c21_12_31_13_31_13_21,
+                           c31, c31_13, c31_13_21, c31_13_21_12, c31_13_21_12_21, c31_13_21_12_21_12, c31_13_21_12_21_12_31, k):
+
+        def R(link):
+            return rot_link(link, k)
+
+        y231  = DL[R((2,1))]
+        y13p2 = DL[R((1,2))]
+        y32p1 = DL[R((3,1))]
+        y123  = DL[R((1,3))]
+
+        t1 = TS(y13p2, shift_dict, c21)
+        t2 = TS(y32p1, shift_dict, c21_12)
+        t3 = TS(y123,  shift_dict, c21_12_31)
+        t4 = TS(y32p1, shift_dict, c21_12_31_13)
+        t5 = TS(y123,  shift_dict, c21_12_31_13_31)
+        t6 = TS(y231,  shift_dict, c21_12_31_13_31_13)
+        t7 = TS(y13p2, shift_dict, c21_12_31_13_31_13_21)
+
+        n1 = TS(y123,  shift_dict, c31)
+        n2 = TS(y231,  shift_dict, c31_13)
+        n3 = TS(y13p2, shift_dict, c31_13_21)
+        n4 = TS(y231,  shift_dict, c31_13_21_12)
+        n5 = TS(y13p2, shift_dict, c31_13_21_12_21)
+        n6 = TS(y32p1, shift_dict, c31_13_21_12_21_12)
+        n7 = TS(y123,  shift_dict, c31_13_21_12_21_12_31)
+
+        return (y231 + t1+t2+t3+t4+t5+t6+t7) - (y32p1 + n1+n2+n3+n4+n5+n6+n7)
+
+    X1 = (
+        dl_21
+        + TS(dl_12, shifts_X, cX_21)
+        + TS(dl_31, shifts_X, cX_21_12)
+        + TS(dl_13, shifts_X, cX_21_12_31)
+        + TS(dl_31, shifts_X, cX_21_12_31_13)
+        + TS(dl_13, shifts_X, cX_21_12_31_13_31)
+        + TS(dl_21, shifts_X, cX_21_12_31_13_31_13)
+        + TS(dl_12, shifts_X, cX_21_12_31_13_31_13_21)
+        - dl_31
+        - TS(dl_13, shifts_X, cX_31)
+        - TS(dl_21, shifts_X, cX_31_13)
+        - TS(dl_12, shifts_X, cX_31_13_21)
+        - TS(dl_21, shifts_X, cX_31_13_21_12)
+        - TS(dl_12, shifts_X, cX_31_13_21_12_21)
+        - TS(dl_31, shifts_X, cX_31_13_21_12_21_12)
+        - TS(dl_13, shifts_X, cX_31_13_21_12_21_12_31)
+    )
+
+    Y1 = eval_from_template(
+        shifts_Y,
+        cY_21, cY_21_12, cY_21_12_31, cY_21_12_31_13, cY_21_12_31_13_31, cY_21_12_31_13_31_13, cY_21_12_31_13_31_13_21,
+        cY_31, cY_31_13, cY_31_13_21, cY_31_13_21_12, cY_31_13_21_12_21, cY_31_13_21_12_21_12, cY_31_13_21_12_21_12_31,
+        k=1
+    )
+
+    Z1 = eval_from_template(
+        shifts_Z,
+        cZ_21, cZ_21_12, cZ_21_12_31, cZ_21_12_31_13, cZ_21_12_31_13_31, cZ_21_12_31_13_31_13, cZ_21_12_31_13_31_13_21,
+        cZ_31, cZ_31_13, cZ_31_13_21, cZ_31_13_21_12, cZ_31_13_21_12_21, cZ_31_13_21_12_21_12, cZ_31_13_21_12_21_12_31,
+        k=2
+    )
+
+    return X1, Y1, Z1
 
 def gen1_sagnac_wdm(
     times,
@@ -1620,6 +1897,8 @@ def gen2_michelson_wdm(
     variable_shift_kwargs=None,
     use_jax=None,
     q=None,
+    d=4,
+    calc_m0=True,
     tdi_assembly_mode="batch_map",
     accumulator_chunk=1,
     profile_shift_stages=False,
@@ -1669,6 +1948,8 @@ def gen2_michelson_wdm(
         ``(X1, Y1, Z1)`` WDM coefficient arrays.
     """
     times = np.asarray(times, dtype=float)
+    # Smoke test locally: compare calc_m0=True and calc_m0=False and confirm the
+    # WDM frequency axis follows the transform convention without manual slicing.
     precomp = precompute_gen2_michelson_wdm_inputs(
         times,
         waveform_plus,
@@ -1683,6 +1964,8 @@ def gen2_michelson_wdm(
         variable_shift_kwargs=variable_shift_kwargs,
         use_jax=use_jax,
         q=q,
+        d=d,
+        calc_m0=calc_m0,
     )
     return gen2_michelson_wdm_from_precomputed(
         precomp,
@@ -1708,159 +1991,28 @@ def gen2_michelson_td(
     mode="zero",
     num_int_points=1000,
     shifts_cache=None,
+    chunk_size=None,
+    one_arm_cache=None,
+    return_precomp=False,
 ):
-    """
-    Gen-2 Michelson-type variables (X1, Y1, Z1) in TIME DOMAIN
-    with built-in precomputation of gen2 shifts.
+    """Backward-compatible wrapper for staged Gen-2 Michelson TD assembly."""
 
-    Parameters
-    ----------
-    shifts_cache : dict or None
-        Optional mutable dict used to memoize computed shift libraries.
-        Keyed by ("michelson", id(orbits), len(times), times[0], times[1]-times[0]).
-    """
-
-    times = np.asarray(times, dtype=float)
-    dt = times[1] - times[0]
-
-    cache_key = ("michelson", id(orbits), len(times), float(times[0]), float(dt))
-    if shifts_cache is not None and cache_key in shifts_cache:
-        shifts_X, shifts_Y, shifts_Z = shifts_cache[cache_key]
-    else:
-        shifts_X, shifts_Y, shifts_Z = precompute_gen2_michelson_shifts(times, orbits)
-        if shifts_cache is not None:
-            shifts_cache[cache_key] = (shifts_X, shifts_Y, shifts_Z)
-
-    dl_21 = one_arm_response_td(times, 2, 1, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
-    dl_32 = one_arm_response_td(times, 3, 2, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
-    dl_13 = one_arm_response_td(times, 1, 3, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
-    dl_31 = one_arm_response_td(times, 3, 1, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
-    dl_23 = one_arm_response_td(times, 2, 3, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
-    dl_12 = one_arm_response_td(times, 1, 2, orbits, theta, phi, waveform_plus, waveform_cross, num_int_points)
-
-    def TS(x, shift_dict, chain):
-        return interp_time_shift(x, dt, shift_dict[chain], order=order, mode=mode)
-
-    def rot_sc(i, k):
-        return ((i - 1 + k) % 3) + 1
-
-    def rot_link(link, k):
-        s, r = link
-        return (rot_sc(s, k), rot_sc(r, k))
-
-    def rot_chain(chain, k):
-        return tuple(rot_link(lk, k) for lk in chain)
-
-    cX_21 = ((2, 1),)
-    cX_21_12 = ((2, 1), (1, 2))
-    cX_21_12_31 = ((2, 1), (1, 2), (3, 1))
-    cX_21_12_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3))
-    cX_21_12_31_13_31 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1))
-    cX_21_12_31_13_31_13 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3))
-    cX_21_12_31_13_31_13_21 = ((2, 1), (1, 2), (3, 1), (1, 3), (3, 1), (1, 3), (2, 1))
-
-    cX_31 = ((3, 1),)
-    cX_31_13 = ((3, 1), (1, 3))
-    cX_31_13_21 = ((3, 1), (1, 3), (2, 1))
-    cX_31_13_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2))
-    cX_31_13_21_12_21 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1))
-    cX_31_13_21_12_21_12 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2))
-    cX_31_13_21_12_21_12_31 = ((3, 1), (1, 3), (2, 1), (1, 2), (2, 1), (1, 2), (3, 1))
-
-    cY_21 = rot_chain(cX_21, 1);  cZ_21 = rot_chain(cX_21, 2)
-    cY_21_12 = rot_chain(cX_21_12, 1);  cZ_21_12 = rot_chain(cX_21_12, 2)
-    cY_21_12_31 = rot_chain(cX_21_12_31, 1);  cZ_21_12_31 = rot_chain(cX_21_12_31, 2)
-    cY_21_12_31_13 = rot_chain(cX_21_12_31_13, 1);  cZ_21_12_31_13 = rot_chain(cX_21_12_31_13, 2)
-    cY_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 1);  cZ_21_12_31_13_31 = rot_chain(cX_21_12_31_13_31, 2)
-    cY_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 1);  cZ_21_12_31_13_31_13 = rot_chain(cX_21_12_31_13_31_13, 2)
-    cY_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 1);  cZ_21_12_31_13_31_13_21 = rot_chain(cX_21_12_31_13_31_13_21, 2)
-
-    cY_31 = rot_chain(cX_31, 1);  cZ_31 = rot_chain(cX_31, 2)
-    cY_31_13 = rot_chain(cX_31_13, 1);  cZ_31_13 = rot_chain(cX_31_13, 2)
-    cY_31_13_21 = rot_chain(cX_31_13_21, 1);  cZ_31_13_21 = rot_chain(cX_31_13_21, 2)
-    cY_31_13_21_12 = rot_chain(cX_31_13_21_12, 1);  cZ_31_13_21_12 = rot_chain(cX_31_13_21_12, 2)
-    cY_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 1);  cZ_31_13_21_12_21 = rot_chain(cX_31_13_21_12_21, 2)
-    cY_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 1);  cZ_31_13_21_12_21_12 = rot_chain(cX_31_13_21_12_21_12, 2)
-    cY_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 1);  cZ_31_13_21_12_21_12_31 = rot_chain(cX_31_13_21_12_21_12_31, 2)
-
-    dl_12_cX_21 = TS(dl_12, shifts_X, cX_21)
-    dl_31_cX_21_12 = TS(dl_31, shifts_X, cX_21_12)
-    dl_13_cX_21_12_31 = TS(dl_13, shifts_X, cX_21_12_31)
-    dl_31_cX_21_12_31_13 = TS(dl_31, shifts_X, cX_21_12_31_13)
-    dl_13_cX_21_12_31_13_31 = TS(dl_13, shifts_X, cX_21_12_31_13_31)
-    dl_21_cX_21_12_31_13_31_13 = TS(dl_21, shifts_X, cX_21_12_31_13_31_13)
-    dl_12_cX_21_12_31_13_31_13_21 = TS(dl_12, shifts_X, cX_21_12_31_13_31_13_21)
-
-    dl_13_cX_31 = TS(dl_13, shifts_X, cX_31)
-    dl_21_cX_31_13 = TS(dl_21, shifts_X, cX_31_13)
-    dl_12_cX_31_13_21 = TS(dl_12, shifts_X, cX_31_13_21)
-    dl_21_cX_31_13_21_12 = TS(dl_21, shifts_X, cX_31_13_21_12)
-    dl_12_cX_31_13_21_12_21 = TS(dl_12, shifts_X, cX_31_13_21_12_21)
-    dl_31_cX_31_13_21_12_21_12 = TS(dl_31, shifts_X, cX_31_13_21_12_21_12)
-    dl_13_cX_31_13_21_12_21_12_31 = TS(dl_13, shifts_X, cX_31_13_21_12_21_12_31)
-
-    X1 = (
-        dl_21
-        + dl_12_cX_21
-        + dl_31_cX_21_12
-        + dl_13_cX_21_12_31
-        + dl_31_cX_21_12_31_13
-        + dl_13_cX_21_12_31_13_31
-        + dl_21_cX_21_12_31_13_31_13
-        + dl_12_cX_21_12_31_13_31_13_21
-        - dl_31
-        - dl_13_cX_31
-        - dl_21_cX_31_13
-        - dl_12_cX_31_13_21
-        - dl_21_cX_31_13_21_12
-        - dl_12_cX_31_13_21_12_21
-        - dl_31_cX_31_13_21_12_21_12
-        - dl_13_cX_31_13_21_12_21_12_31
+    geom = precompute_gen2_michelson_td_geometry(
+        times,
+        theta,
+        phi,
+        orbits,
+        shifts_cache=shifts_cache,
     )
-
-    DL = {(2,1): dl_21, (3,2): dl_32, (1,3): dl_13, (3,1): dl_31, (2,3): dl_23, (1,2): dl_12}
-
-    def eval_from_template(shift_dict, c21, c21_12, c21_12_31, c21_12_31_13, c21_12_31_13_31, c21_12_31_13_31_13, c21_12_31_13_31_13_21,
-                           c31, c31_13, c31_13_21, c31_13_21_12, c31_13_21_12_21, c31_13_21_12_21_12, c31_13_21_12_21_12_31, k):
-
-        def R(link):
-            return rot_link(link, k)
-
-        y231  = DL[R((2,1))]
-        y13p2 = DL[R((1,2))]
-        y32p1 = DL[R((3,1))]
-        y123  = DL[R((1,3))]
-
-        t1 = TS(y13p2, shift_dict, c21)
-        t2 = TS(y32p1, shift_dict, c21_12)
-        t3 = TS(y123,  shift_dict, c21_12_31)
-        t4 = TS(y32p1, shift_dict, c21_12_31_13)
-        t5 = TS(y123,  shift_dict, c21_12_31_13_31)
-        t6 = TS(y231,  shift_dict, c21_12_31_13_31_13)
-        t7 = TS(y13p2, shift_dict, c21_12_31_13_31_13_21)
-
-        n1 = TS(y123,  shift_dict, c31)
-        n2 = TS(y231,  shift_dict, c31_13)
-        n3 = TS(y13p2, shift_dict, c31_13_21)
-        n4 = TS(y231,  shift_dict, c31_13_21_12)
-        n5 = TS(y13p2, shift_dict, c31_13_21_12_21)
-        n6 = TS(y32p1, shift_dict, c31_13_21_12_21_12)
-        n7 = TS(y123,  shift_dict, c31_13_21_12_21_12_31)
-
-        return (y231 + t1+t2+t3+t4+t5+t6+t7) - (y32p1 + n1+n2+n3+n4+n5+n6+n7)
-
-    Y1 = eval_from_template(
-        shifts_Y,
-        cY_21, cY_21_12, cY_21_12_31, cY_21_12_31_13, cY_21_12_31_13_31, cY_21_12_31_13_31_13, cY_21_12_31_13_31_13_21,
-        cY_31, cY_31_13, cY_31_13_21, cY_31_13_21_12, cY_31_13_21_12_21, cY_31_13_21_12_21_12, cY_31_13_21_12_21_12_31,
-        k=1
+    precomp = precompute_gen2_michelson_td_waveform(
+        geom,
+        waveform_plus,
+        waveform_cross,
+        num_int_points=num_int_points,
+        one_arm_cache=one_arm_cache,
+        chunk_size=chunk_size,
     )
-
-    Z1 = eval_from_template(
-        shifts_Z,
-        cZ_21, cZ_21_12, cZ_21_12_31, cZ_21_12_31_13, cZ_21_12_31_13_31, cZ_21_12_31_13_31_13, cZ_21_12_31_13_31_13_21,
-        cZ_31, cZ_31_13, cZ_31_13_21, cZ_31_13_21_12, cZ_31_13_21_12_21, cZ_31_13_21_12_21_12, cZ_31_13_21_12_21_12_31,
-        k=2
-    )
-
-    return X1, Y1, Z1
+    result = gen2_michelson_td_from_precomputed(precomp, order=order, mode=mode)
+    if return_precomp:
+        return result, precomp
+    return result
