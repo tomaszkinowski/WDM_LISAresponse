@@ -183,42 +183,107 @@ def compare_response_signals(h_ref, h_test):
         "mismatch": mismatch,
     }
 
-def wdm_mismatch(w1, w2):
+def wdm_mismatch(w1, w2, return_raw_overlap=False):
     """
-    Robust normalized overlap/mismatch in the WDM domain.
+    Numerically stable phase-maximized WDM mismatch.
+
+    This computes the standard mismatch
+
+        mismatch = 1 - |<w1|w2>| / sqrt(<w1|w1><w2|w2>)
+
+    but evaluates it through the mathematically equivalent normalized
+    residual
+
+        mismatch = 0.5 * ||w1_hat - exp(-i phi) w2_hat||^2,
+
+    where phi = arg(<w1_hat|w2_hat>).
+
+    This avoids artificial negative mismatches or NaNs when the direct
+    overlap is extremely close to one.
 
     Parameters
     ----------
-    w1 : ndarray
-        WDM coefficients 1, usually the reference array.
-    w2 : ndarray
-        WDM coefficients 2, usually the test array.
+    w1, w2 : ndarray
+        WDM coefficient arrays.
+    return_raw_overlap : bool
+        If True, also return the direct raw overlap computed from the inner
+        product. This is useful for diagnostics only.
 
     Returns
     -------
     overlap : float
-        Phase-maximized normalized overlap between the two WDM coefficient arrays.
-        Uses abs(<w1|w2>) so it is robust to an arbitrary constant complex phase.
+        overlap = 1 - mismatch, computed from the stable mismatch.
     mismatch : float
-        mismatch = 1 - overlap, with overlap clipped to [0, 1] to remove
-        floating-point excursions.
+        Standard phase-maximized mismatch.
+    raw_overlap : float, optional
+        Direct inner-product overlap, returned only if return_raw_overlap=True.
     """
     w1 = np.asarray(w1, dtype=np.complex128).ravel()
     w2 = np.asarray(w2, dtype=np.complex128).ravel()
 
-    n1 = float(np.real(np.vdot(w1, w1)))
-    n2 = float(np.real(np.vdot(w2, w2)))
+    if w1.shape != w2.shape:
+        raise ValueError(f"Shape mismatch: {w1.shape} vs {w2.shape}")
 
-    if n1 <= 0.0 or n2 <= 0.0:
+    if not np.all(np.isfinite(w1)):
+        if return_raw_overlap:
+            return np.nan, np.nan, np.nan
         return np.nan, np.nan
 
-    inner_prod = np.vdot(w1, w2)
+    if not np.all(np.isfinite(w2)):
+        if return_raw_overlap:
+            return np.nan, np.nan, np.nan
+        return np.nan, np.nan
 
-    # Phase-maximized normalized overlap.
-    overlap_raw = float(np.abs(inner_prod) / np.sqrt(n1 * n2))
+    n1 = np.real(np.vdot(w1, w1))
+    n2 = np.real(np.vdot(w2, w2))
 
-    # Remove only mathematically impossible floating-point excursions.
-    overlap = float(np.clip(overlap_raw, 0.0, 1.0))
-    mismatch = float(1.0 - overlap)
+    if not np.isfinite(n1) or not np.isfinite(n2) or n1 <= 0.0 or n2 <= 0.0:
+        if return_raw_overlap:
+            return np.nan, np.nan, np.nan
+        return np.nan, np.nan
 
-    return overlap, mismatch
+    # Normalize first.
+    w1_hat = w1 / np.sqrt(n1)
+    w2_hat = w2 / np.sqrt(n2)
+
+    # Direct normalized inner product, used only to determine the optimal
+    # constant phase.
+    c = np.vdot(w1_hat, w2_hat)
+
+    if not np.isfinite(c):
+        if return_raw_overlap:
+            return np.nan, np.nan, np.nan
+        return np.nan, np.nan
+
+    # Phase-maximize by rotating w2 so that <w1_hat|w2_hat_aligned>
+    # is real and positive.
+    if np.abs(c) > 0.0:
+        w2_hat = w2_hat * np.exp(-1j * np.angle(c))
+
+    # This is exactly 1 - |<w1_hat|w2_hat>| in exact arithmetic,
+    # but avoids subtracting two nearly equal numbers.
+    diff = w1_hat - w2_hat
+    mismatch = 0.5 * np.real(np.vdot(diff, diff))
+
+    if not np.isfinite(mismatch):
+        if return_raw_overlap:
+            return np.nan, np.nan, np.nan
+        return np.nan, np.nan
+
+    # This should already be non-negative because it is a norm.
+    # Only protect against impossible tiny negative roundoff.
+    if mismatch < 0.0:
+        if abs(mismatch) < 1e-15:
+            mismatch = 0.0
+        else:
+            if return_raw_overlap:
+                return np.nan, np.nan, np.nan
+            return np.nan, np.nan
+
+    overlap = 1.0 - mismatch
+
+    if return_raw_overlap:
+        raw_overlap = np.abs(c)
+        return float(overlap), float(mismatch), float(raw_overlap)
+
+    return float(overlap), float(mismatch)
