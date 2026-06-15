@@ -247,7 +247,7 @@ def _resolve_wdm_q_value(N, Nf, q=None):
 
 
 
-def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4, q=None, calc_m0=True):
+def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4, q=None, calc_m0=True, A_frac=0.25):
     """
     Evaluate the one-arm WDM response on the native sample grid.
 
@@ -278,6 +278,8 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
         Boundary handling flag passed to the WDM basis interpolator.
     d : int, optional
         WDM oversampling/filter parameter.
+    A_frac : float, optional
+        WDM basis/window shape parameter.
     q : int or None, optional
         WDM truncation parameter. When ``None``, it is set to the maximum
         allowed value for the current tiling.
@@ -306,7 +308,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     q_val = _resolve_wdm_q_value(N, Nf, q=q)
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=calc_m0, d = d)
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=calc_m0, d=d, A_frac=A_frac)
     #print(wdm)
 
 
@@ -395,6 +397,7 @@ def _build_wdm_dT_context_from_wdm(times, td_waveform_plus, td_waveform_cross, w
     return {
         "times": times,
         "wdm": wdm,
+        "A_frac": float(getattr(wdm, "A_frac", 0.25)),
         "w_t_plus": w_t_plus,
         "w_t_cross": w_t_cross,
         "freq_vals": freq_vals,
@@ -402,7 +405,7 @@ def _build_wdm_dT_context_from_wdm(times, td_waveform_plus, td_waveform_cross, w
     }
 
 
-def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, m_offset=0.0, q=None, calc_m0=True, wdm=None):
+def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, A_frac=0.25, m_offset=0.0, q=None, calc_m0=True, wdm=None):
     """Build reusable WDM objects and waveform projections for dT responses.
 
     Parameters
@@ -417,6 +420,8 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
         Number of WDM frequency bins.
     d : int, optional
         WDM oversampling/filter parameter.
+    A_frac : float, optional
+        WDM basis/window shape parameter.
     m_offset : float, optional
         Optional frequency-index offset used in some WDM conventions.
     q : int or None, optional
@@ -456,7 +461,7 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
 
     q_val = _resolve_wdm_q_value(N, Nf, q=q)
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=calc_m0, d=d, A_frac=0.25)
+    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=calc_m0, d=d, A_frac=A_frac)
     w_t_plus = wdm.dwt(td_plus_wdm)
     w_t_cross = wdm.dwt(td_cross_wdm)
 
@@ -467,6 +472,7 @@ def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=
     return {
         "times": times,
         "wdm": wdm,
+        "A_frac": float(A_frac),
         "w_t_plus": w_t_plus,
         "w_t_cross": w_t_cross,
         "freq_vals": freq_vals,
@@ -716,6 +722,7 @@ def precompute_one_arm_wdm_dT_links(
     td_waveform_cross,
     Nf=500,
     d=4,
+    A_frac=0.25,
     m_offset=0.0,
     L_trunc=None,
     links=None,
@@ -745,6 +752,8 @@ def precompute_one_arm_wdm_dT_links(
         Number of WDM frequency bins.
     d : int, optional
         WDM oversampling/filter parameter.
+    A_frac : float, optional
+        WDM basis/window shape parameter.
     m_offset : float, optional
         Optional frequency-index offset.
     L_trunc : int or None, optional
@@ -791,6 +800,7 @@ def precompute_one_arm_wdm_dT_links(
         float(phi),
         int(Nf),
         int(d),
+        float(A_frac),
         int(q_val),
         bool(calc_m0),
         float(m_offset),
@@ -813,6 +823,7 @@ def precompute_one_arm_wdm_dT_links(
         td_waveform_cross,
         Nf=Nf,
         d=d,
+        A_frac=A_frac,
         m_offset=m_offset,
         q=q_val,
         calc_m0=calc_m0,
@@ -833,7 +844,7 @@ def precompute_one_arm_wdm_dT_links(
         cache[cache_key] = payload
     return payload
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, use_jax=None, q=None, calc_m0=True):
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, A_frac=0.25, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, use_jax=None, q=None, calc_m0=True):
     """
     Evaluate the one-arm dT WDM response for a single directed link.
 
@@ -870,6 +881,8 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         Boundary handling used only when ``return_td=True``.
     d : int
         WDM oversampling/filter parameter.
+    A_frac : float
+        WDM basis/window shape parameter.
     m_offset : float
         Optional frequency-index offset.
     L_trunc : int or None
@@ -898,6 +911,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         td_waveform_cross,
         Nf=Nf,
         d=d,
+        A_frac=A_frac,
         m_offset=m_offset,
         q=q,
         calc_m0=calc_m0,

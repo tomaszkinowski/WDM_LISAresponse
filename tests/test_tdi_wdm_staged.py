@@ -273,6 +273,30 @@ def test_geometry_reuse_across_waveforms_and_no_waveform_payload_in_geom():
     assert not np.allclose(out_a[2], out_b[2], atol=1e-14, rtol=1e-14)
 
 
+def test_geometry_carries_custom_a_frac_into_wdm_object():
+    times, waveform_plus, waveform_cross = _build_inputs(seed=5555)
+    orbits = SimpleOrbits()
+    theta = 0.7
+    phi = 0.9
+
+    geom = precompute_gen2_michelson_wdm_geometry(
+        times,
+        theta,
+        phi,
+        orbits,
+        Nf=100,
+        L_trunc=2,
+        q=1,
+        d=4,
+        A_frac=0.125,
+        calc_m0=False,
+        use_jax=True,
+    )
+
+    assert abs(float(geom["wdm"].A_frac) - 0.125) < 1e-15
+    assert abs(float(geom["A_frac"]) - 0.125) < 1e-15
+
+
 def test_batch_chunk_independence_from_same_wave_precompute():
     times, waveform_plus, waveform_cross = _build_inputs(seed=5678)
     orbits = SimpleOrbits()

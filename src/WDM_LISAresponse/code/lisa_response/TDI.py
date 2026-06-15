@@ -444,6 +444,7 @@ def precompute_gen2_michelson_wdm_inputs(
     use_jax=None,
     q=None,
     d=4,
+    A_frac=0.25,
     one_arm_cache=None,
     shifts_cache=None,
     calc_m0=True,
@@ -462,6 +463,7 @@ def precompute_gen2_michelson_wdm_inputs(
         L_trunc=L_trunc,
         q=q,
         d=d,
+        A_frac=A_frac,
         calc_m0=calc_m0,
         use_jax=use_jax,
         variable_shift_kwargs=variable_shift_kwargs,
@@ -486,6 +488,7 @@ def precompute_gen2_michelson_wdm_geometry(
     L_trunc=None,
     q=None,
     d=4,
+    A_frac=0.25,
     calc_m0=True,
     use_jax=None,
     variable_shift_kwargs=None,
@@ -509,6 +512,7 @@ def precompute_gen2_michelson_wdm_geometry(
         dummy,
         Nf=Nf,
         d=d,
+        A_frac=A_frac,
         q=q,
         calc_m0=calc_m0,
     )
@@ -542,6 +546,7 @@ def precompute_gen2_michelson_wdm_geometry(
         "calc_m0": bool(calc_m0),
         "q": q,
         "d": int(d),
+        "A_frac": float(A_frac),
         "use_jax": use_jax,
     }
 
@@ -562,6 +567,7 @@ def precompute_gen2_michelson_wdm_waveform(
     Nf = int(geom_precomp["Nf"])
     L_trunc = geom_precomp.get("L_trunc")
     d = int(geom_precomp.get("d", 4))
+    A_frac = float(geom_precomp.get("A_frac", 0.25))
     use_jax = geom_precomp.get("use_jax")
     q = geom_precomp.get("q")
     calc_m0 = bool(geom_precomp.get("calc_m0", True))
@@ -626,6 +632,7 @@ def precompute_gen2_michelson_wdm_waveform(
         "Nf": Nf,
         "L_trunc": L_trunc,
         "d": d,
+        "A_frac": A_frac,
         "use_jax": use_jax,
         "q": q,
         "calc_m0": calc_m0,
@@ -1898,6 +1905,7 @@ def gen2_michelson_wdm(
     use_jax=None,
     q=None,
     d=4,
+    A_frac=0.25,
     calc_m0=True,
     tdi_assembly_mode="batch_map",
     accumulator_chunk=1,
@@ -1965,6 +1973,7 @@ def gen2_michelson_wdm(
         use_jax=use_jax,
         q=q,
         d=d,
+        A_frac=A_frac,
         calc_m0=calc_m0,
     )
     return gen2_michelson_wdm_from_precomputed(
