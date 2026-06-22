@@ -25,8 +25,7 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
     Parameters
     ----------
     times : ndarray
-        Sample times of the LISA response. Each entry is the emission time at
-        the sending spacecraft.
+        Sample reception/readout times of the LISA response.
     s : int
         Sending spacecraft index.
     r : int
@@ -50,26 +49,25 @@ def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_wa
         Time-domain one-arm response sampled on ``times``.
     """
     sky_basis = build_sky_basis(theta, phi)
-    x_s = orbits.compute_position(times, sc=[s])[:,0,:]
-
     l_sr, x_r_rec = _compute_ltt_iterative(
         times,
         s,
         r,
         orbits,
-        x_s=x_s,
         return_receiver_position=True,
     )
-    rhat_sr = rhat(times, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec)
+    t_emit = times - l_sr
+    x_s = orbits.compute_position(t_emit, sc=[s])[:,0,:]
+    rhat_sr = rhat(times, s, r, orbits, tt=l_sr, x_r_rec=x_r_rec)
 
-    t_rec = times + l_sr
+    t_rec = times
 
     n = sky_basis.n
     Omega = sky_basis.Omega
 
     Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
 
-    xi_s = times - np.einsum('x,tx->t', Omega, x_s/c)
+    xi_s = t_emit - np.einsum('x,tx->t', Omega, x_s/c)
     xi_r = t_rec - np.einsum('x,tx->t', Omega, x_r_rec/c)
 
     xi = np.linspace(xi_s, xi_r, num_int_points) # (num_int_points, num_times)
@@ -122,22 +120,21 @@ def one_arm_response_td_chunked(
         stop = min(start + int(chunk_size), total_times)
         t_chunk = times[start:stop]
 
-        x_s = orbits.compute_position(t_chunk, sc=[s])[:, 0, :]
-
         l_sr, x_r_rec = _compute_ltt_iterative(
             t_chunk,
             s,
             r,
             orbits,
-            x_s=x_s,
             return_receiver_position=True,
         )
-        rhat_sr = rhat(t_chunk, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec)
-        t_rec = t_chunk + l_sr
+        t_emit = t_chunk - l_sr
+        x_s = orbits.compute_position(t_emit, sc=[s])[:, 0, :]
+        rhat_sr = rhat(t_chunk, s, r, orbits, tt=l_sr, x_r_rec=x_r_rec)
+        t_rec = t_chunk
 
         Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
 
-        xi_s = t_chunk - np.einsum('x,tx->t', Omega, x_s / c)
+        xi_s = t_emit - np.einsum('x,tx->t', Omega, x_s / c)
         xi_r = t_rec - np.einsum('x,tx->t', Omega, x_r_rec / c)
 
         xi = np.linspace(xi_s, xi_r, num_int_points)
@@ -173,14 +170,13 @@ def one_arm_response_freq_domain(
     dt = times[1] - times[0]
 
     # Geometry (still computed here; biggest speedup across many calls is caching these externally)
-    x_s = orbits.compute_position(times, sc=[s])[:, 0, :]          # (Nt,3)
-    l_sr = _compute_ltt_iterative(times, s, r, orbits)              # (Nt,)
-    rhat_sr = rhat(times, s, r, orbits)                             # (Nt,3)
+    l_sr, x_r_rec = _compute_ltt_iterative(times, s, r, orbits, return_receiver_position=True)  # (Nt,)
+    rhat_sr = rhat(times, s, r, orbits, tt=l_sr, x_r_rec=x_r_rec)                             # (Nt,3)
 
     Omega = sky_basis.Omega
 
     Om_dot_rhat = np.einsum('i,ti->t', Omega, rhat_sr)              # (Nt,)
-    xi_s = times - np.einsum('i,ti->t', Omega, x_s / c)             # (Nt,)
+    xi_r = times - np.einsum('i,ti->t', Omega, x_r_rec / c)         # (Nt,)
 
     # FFT of waveform polarisations
     H_plus = fft(td_waveform_plus)
@@ -193,7 +189,7 @@ def one_arm_response_freq_domain(
     F_plus, F_cross = antenna_pattern_factors(rhat_sr, sky_basis)   # (Nt,)
 
     # Combine constant phase shift into one term
-    phase_t = (xi_s - times[0])                                     # (Nt,)
+    phase_t = (xi_r - times[0])                                     # (Nt,)
 
     # Accumulate inverse-sum in chunks to reduce memory and often improve speed
     acc = np.zeros(Nt, dtype=complex)
@@ -209,13 +205,13 @@ def one_arm_response_freq_domain(
         # transfer_func_arg = 0.5 * omega * l_sr * (1 - Om·rhat)
         arg = 0.5 * (l_sr[:, None] * one_minus[:, None]) * w[None, :]  # (Nt,M)
 
-        # transfer function: sinc(arg/pi) * exp(i*arg)
-        tf = np.sinc(arg / np.pi) * np.exp(1j * arg)                # (Nt,M)
+        # transfer function: sinc(arg/pi) * exp(-i*arg)
+        tf = np.sinc(arg / np.pi) * np.exp(-1j * arg)               # (Nt,M)
 
         # scalar contraction: 0.5 * tf * (Hp*F_plus + Hc*F_cross)
         resp = 0.5 * tf * (F_plus[:, None] * Hp[None, :] + F_cross[:, None] * Hc[None, :])  # (Nt,M)
 
-        # exp(i w * (xi_s - t0))
+        # exp(i w * (xi_r - t0)); reception-time endpoint convention
         ph = np.exp(1j * phase_t[:, None] * w[None, :])             # (Nt,M)
 
         acc += np.sum(ph * resp, axis=1)                            # (Nt,)
@@ -254,8 +250,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     Parameters
     ----------
     times : ndarray
-        Sample times of the LISA response. Each entry is the emission time at
-        the sending spacecraft.
+        Sample reception/readout times of the LISA response.
     s : int
         Sending spacecraft index.
     r : int
@@ -319,23 +314,20 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     #basic implementation of wdm transform 
 
-    x_s = orbits.compute_position(times, sc=[s])[:,0,:]
-
     l_sr, x_r_rec = _compute_ltt_iterative(
         times,
         s,
         r,
         orbits,
-        x_s=x_s,
         return_receiver_position=True,
     )
-    rhat_sr = rhat(times, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec)
+    rhat_sr = rhat(times, s, r, orbits, tt=l_sr, x_r_rec=x_r_rec)
 
     Omega = sky_basis.Omega
 
     Om_dot_rhat = np.einsum('x,tx->t', Omega, rhat_sr)
         
-    xi_s = times - np.einsum('x,tx->t', Omega, x_s/c)
+    xi_r = times - np.einsum('x,tx->t', Omega, x_r_rec/c)
 
     freq_vals = np.arange(0, wdm.Nf) * wdm.dF
 
@@ -346,7 +338,7 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(wdm.Nf), indexing="ij")
 
-    vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_s + tau_s - times[0], method=gnm_method, wrap=gnm_wrap)
+    vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, xi_r - tau_s - times[0], method=gnm_method, wrap=gnm_wrap)
 
     sum_nm_plus = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t_plus[np.newaxis, :, :] * vals
     sum_nm_cross = np.sinc(sinc_arg / np.pi)[:, np.newaxis, :] * w_t_cross[np.newaxis, :, :] * vals
@@ -492,7 +484,11 @@ def precompute_one_arm_wdm_dT_links_from_context(
     variable_shift_kwargs=None,
     use_jax=None,
 ):
-    """Precompute directed one-arm dT WDM responses from a prebuilt context."""
+    """Precompute directed one-arm dT WDM responses from a prebuilt context.
+
+    The returned map stores link responses received at spacecraft ``r`` from
+    spacecraft ``s``.
+    """
     shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
     sky_basis = build_sky_basis(theta, phi)
 
@@ -585,7 +581,7 @@ def _one_arm_response_wdm_dT_from_context(
     shift_kwargs.setdefault("row_chunk_size", 128)
     shift_kwargs.setdefault("tl_tp_mode", "exact")
 
-    xi_s, tau_s, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
+    phase_center, tau_s, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
         context,
         s,
         r,
@@ -611,7 +607,7 @@ def _one_arm_response_wdm_dT_from_context(
         return w_sr
 
     n_grid, m_grid = np.meshgrid(np.arange(wdm.Nt), np.arange(wdm.Nf), indexing="ij")
-    tq = xi_s + tau_s - times[0]
+    tq = phase_center - times[0]
     vals = gnm_at_times_grid_np_interp(wdm, n_grid, m_grid, tq, method=gnm_method, wrap=gnm_wrap)
     dl_sr = np.einsum("tnm,nm->t", vals, w_xi)
     return dl_sr, w_sr
@@ -670,37 +666,36 @@ def _one_arm_wdm_dT_components_from_context(
     n = sky_basis.n
     Omega = sky_basis.Omega
 
-    x_s_dT = orbits.compute_position(int_times_vals, sc=[s])[:, 0, :]
     l_sr_dT, x_r_rec_dT = _compute_ltt_iterative(
         int_times_vals,
         s,
         r,
         orbits,
-        x_s=x_s_dT,
         return_receiver_position=True,
     )
-    rhat_sr_dT = rhat(int_times_vals, s, r, orbits, x_s=x_s_dT, x_r_rec=x_r_rec_dT)
+    rhat_sr_dT = rhat(int_times_vals, s, r, orbits, tt=l_sr_dT, x_r_rec=x_r_rec_dT)
     Om_dot_rhat_dT = rhat_sr_dT @ Omega
     tau_n = 0.5 * l_sr_dT * (1 - Om_dot_rhat_dT)
     proj_dT_plus, proj_dT_cross = antenna_pattern_factors(rhat_sr_dT, sky_basis)
-    time_shift = x_s_dT @ (n / c) + tau_n
+    time_shift = x_r_rec_dT @ (n / c) - tau_n
 
     if include_time_domain_geometry:
-        x_s = orbits.compute_position(times, sc=[s])[:, 0, :]
-        xi_s = times - (x_s @ (Omega / c))
         l_sr, x_r_rec = _compute_ltt_iterative(
-            times,
-            s,
-            r,
-            orbits,
-            x_s=x_s,
-            return_receiver_position=True,
-        )
-        rhat_sr = rhat(times, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec)
+        times,
+        s,
+        r,
+        orbits,
+        return_receiver_position=True,
+    )
+        rhat_sr = rhat(times, s, r, orbits, tt=l_sr, x_r_rec=x_r_rec)
         Om_dot_rhat = rhat_sr @ Omega
         tau_s = 0.5 * l_sr * (1 - Om_dot_rhat)
+
+        # Reception-time phase centre:
+        # xi_r - tau = t_rec - Omega·x_r(t_rec)/c - tau
+        phase_center = times - (x_r_rec @ (Omega / c)) - tau_s
     else:
-        xi_s = None
+        phase_center = None
         tau_s = None
 
     sinc_mat = np.sinc(2.0 * freq_vals[None, :] * tau_n[:, None])
@@ -710,7 +705,7 @@ def _one_arm_wdm_dT_components_from_context(
 
     w_xi = A_nm_plus * w_t_plus + A_nm_cross * w_t_cross
 
-    return xi_s, tau_s, w_xi, time_shift
+    return phase_center, tau_s, w_xi, time_shift
 
 
 def precompute_one_arm_wdm_dT_links(
@@ -776,7 +771,8 @@ def precompute_one_arm_wdm_dT_links(
     -------
     tuple
         ``(wdm, responses)`` where ``wdm`` is the WDM transform object and
-        ``responses`` maps directed links ``(s, r)`` to WDM arrays.
+        ``responses`` maps directed links ``(s, r)`` to WDM arrays for the
+        link response received at spacecraft ``r`` from spacecraft ``s``.
 
     Notes
     -----
@@ -855,8 +851,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     Parameters
     ----------
     times : ndarray
-        Sample times of the LISA response. Each entry is the emission time at
-        the sending spacecraft.
+        Sample reception/readout times of the LISA response.
     s : int
         Sending spacecraft index.
     r : int

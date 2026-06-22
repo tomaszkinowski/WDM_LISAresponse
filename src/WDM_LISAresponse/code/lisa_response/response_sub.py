@@ -148,22 +148,22 @@ def antenna_pattern_factors(rhat_vec: np.ndarray, sky_basis: SkyBasis) -> Tuple[
 
 
 def _solve_link_geometry(times, s, r, orbits, x_s=None):
-    """Solve sender/receiver geometry for a directed link on a time grid."""
+    """Solve sender/receiver geometry for a directed link on a reception grid."""
     times = np.asarray(times, dtype=float)
     tt_niter = 4
 
+    x_r = orbits.compute_position(times, sc=[r])[:, 0, :]
     if x_s is None:
         x_s = orbits.compute_position(times, sc=[s])[:, 0, :]
     else:
         x_s = np.asarray(x_s, dtype=float)
 
-    x_r = orbits.compute_position(times, sc=[r])[:, 0, :]
-    tt = np.linalg.norm(x_s - x_r, axis=1) / c
+    tt = np.linalg.norm(x_r - x_s, axis=1) / c
 
     for _ in range(tt_niter):
-        t_rec = times + tt
-        x_r = orbits.compute_position(t_rec, sc=[r])[:, 0, :]
-        tt = np.linalg.norm(x_s - x_r, axis=1) / c
+        t_emit = times - tt
+        x_s = orbits.compute_position(t_emit, sc=[s])[:, 0, :]
+        tt = np.linalg.norm(x_r - x_s, axis=1) / c
 
     return x_s, x_r, tt
 
@@ -175,8 +175,7 @@ def _compute_ltt_iterative(times, s, r, orbits, x_s=None, return_receiver_positi
     Parameters
     ----------
     times : ndarray
-        Sample times at which the signal leaves the sender spacecraft, in
-        seconds.
+        Sample reception/readout times for the directed link, in seconds.
     s : int
         Sending spacecraft index.
     r : int
@@ -204,13 +203,12 @@ def _compute_ltt_iterative(times, s, r, orbits, x_s=None, return_receiver_positi
 
 def rhat(times, s, r, orbits, tt=None, x_s=None, x_r_rec=None):
     """
-    Compute the directed link unit vector from sender to receiver.
+    Compute the directed link unit vector from sender emission to receiver readout.
 
     Parameters
     ----------
     times : ndarray
-        Sample times at which the signal leaves the sender spacecraft, in
-        seconds.
+        Sample reception/readout times for the directed link, in seconds.
     s : int
         Sending spacecraft index.
     r : int
@@ -220,7 +218,8 @@ def rhat(times, s, r, orbits, tt=None, x_s=None, x_r_rec=None):
     tt : ndarray or None, optional
         Optional light-travel time array corresponding to ``times``.
     x_s : ndarray or None, optional
-        Optional precomputed sender positions with shape ``(num_times, 3)``.
+        Optional precomputed sender positions at emission time with shape
+        ``(num_times, 3)``.
     x_r_rec : ndarray or None, optional
         Optional precomputed receiver positions at reception time with shape
         ``(num_times, 3)``.
@@ -233,28 +232,24 @@ def rhat(times, s, r, orbits, tt=None, x_s=None, x_r_rec=None):
     if x_s is None and x_r_rec is None and tt is None:
         x_s, x_r_rec, _ = _solve_link_geometry(times, s, r, orbits)
     else:
-        if x_s is None:
-            x_s = orbits.compute_position(times, [s])[:, 0, :]
-        else:
-            x_s = np.asarray(x_s, dtype=float)
+        if tt is not None:
+            tt = np.asarray(tt, dtype=float)
 
         if x_r_rec is None:
-            if tt is None:
-                tt, x_r_rec = _compute_ltt_iterative(
-                    times,
-                    s,
-                    r,
-                    orbits,
-                    x_s=x_s,
-                    return_receiver_position=True,
-                )
-            else:
-                t_rec = np.asarray(times, dtype=float) + np.asarray(tt, dtype=float)
-                x_r_rec = orbits.compute_position(t_rec, [r])[:, 0, :]
+            x_r_rec = orbits.compute_position(times, [r])[:, 0, :]
         else:
             x_r_rec = np.asarray(x_r_rec, dtype=float)
 
-    r_hat = (x_r_rec - x_s) 
+        if x_s is None:
+            if tt is None:
+                x_s, x_r_rec, _ = _solve_link_geometry(times, s, r, orbits)
+            else:
+                t_emit = np.asarray(times, dtype=float) - tt
+                x_s = orbits.compute_position(t_emit, [s])[:, 0, :]
+        else:
+            x_s = np.asarray(x_s, dtype=float)
+
+    r_hat = (x_r_rec - x_s)
     r_hat = r_hat / np.linalg.norm(r_hat, axis=1)[:, np.newaxis]
     return r_hat
 
@@ -546,20 +541,18 @@ def generate_time_shifts(Nt, times_0, dT, theta, phi, s, r, orbits, sky_basis=No
 
     n = sky_basis.n
     Omega = sky_basis.Omega
-    x_s = orbits.compute_position(t_p, sc=[s])[:, 0, :]
     l_sr_tp, x_r_rec_tp = _compute_ltt_iterative(
         t_p,
         s,
         r,
         orbits,
-        x_s=x_s,
         return_receiver_position=True,
     )
-    rhat_sr_tp = rhat(t_p, s, r, orbits, x_s=x_s, x_r_rec=x_r_rec_tp)
+    rhat_sr_tp = rhat(t_p, s, r, orbits, tt=l_sr_tp, x_r_rec=x_r_rec_tp)
     Om_dot_rhat_tp = rhat_sr_tp @ Omega
     tau_p = 0.5 * l_sr_tp * (1 - Om_dot_rhat_tp)
 
-    t_shifts = x_s @ (n / c) + tau_p
+    t_shifts = x_r_rec_tp @ (n / c) - tau_p
 
 
     return t_shifts

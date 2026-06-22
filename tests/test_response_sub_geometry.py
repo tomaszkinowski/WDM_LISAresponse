@@ -108,27 +108,55 @@ def test_compute_ltt_iterative_reuses_supplied_sender_positions_and_receiver_sol
     )
 
     expected_ltt = np.full_like(times, 2.5e9 / c)
-    expected_x_r = orbits.compute_position(times + expected_ltt, sc=[2])[:, 0, :]
+    expected_x_r = orbits.compute_position(times, sc=[2])[:, 0, :]
 
     assert np.allclose(ltt, expected_ltt, rtol=0.0, atol=1e-12)
     assert np.allclose(x_r_rec, expected_x_r, rtol=0.0, atol=1e-12)
+
+
+def test_compute_ltt_iterative_reception_time_geometry_identities():
+    """Reception-time geometry should satisfy the retarded-time identities exactly."""
+    from lisaconstants import c
+
+    orbits = SimpleOrbits(arm_length=2.5e9)
+    times = np.linspace(0.0, 1000.0, 128)
+
+    ltt, x_r_rec = _compute_ltt_iterative(
+        times,
+        s=1,
+        r=2,
+        orbits=orbits,
+        return_receiver_position=True,
+    )
+    t_emit = times - ltt
+    x_s = orbits.compute_position(t_emit, sc=[1])[:, 0, :]
+    rhat_vec = (x_r_rec - x_s) / np.linalg.norm(x_r_rec - x_s, axis=1)[:, None]
+
+    assert np.allclose(t_emit + ltt, times, rtol=0.0, atol=1e-12)
+    assert np.allclose(np.linalg.norm(x_r_rec - x_s, axis=1) / c, ltt, rtol=0.0, atol=1e-12)
+
+    _, _, n = basis_vectors(1.0, 0.4)
+    tau = 0.5 * ltt * (1.0 + np.einsum("i,ti->t", n, rhat_vec))
+    xi_i_plus_tau = t_emit + np.einsum("i,ti->t", n, x_s / c) + tau
+    xi_j_minus_tau = times + np.einsum("i,ti->t", n, x_r_rec / c) - tau
+
+    assert np.allclose(xi_i_plus_tau, xi_j_minus_tau, rtol=0.0, atol=1e-12)
 
 
 def test_rhat_accepts_reused_link_geometry():
     """Reused sender/receiver positions should produce the same unit vector."""
     orbits = SimpleOrbits(arm_length=2.5e9)
     times = np.linspace(0.0, 1000.0, 128)
-    x_s = orbits.compute_position(times, sc=[1])[:, 0, :]
-    _, x_r_rec = _compute_ltt_iterative(
+    ltt, x_r_rec = _compute_ltt_iterative(
         times,
         s=1,
         r=2,
         orbits=orbits,
-        x_s=x_s,
         return_receiver_position=True,
     )
+    x_s = orbits.compute_position(times - ltt, sc=[1])[:, 0, :]
 
-    r_hat = rhat(times, s=1, r=2, orbits=orbits, x_s=x_s, x_r_rec=x_r_rec)
+    r_hat = rhat(times, s=1, r=2, orbits=orbits, tt=ltt, x_r_rec=x_r_rec)
     expected = np.zeros((times.size, 3), dtype=float)
     expected[:, 0] = 1.0
 

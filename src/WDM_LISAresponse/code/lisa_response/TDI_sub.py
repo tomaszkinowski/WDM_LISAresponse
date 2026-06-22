@@ -6,7 +6,7 @@ from WDM_LISAresponse.code.lisa_response.response_sub import _compute_ltt_iterat
 
 def gen1_time_shift(s, r, orbits, t0, npts=2000, year_days=365.25):
     """
-    Compute the time shift value for Gen 1 time shifts - unequal but constant arms. 
+    Compute the time shift value for Gen 1 time shifts - unequal but constant arms.
     We approximate the time-shift value by averaging the light travel time for a year of data points.
 
     Parameters
@@ -47,7 +47,7 @@ def gen2_time_shift(links, orbits, times):
     """
     Compute the time shift value for Gen 2 time shifts - unequal and time varying arms. 
     The function can perform recursive shifts.
-    The calculation is done for a set of input times. 
+    The calculation is done for a set of input reception/readout times.
 
     One-shot composed Gen-2 delay:
     Δ(t) = L_1(t) + L_2(t - L_1(t)) + L_3(t - L_1(t) - L_2(t - L_1(t))) + ...
@@ -70,7 +70,7 @@ def gen2_time_shift(links, orbits, times):
 
     times = np.asarray(times, dtype=float)
     shift_vals = np.zeros_like(times)
-    shift_time = times.copy()
+    shift_time = times.copy()  # next readout time in the recursive chain
 
     for s, r in links_array:
         term = _compute_ltt_iterative(shift_time, int(s), int(r), orbits)

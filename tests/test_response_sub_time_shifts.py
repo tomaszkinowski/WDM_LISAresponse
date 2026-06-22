@@ -49,8 +49,8 @@ def test_generate_time_shifts_constant_geometry_matches_formula():
     l_sr = 2.5e9
     tau = 0.5 * (l_sr / c) * (1.0 + rhat_x * n[0])
 
-    x_s = 0.0
-    expected = np.full(Nt, x_s * n[0] / c + tau)
+    x_r = orbits.arm_length
+    expected = np.full(Nt, x_r * n[0] / c - tau)
 
     assert shifts.shape == (Nt,)
     assert np.allclose(shifts, expected, rtol=0.0, atol=1e-9)
