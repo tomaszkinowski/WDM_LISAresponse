@@ -4,7 +4,7 @@ import pytest
 pytest.importorskip("jax")
 pytest.importorskip("lisaconstants")
 
-from WDM_LISAresponse.code.lisa_response.TDI import (
+from WDM_LISAresponse.code.lisa_response.TDI_with_one_arm_plan import (
     gen2_michelson_wdm,
     gen2_michelson_wdm_from_precomputed,
     gen2_michelson_wdm_from_waveform_precomputed,
@@ -12,7 +12,7 @@ from WDM_LISAresponse.code.lisa_response.TDI import (
     precompute_gen2_michelson_wdm_geometry,
     precompute_gen2_michelson_wdm_waveform,
 )
-from WDM_LISAresponse.code.lisa_response.response import precompute_one_arm_wdm_dT_links
+from WDM_LISAresponse.code.lisa_response.response_with_plan import precompute_one_arm_wdm_dT_links
 
 
 class SimpleOrbits:
@@ -548,7 +548,7 @@ def test_geometry_stage_calls_shift_precompute_but_waveform_stage_does_not(monke
     phi = 0.5
     n_f = 8
 
-    import WDM_LISAresponse.code.lisa_response.TDI as tdi_module
+    import WDM_LISAresponse.code.lisa_response.TDI_with_one_arm_plan as tdi_module
 
     call_counter = {"count": 0}
     real_fn = tdi_module.precompute_gen2_michelson_shifts
@@ -600,7 +600,7 @@ def test_waveform_stage_reuses_geometry_wdm_and_skips_wdm_context_rebuild(monkey
         variable_shift_kwargs=_exact_shift_kwargs("lagfirst_chunked_lagblock", batch_chunk=2),
     )
 
-    import WDM_LISAresponse.code.lisa_response.response as response_module
+    import WDM_LISAresponse.code.lisa_response.response_with_plan as response_module
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("_build_wdm_dT_context should not be called during A1 waveform stage")

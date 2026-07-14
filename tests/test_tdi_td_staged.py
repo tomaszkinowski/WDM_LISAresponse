@@ -4,8 +4,8 @@ import pytest
 pytest.importorskip("WDM")
 pytest.importorskip("lisaconstants")
 
-from WDM_LISAresponse.code.lisa_response import TDI as tdi_mod
-from WDM_LISAresponse.code.lisa_response.TDI import (
+from WDM_LISAresponse.code.lisa_response import TDI_with_one_arm_plan as tdi_mod
+from WDM_LISAresponse.code.lisa_response.TDI_with_one_arm_plan import (
     gen2_michelson_td,
     gen2_michelson_td_from_precomputed,
     precompute_gen2_michelson_td_geometry,

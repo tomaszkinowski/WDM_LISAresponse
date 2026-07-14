@@ -6,8 +6,10 @@ import numpy as np
 from lisaconstants import c
 from scipy.interpolate import interp1d
 import WDM
-from WDM.code.time_delay_filters.time_shift_fast import wdm_time_shift_variable, wdm_time_shift_variable_batch
+from WDM.code.time_delay_filters.time_shift_fast import wdm_time_shift_variable
 from numpy.fft import fft, fftfreq
+from .one_arm_plan import OneArmWDMPlan
+from ..utils.utils import wdm_tail_padding_info
 from .response_sub import (
     antenna_pattern_factors,
     build_sky_basis,
@@ -351,6 +353,75 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     return dl_sr_wdm[:N_in]
 
 
+def _build_wdm_dT_grid(
+    times,
+    *,
+    Nf=500,
+    d=4,
+    A_frac=0.25,
+    m_offset=0.0,
+    q=None,
+    calc_m0=True,
+):
+    """Build WDM grid metadata without projecting a waveform.
+
+    This is the waveform-independent half of ``_build_wdm_dT_context``.  It
+    constructs the final padded WDM tiling, transform object, frequency grid
+    and WDM centre-time grid, but deliberately performs no ``dwt`` calls.
+
+    Parameters
+    ----------
+    times : ndarray
+        Uniformly sampled input time grid.  The returned WDM transform uses
+        the right-tail padded length required by ``2 * Nf`` tiling.
+    Nf, d, A_frac, m_offset, q, calc_m0
+        WDM construction settings, with the same meaning as in
+        ``_build_wdm_dT_context``.
+
+    Returns
+    -------
+    dict
+        Waveform-independent WDM metadata.  In particular, this dictionary
+        does not contain ``w_t_plus`` or ``w_t_cross``.
+    """
+    times = np.asarray(times, dtype=float)
+    if times.ndim != 1 or times.size < 2:
+        raise ValueError("times must be a 1D array with at least two samples.")
+
+    dt = float(times[1] - times[0])
+    if dt <= 0.0:
+        raise ValueError("times must be strictly increasing.")
+    if not np.allclose(np.diff(times), dt):
+        raise ValueError("times must be uniformly sampled for WDM transforms.")
+
+    Nf = int(Nf)
+    padding_info = wdm_tail_padding_info(times.size, Nf)
+    N = int(padding_info["target_length"])
+    q_val = _resolve_wdm_q_value(N, Nf, q=q)
+
+    wdm = WDM.WDM.WDM_transform(
+        dt=dt,
+        Nf=Nf,
+        N=N,
+        q=q_val,
+        calc_m0=calc_m0,
+        d=d,
+        A_frac=A_frac,
+    )
+
+    freq_vals = (np.arange(wdm.Nf) + m_offset) * wdm.dF
+    int_times_vals = times[0] + np.arange(wdm.Nt) * wdm.dT
+
+    return {
+        "times": times,
+        "wdm": wdm,
+        "A_frac": float(A_frac),
+        "freq_vals": freq_vals,
+        "int_times_vals": int_times_vals,
+        "padding_info": padding_info,
+    }
+
+
 def _build_wdm_dT_context_from_wdm(times, td_waveform_plus, td_waveform_cross, wdm, m_offset=0.0):
     """Build reusable dT context using an existing WDM transform object.
 
@@ -397,79 +468,50 @@ def _build_wdm_dT_context_from_wdm(times, td_waveform_plus, td_waveform_cross, w
     }
 
 
-def _build_wdm_dT_context(times, td_waveform_plus, td_waveform_cross, Nf=500, d=4, A_frac=0.25, m_offset=0.0, q=None, calc_m0=True, wdm=None):
-    """Build reusable WDM objects and waveform projections for dT responses.
+def _build_wdm_dT_context(
+    times,
+    td_waveform_plus,
+    td_waveform_cross,
+    Nf=500,
+    d=4,
+    A_frac=0.25,
+    m_offset=0.0,
+    q=None,
+    calc_m0=True,
+    wdm=None,
+):
+    """Build waveform-specific WDM projections on a reusable grid.
 
-    Parameters
-    ----------
-    times : ndarray
-        Uniformly sampled time grid.
-    td_waveform_plus : ndarray
-        Plus-polarization time series.
-    td_waveform_cross : ndarray
-        Cross-polarization time series.
-    Nf : int, optional
-        Number of WDM frequency bins.
-    d : int, optional
-        WDM oversampling/filter parameter.
-    A_frac : float, optional
-        WDM basis/window shape parameter.
-    m_offset : float, optional
-        Optional frequency-index offset used in some WDM conventions.
-    q : int or None, optional
-        WDM truncation parameter. When ``None``, it is set to the maximum
-        allowed value for the current tiling.
-    calc_m0 : bool, optional
-        Whether to include the ``m=0`` WDM component when constructing the
-        transform.
-    wdm : object or None, optional
-        Existing ``WDM.WDM.WDM_transform`` instance to reuse. When provided,
-        the transform is not rebuilt and only waveform projections are
-        recomputed.
-    Returns
-    -------
-    dict
-        Dictionary containing precomputed WDM object, transformed waveforms,
-        and grids used repeatedly by one-arm response calls.
+    Grid construction is delegated to ``_build_wdm_dT_grid``.  Consequently,
+    callers that only need WDM metadata can use that function without running
+    two dummy DWTs.
     """
-    if wdm is not None:
-        return _build_wdm_dT_context_from_wdm(
+    if wdm is None:
+        grid_context = _build_wdm_dT_grid(
             times,
-            td_waveform_plus,
-            td_waveform_cross,
-            wdm,
+            Nf=Nf,
+            d=d,
+            A_frac=A_frac,
             m_offset=m_offset,
+            q=q,
+            calc_m0=calc_m0,
         )
+        wdm = grid_context["wdm"]
+    else:
+        grid_context = None
 
-    times = np.asarray(times, dtype=float)
-    times_wdm, td_plus_wdm, td_cross_wdm, _ = wdm_pad_inputs_right(
+    context = _build_wdm_dT_context_from_wdm(
         times,
         td_waveform_plus,
         td_waveform_cross,
-        Nf,
+        wdm,
+        m_offset=m_offset,
     )
-    N = len(times_wdm)
-    dt = times_wdm[1] - times_wdm[0]
 
-    q_val = _resolve_wdm_q_value(N, Nf, q=q)
+    if grid_context is not None:
+        context["padding_info"] = grid_context["padding_info"]
 
-    wdm = WDM.WDM.WDM_transform(dt=dt, Nf=Nf, N=N, q=q_val, calc_m0=calc_m0, d=d, A_frac=A_frac)
-    w_t_plus = wdm.dwt(td_plus_wdm)
-    w_t_cross = wdm.dwt(td_cross_wdm)
-
-    freq_vals = (np.arange(wdm.Nf) + m_offset) * wdm.dF
-    times_vals = np.arange(wdm.Nt) * wdm.dT
-    int_times_vals = times[0] + times_vals
-
-    return {
-        "times": times,
-        "wdm": wdm,
-        "A_frac": float(A_frac),
-        "w_t_plus": w_t_plus,
-        "w_t_cross": w_t_cross,
-        "freq_vals": freq_vals,
-        "int_times_vals": int_times_vals,
-    }
+    return context
 
 
 def precompute_one_arm_wdm_dT_links_from_context(
@@ -483,14 +525,24 @@ def precompute_one_arm_wdm_dT_links_from_context(
     cache=None,
     variable_shift_kwargs=None,
     use_jax=None,
+    one_arm_plan=None,
 ):
-    """Precompute directed one-arm dT WDM responses from a prebuilt context.
+    """Evaluate directed one-arm WDM responses from a prebuilt context.
 
-    The returned map stores link responses received at spacecraft ``r`` from
-    spacecraft ``s``.
+    Parameters
+    ----------
+    one_arm_plan : OneArmWDMPlan or None, optional
+        Reusable waveform-independent response/shift plan.  When omitted, a
+        plan is built from the context, orbit and sky location.  Pass the same
+        plan for subsequent waveforms on the same WDM grid to avoid rebuilding
+        geometry, transfer factors and ``Tl/Tp``.
+
+    Returns
+    -------
+    tuple
+        ``(wdm, responses)`` using the existing directed-link dictionary API.
     """
     shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
-    sky_basis = build_sky_basis(theta, phi)
 
     if links is None:
         links = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2))
@@ -498,6 +550,15 @@ def precompute_one_arm_wdm_dT_links_from_context(
 
     context_times = np.asarray(context["times"], dtype=float)
     wdm = context["wdm"]
+
+    if one_arm_plan is not None:
+        if not isinstance(one_arm_plan, OneArmWDMPlan):
+            raise TypeError("one_arm_plan must be a OneArmWDMPlan instance.")
+        if tuple(one_arm_plan.links) != links:
+            raise ValueError(
+                "The supplied one_arm_plan uses a different directed-link order."
+            )
+        return wdm, one_arm_plan.apply_context(context)
 
     shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
     cache_key = (
@@ -519,29 +580,17 @@ def precompute_one_arm_wdm_dT_links_from_context(
     if cache is not None and cache_key in cache:
         return cache[cache_key]
 
-    shift_jobs = []
-    for s, r in links:
-        _, _, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
-            context,
-            s,
-            r,
-            orbits,
-            theta,
-            phi,
-            include_time_domain_geometry=False,
-            sky_basis=sky_basis,
-        )
-        shift_jobs.append((w_xi, -time_shift))
-
-    shifted_links = wdm_time_shift_variable_batch(
-        wdm,
-        shift_jobs,
-        Nf=wdm.Nf,
+    plan = OneArmWDMPlan.build_from_context(
+        context,
+        orbits,
+        theta,
+        phi,
+        links=links,
         L_trunc=L_trunc,
+        variable_shift_kwargs=shift_kwargs,
         use_jax=use_jax,
-        **shift_kwargs,
     )
-    responses = {link: shifted for link, shifted in zip(links, shifted_links)}
+    responses = plan.apply_context(context)
 
     payload = (wdm, responses)
     if cache is not None:
@@ -926,5 +975,4 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         use_jax=use_jax,
         sky_basis=sky_basis,
     )
-
 

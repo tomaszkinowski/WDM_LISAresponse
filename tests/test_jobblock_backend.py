@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("jax")
 pytest.importorskip("lisaconstants")
 
-from WDM_LISAresponse.code.lisa_response.TDI import (
+from WDM_LISAresponse.code.lisa_response.TDI_with_one_arm_plan import (
     gen2_michelson_wdm_from_waveform_precomputed,
     precompute_gen2_michelson_wdm_geometry,
     precompute_gen2_michelson_wdm_waveform,

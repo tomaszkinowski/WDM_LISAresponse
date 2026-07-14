@@ -4,7 +4,7 @@ import pytest
 pytest.importorskip("WDM")
 pytest.importorskip("lisaconstants")
 
-from WDM_LISAresponse.code.lisa_response.response import (
+from WDM_LISAresponse.code.lisa_response.response_with_plan import (
     one_arm_response_td,
     one_arm_response_td_chunked,
 )

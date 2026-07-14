@@ -5,4 +5,4 @@ from .code.utils import utils
 
 from .code.plotting import plotting
 
-from .code.lisa_response import response, TDI, waveforms
+from .code.lisa_response import TDI_with_one_arm_plan, response_with_plan, waveforms

@@ -1,14 +1,17 @@
 #code to generate TDI signals in TD and WDM domains 
 import time
 import numpy as np
-from WDM_LISAresponse.code.lisa_response.response import (
+from WDM_LISAresponse.code.lisa_response.response_with_plan import (
     one_arm_response_td,
     one_arm_response_td_chunked,
     precompute_one_arm_wdm_dT_links,
     precompute_one_arm_wdm_dT_links_from_context,
     _build_wdm_dT_context_from_wdm,
+    _build_wdm_dT_grid,
     _split_variable_shift_kwargs,
 )
+from WDM_LISAresponse.code.lisa_response.one_arm_plan import OneArmWDMPlan
+from WDM_LISAresponse.code.lisa_response.gen2_michelson_plan import Gen2MichelsonWDMPlan
 from WDM.code.time_delay_filters.time_shift_fast import (
     wdm_time_shift_fixed_batch,
     wdm_time_shift_variable_batch,
@@ -499,33 +502,67 @@ def precompute_gen2_michelson_wdm_geometry(
     This stage is waveform-independent and reusable across many waveforms on
     the same time grid, sky location, orbit object, and WDM settings.
     """
-    from WDM_LISAresponse.code.lisa_response.response import _build_wdm_dT_context
-
     times = np.asarray(times, dtype=float)
     one_arm_shift_kwargs, tdi_batch_shift_kwargs = _split_variable_shift_kwargs(variable_shift_kwargs)
 
-    # Build only WDM/grid metadata using dummy waveforms (no one-arm responses).
-    dummy = np.zeros(times.shape[0], dtype=float)
-    wdm_context = _build_wdm_dT_context(
+    # Build WDM/grid metadata directly.  This is the A0 grid stage and must
+    # not project dummy waveforms or call ``wdm.dwt``.
+    t_grid0 = time.perf_counter()
+    wdm_context = _build_wdm_dT_grid(
         times,
-        dummy,
-        dummy,
         Nf=Nf,
         d=d,
         A_frac=A_frac,
         q=q,
         calc_m0=calc_m0,
     )
+    wdm_grid_build_s = time.perf_counter() - t_grid0
+
     wdm = wdm_context["wdm"]
-    times_p = float(times[0]) + np.arange(wdm.Nt, dtype=float) * float(wdm.dT)
+    times_p = wdm_context["int_times_vals"]
+
+    # The one-arm geometry, transfer factors and variable-shift kernels depend
+    # on the orbit, sky position and WDM grid, but not on the waveform.  Build
+    # them in A0 so A1 only performs the two real waveform DWTs and applies the
+    # prepared plan.
+    t_one_arm0 = time.perf_counter()
+    one_arm_plan = OneArmWDMPlan.build_from_context(
+        wdm_context,
+        orbits,
+        theta,
+        phi,
+        L_trunc=L_trunc,
+        variable_shift_kwargs=one_arm_shift_kwargs,
+        use_jax=use_jax,
+    )
+    one_arm_plan_build_s = time.perf_counter() - t_one_arm0
 
     cache_key = ("michelson_wdm", id(orbits), int(wdm.Nt), float(times[0]), float(wdm.dT), int(Nf))
+    t_tdi_delay0 = time.perf_counter()
     if shifts_cache is not None and cache_key in shifts_cache:
         shifts_X, shifts_Y, shifts_Z = shifts_cache[cache_key]
+        tdi_delays_from_cache = True
     else:
         shifts_X, shifts_Y, shifts_Z = precompute_gen2_michelson_shifts(times_p, orbits)
+        tdi_delays_from_cache = False
         if shifts_cache is not None:
             shifts_cache[cache_key] = (shifts_X, shifts_Y, shifts_Z)
+    tdi_delay_build_s = time.perf_counter() - t_tdi_delay0
+
+    # Build the complete 42-job WDM TDI operator in A0.  The recursive delay
+    # fields and all Tl/Tp kernels are waveform independent.
+    t_tdi_plan0 = time.perf_counter()
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+        wdm=wdm,
+        shifts_X=shifts_X,
+        shifts_Y=shifts_Y,
+        shifts_Z=shifts_Z,
+        job_templates=_GEN2_MICHELSON_JOB_TEMPLATES,
+        L_trunc=L_trunc,
+        variable_shift_kwargs=tdi_batch_shift_kwargs,
+        use_jax=use_jax,
+    )
+    tdi_plan_build_s = time.perf_counter() - t_tdi_plan0
 
     return {
         "kind": "gen2_michelson_wdm_geometry",
@@ -534,11 +571,14 @@ def precompute_gen2_michelson_wdm_geometry(
         "phi": float(phi),
         "orbits": orbits,
         "wdm": wdm,
+        "wdm_grid_context": wdm_context,
         "times_p": times_p,
         "shifts_X": shifts_X,
         "shifts_Y": shifts_Y,
         "shifts_Z": shifts_Z,
         "job_templates": _GEN2_MICHELSON_JOB_TEMPLATES,
+        "one_arm_plan": one_arm_plan,
+        "tdi_plan": tdi_plan,
         "one_arm_shift_kwargs": one_arm_shift_kwargs,
         "tdi_batch_shift_kwargs": tdi_batch_shift_kwargs,
         "Nf": int(Nf),
@@ -548,6 +588,12 @@ def precompute_gen2_michelson_wdm_geometry(
         "d": int(d),
         "A_frac": float(A_frac),
         "use_jax": use_jax,
+        "wdm_grid_build_s": float(wdm_grid_build_s),
+        "one_arm_plan_build_s": float(one_arm_plan_build_s),
+        "tdi_delay_build_s": float(tdi_delay_build_s),
+        "tdi_plan_build_s": float(tdi_plan_build_s),
+        "tdi_plan_kernel_memory_bytes": int(tdi_plan.kernel_memory_bytes),
+        "tdi_delays_from_cache": bool(tdi_delays_from_cache),
     }
 
 
@@ -559,7 +605,13 @@ def precompute_gen2_michelson_wdm_waveform(
     variable_shift_kwargs=None,
     one_arm_cache=None,
 ):
-    """A1 precompute: build waveform-specific one-arm links and TDI jobs."""
+    """A1 precompute: transform one waveform and apply six one-arm plans.
+
+    The prepared TDI plan from A0 is retained for the optimized
+    ``tdi_assembly_mode="prepared_plan"`` path.  Runtime TDI overrides are
+    also retained for the legacy ``batch_map`` and ``accumulate`` reference
+    paths, which remain useful for backend regression tests.
+    """
     times = geom_precomp["times"]
     theta = geom_precomp["theta"]
     phi = geom_precomp["phi"]
@@ -573,12 +625,29 @@ def precompute_gen2_michelson_wdm_waveform(
     calc_m0 = bool(geom_precomp.get("calc_m0", True))
 
     one_arm_shift_kwargs = dict(geom_precomp.get("one_arm_shift_kwargs", {}))
-    tdi_batch_shift_kwargs = dict(geom_precomp.get("tdi_batch_shift_kwargs", {}))
+    prepared_tdi_shift_kwargs = dict(
+        geom_precomp.get("tdi_batch_shift_kwargs", {})
+    )
+    runtime_tdi_shift_kwargs = dict(prepared_tdi_shift_kwargs)
 
+    rebuild_one_arm_plan = False
     if variable_shift_kwargs is not None:
-        one_arm_override, tdi_override = _split_variable_shift_kwargs(variable_shift_kwargs)
-        one_arm_shift_kwargs.update(one_arm_override)
-        tdi_batch_shift_kwargs.update(tdi_override)
+        one_arm_override, tdi_override = _split_variable_shift_kwargs(
+            variable_shift_kwargs
+        )
+
+        updated_one_arm_kwargs = dict(one_arm_shift_kwargs)
+        updated_one_arm_kwargs.update(one_arm_override)
+        rebuild_one_arm_plan = updated_one_arm_kwargs != one_arm_shift_kwargs
+        one_arm_shift_kwargs = updated_one_arm_kwargs
+
+        # These options are used only by the legacy B-stage paths.  The
+        # prepared plan remains the immutable operator created in A0.
+        runtime_tdi_shift_kwargs.update(tdi_override)
+
+    runtime_tdi_differs_from_plan = (
+        runtime_tdi_shift_kwargs != prepared_tdi_shift_kwargs
+    )
 
     t_ctx0 = time.perf_counter()
     wave_context = _build_wdm_dT_context_from_wdm(
@@ -589,6 +658,18 @@ def precompute_gen2_michelson_wdm_waveform(
         m_offset=0.0,
     )
     waveform_context_build_s = time.perf_counter() - t_ctx0
+
+    one_arm_plan = geom_precomp.get("one_arm_plan")
+    if one_arm_plan is None or rebuild_one_arm_plan:
+        one_arm_plan = OneArmWDMPlan.build_from_context(
+            wave_context,
+            orbits,
+            theta,
+            phi,
+            L_trunc=L_trunc,
+            variable_shift_kwargs=one_arm_shift_kwargs,
+            use_jax=use_jax,
+        )
 
     cache = _resolve_one_arm_cache(one_arm_cache)
     t_links0 = time.perf_counter()
@@ -601,9 +682,18 @@ def precompute_gen2_michelson_wdm_waveform(
         cache=cache,
         variable_shift_kwargs=one_arm_shift_kwargs,
         use_jax=use_jax,
+        one_arm_plan=one_arm_plan,
     )
     six_link_compute_s = time.perf_counter() - t_links0
 
+    tdi_plan = geom_precomp.get("tdi_plan")
+    if tdi_plan is None:
+        raise ValueError(
+            "geom_precomp is missing the prepared Gen-2 Michelson TDI plan."
+        )
+
+    # Keep the old job records as a lightweight reference/testing path.  They
+    # are only metadata and cost essentially nothing compared with shifting.
     t_jobs0 = time.perf_counter()
     x_jobs, y_jobs, z_jobs, all_jobs = _build_gen2_michelson_job_records(
         link_w,
@@ -619,6 +709,8 @@ def precompute_gen2_michelson_wdm_waveform(
         "wdm": wdm,
         "times_p": geom_precomp["times_p"],
         "link_w": link_w,
+        "one_arm_plan": one_arm_plan,
+        "tdi_plan": tdi_plan,
         "shifts_X": geom_precomp["shifts_X"],
         "shifts_Y": geom_precomp["shifts_Y"],
         "shifts_Z": geom_precomp["shifts_Z"],
@@ -628,7 +720,11 @@ def precompute_gen2_michelson_wdm_waveform(
         "all_jobs": all_jobs,
         "job_templates": geom_precomp["job_templates"],
         "one_arm_shift_kwargs": one_arm_shift_kwargs,
-        "tdi_batch_shift_kwargs": tdi_batch_shift_kwargs,
+        "tdi_batch_shift_kwargs": prepared_tdi_shift_kwargs,
+        "tdi_runtime_shift_kwargs": runtime_tdi_shift_kwargs,
+        "tdi_runtime_differs_from_plan": bool(
+            runtime_tdi_differs_from_plan
+        ),
         "Nf": Nf,
         "L_trunc": L_trunc,
         "d": d,
@@ -641,7 +737,6 @@ def precompute_gen2_michelson_wdm_waveform(
         "job_build_s": float(job_build_s),
     }
 
-
 def gen2_michelson_wdm_from_waveform_precomputed(
     wave_precomp,
     *,
@@ -651,45 +746,144 @@ def gen2_michelson_wdm_from_waveform_precomputed(
     use_jax=None,
     tdi_assembly_mode="batch_map",
     accumulator_chunk=1,
-    # profiling options (opt-in)
     profile_shift_stages=False,
     profile_label=None,
     return_shift_profile=False,
 ):
-    """B stage: run downstream TDI batch shifts from waveform precompute."""
+    """B stage: construct Gen-2 Michelson ``X, Y, Z``.
+
+    ``prepared_plan`` is the optimized production path: it applies the
+    immutable 42-job operator built in A0.  ``batch_map`` and ``accumulate``
+    are retained as reference/testing paths and may accept runtime backend
+    overrides, at the cost of rebuilding delay kernels in B.
+    """
     if "link_w" not in wave_precomp:
-        raise ValueError("wave_precomp is missing link_w; expected waveform-level precompute payload.")
+        raise ValueError(
+            "wave_precomp is missing link_w; expected waveform-level "
+            "precompute payload."
+        )
 
     wdm = wave_precomp["wdm"]
     link_w = wave_precomp["link_w"]
-    all_jobs = wave_precomp.get("all_jobs")
-    if all_jobs is None:
-        all_jobs = wave_precomp["x_jobs"] + wave_precomp["y_jobs"] + wave_precomp["z_jobs"]
 
     precomp_Nf = int(wave_precomp.get("Nf", wdm.Nf))
     if Nf is not None and int(Nf) != precomp_Nf:
-        raise ValueError(f"Nf must match the precomputed WDM grid; expected {precomp_Nf}, got {Nf}.")
+        raise ValueError(
+            f"Nf must match the prepared WDM grid; expected {precomp_Nf}, "
+            f"got {Nf}."
+        )
 
     precomp_L_trunc = wave_precomp.get("L_trunc", None)
     if L_trunc is not None:
         if precomp_L_trunc is None:
-            raise ValueError("L_trunc cannot be changed after precomputing staged Gen-2 shifts.")
+            raise ValueError(
+                "L_trunc cannot be changed after preparing the staged "
+                "Gen-2 response."
+            )
         if int(L_trunc) != int(precomp_L_trunc):
             raise ValueError(
-                f"L_trunc must match the precomputed shifts; expected {precomp_L_trunc}, got {L_trunc}."
+                "L_trunc must match the prepared shifts; expected "
+                f"{precomp_L_trunc}, got {L_trunc}."
             )
+
+    if tdi_assembly_mode == "prepared_plan":
+        tdi_plan = wave_precomp.get("tdi_plan")
+        if tdi_plan is None:
+            geometry = wave_precomp.get("geometry_precomp", {})
+            tdi_plan = geometry.get("tdi_plan")
+        if tdi_plan is None:
+            raise ValueError(
+                "No prepared Gen-2 Michelson TDI plan was found in "
+                "wave_precomp."
+            )
+
+        resolved_plan_use_jax = bool(tdi_plan.shift_plan.resolved_use_jax)
+        if use_jax is not None and bool(use_jax) != resolved_plan_use_jax:
+            raise ValueError(
+                "use_jax is part of the prepared TDI plan; rebuild A0 to "
+                "change it."
+            )
+
+        if wave_precomp.get("tdi_runtime_differs_from_plan", False):
+            raise ValueError(
+                "A1 contains runtime TDI overrides that differ from the "
+                "prepared A0 plan. Use tdi_assembly_mode='batch_map' or "
+                "'accumulate' for backend experiments, or rebuild A0 with "
+                "those settings before using 'prepared_plan'."
+            )
+
+        if variable_shift_kwargs is not None:
+            _, tdi_override = _split_variable_shift_kwargs(
+                variable_shift_kwargs
+            )
+            stored_tdi_kwargs = dict(
+                wave_precomp.get("tdi_batch_shift_kwargs", {})
+            )
+            updated_tdi_kwargs = dict(stored_tdi_kwargs)
+            updated_tdi_kwargs.update(tdi_override)
+            if updated_tdi_kwargs != stored_tdi_kwargs:
+                raise ValueError(
+                    "variable_shift_kwargs are part of the prepared TDI "
+                    "plan; rebuild A0 to change them, or use a legacy "
+                    "assembly mode for backend comparisons."
+                )
+
+        if profile_shift_stages:
+            assembled, shift_profile = tdi_plan.apply(
+                link_w,
+                return_profile=True,
+            )
+            shift_profile = dict(shift_profile)
+            if profile_label is not None:
+                shift_profile["label"] = profile_label
+            if return_shift_profile:
+                return assembled, shift_profile
+            return assembled
+
+        return tdi_plan.apply(link_w)
+
+    # ------------------------------------------------------------------
+    # Reference/testing paths.  These intentionally preserve the former
+    # runtime-configurable behavior so backend-equivalence tests remain useful.
+    # ------------------------------------------------------------------
+    all_jobs = wave_precomp.get("all_jobs")
+    if all_jobs is None:
+        x_jobs, y_jobs, z_jobs, all_jobs = (
+            _build_gen2_michelson_job_records(
+                link_w,
+                wave_precomp["shifts_X"],
+                wave_precomp["shifts_Y"],
+                wave_precomp["shifts_Z"],
+            )
+        )
+    else:
+        x_jobs = wave_precomp.get("x_jobs")
+        y_jobs = wave_precomp.get("y_jobs")
+        z_jobs = wave_precomp.get("z_jobs")
 
     resolved_use_jax = wave_precomp.get("use_jax", use_jax)
     if use_jax is not None:
         resolved_use_jax = use_jax
 
-    batch_shift_kwargs = dict(wave_precomp.get("tdi_batch_shift_kwargs", {}))
-    override_shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
-    override_shift_kwargs.pop("use_jax", None)
-    batch_shift_kwargs.update(override_shift_kwargs)
+    batch_shift_kwargs = dict(
+        wave_precomp.get(
+            "tdi_runtime_shift_kwargs",
+            wave_precomp.get("tdi_batch_shift_kwargs", {}),
+        )
+    )
+    if variable_shift_kwargs is not None:
+        _, tdi_override = _split_variable_shift_kwargs(
+            variable_shift_kwargs
+        )
+        batch_shift_kwargs.update(tdi_override)
 
-    batch_shift_kwargs = _finalize_variable_shift_batch_kwargs(batch_shift_kwargs, len(all_jobs))
-    batch_L_trunc = L_trunc if L_trunc is not None else precomp_L_trunc
+    batch_shift_kwargs = _finalize_variable_shift_batch_kwargs(
+        batch_shift_kwargs,
+        len(all_jobs),
+    )
+    batch_L_trunc = (
+        L_trunc if L_trunc is not None else precomp_L_trunc
+    )
 
     if tdi_assembly_mode == "batch_map":
         shifted_result = wdm_time_shift_variable_batch(
@@ -708,19 +902,35 @@ def gen2_michelson_wdm_from_waveform_precomputed(
         else:
             all_shifted = shifted_result
 
-        shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}
-        assembled = _assemble_gen2_michelson_from_shifted_map(link_w, shifted_map)
+        shifted_map = {
+            name: arr
+            for (name, _, _), arr in zip(all_jobs, all_shifted)
+        }
+        assembled = _assemble_gen2_michelson_from_shifted_map(
+            link_w,
+            shifted_map,
+        )
         if profile_shift_stages and return_shift_profile:
             return assembled, shift_profile
         return assembled
 
     if tdi_assembly_mode == "accumulate":
+        if x_jobs is None or y_jobs is None or z_jobs is None:
+            x_jobs, y_jobs, z_jobs, all_jobs = (
+                _build_gen2_michelson_job_records(
+                    link_w,
+                    wave_precomp["shifts_X"],
+                    wave_precomp["shifts_Y"],
+                    wave_precomp["shifts_Z"],
+                )
+            )
+
         return _gen2_michelson_wdm_accumulate_downstream(
             wdm,
             link_w,
-            wave_precomp["x_jobs"],
-            wave_precomp["y_jobs"],
-            wave_precomp["z_jobs"],
+            x_jobs,
+            y_jobs,
+            z_jobs,
             all_jobs,
             shifts_X=wave_precomp["shifts_X"],
             shifts_Y=wave_precomp["shifts_Y"],
@@ -736,9 +946,9 @@ def gen2_michelson_wdm_from_waveform_precomputed(
         )
 
     raise ValueError(
-        f"Unknown tdi_assembly_mode={tdi_assembly_mode!r}; expected 'batch_map' or 'accumulate'."
+        f"Unknown tdi_assembly_mode={tdi_assembly_mode!r}; expected "
+        "'batch_map' or 'accumulate', or the new 'prepared_plan'."
     )
-
 
 def gen2_michelson_wdm_from_precomputed(
     precomp,
