@@ -383,7 +383,52 @@ class OneArmWDMPlan:
         unshifted = self.unshifted_coefficients(w_t_plus, w_t_cross)
         return self.shift_plan.apply(unshifted, return_profile=return_profile)
 
-    def apply_batch_device(
+    def _device_amplitude_weights(self):
+        """Return cached job/source one-arm weights on the JAX device.
+
+        The returned shape is ``(num_links, 2, Nt, Nm)``. Source index zero
+        corresponds to plus polarization and source index one to cross.
+        """
+
+        if "amplitude_weights" not in self._device_cache:
+            self._device_cache["amplitude_weights"] = jnp.stack(
+                (
+                    jnp.asarray(self.amplitude_plus),
+                    jnp.asarray(self.amplitude_cross),
+                ),
+                axis=1,
+            )
+
+        return self._device_cache["amplitude_weights"]
+
+    def _waveform_sources_device(
+        self,
+        w_t_plus,
+        w_t_cross,
+    ):
+        """Validate and stack plus/cross WDM coefficients on-device."""
+
+        w_t_plus_device = jnp.asarray(w_t_plus)
+        w_t_cross_device = jnp.asarray(w_t_cross)
+        expected = (int(self.wdm.Nt), int(self.wdm.Nf))
+
+        if tuple(w_t_plus_device.shape) != expected:
+            raise ValueError(
+                "Expected plus WDM coefficients with shape "
+                f"{expected}, got {tuple(w_t_plus_device.shape)}."
+            )
+        if tuple(w_t_cross_device.shape) != expected:
+            raise ValueError(
+                "Expected cross WDM coefficients with shape "
+                f"{expected}, got {tuple(w_t_cross_device.shape)}."
+            )
+
+        return jnp.stack(
+            (w_t_plus_device, w_t_cross_device),
+            axis=0,
+        )
+
+    def apply_batch_device_materialized(
         self,
         w_t_plus,
         w_t_cross,
@@ -391,47 +436,19 @@ class OneArmWDMPlan:
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
-        """Apply all one-arm operators using JAX-native modulation.
+        """Commit-3A materialised JAX route retained as a reference."""
 
-        The two waveform polarization arrays and the waveform-independent
-        one-arm amplitudes are placed on the JAX device. Their link-major
-        combination is constructed with JAX before being passed directly to
-        the prepared variable-shift plan.
-
-        This implementation still materialises the complete unshifted
-        ``(num_links, Nt, Nm)`` batch. Removing that intermediate is the
-        separate fused/blockwise commit 3B.
-        """
-
-        w_t_plus_device = jnp.asarray(w_t_plus)
-        w_t_cross_device = jnp.asarray(w_t_cross)
-
-        expected = (
-            int(self.wdm.Nt),
-            int(self.wdm.Nf),
+        source_coefficients = self._waveform_sources_device(
+            w_t_plus,
+            w_t_cross,
         )
-
-        if tuple(w_t_plus_device.shape) != expected:
-            raise ValueError(
-                "Expected plus WDM coefficients with shape "
-                f"{expected}, got {tuple(w_t_plus_device.shape)}."
-            )
-
-        if tuple(w_t_cross_device.shape) != expected:
-            raise ValueError(
-                "Expected cross WDM coefficients with shape "
-                f"{expected}, got {tuple(w_t_cross_device.shape)}."
-            )
-
-        amplitude_plus_device, amplitude_cross_device = (
-            self._device_amplitudes()
-        )
+        amplitude_weights = self._device_amplitude_weights()
 
         unshifted_device = _combine_polarizations_device(
-            amplitude_plus_device,
-            amplitude_cross_device,
-            w_t_plus_device,
-            w_t_cross_device,
+            amplitude_weights[:, 0],
+            amplitude_weights[:, 1],
+            source_coefficients[0],
+            source_coefficients[1],
         )
 
         return self.shift_plan.apply_device(
@@ -440,24 +457,33 @@ class OneArmWDMPlan:
             cache_device_plan=cache_device_plan,
         )
 
-    def _device_amplitudes(self):
-        """Return cached JAX copies of the one-arm amplitude arrays."""
+    def apply_batch_device(
+        self,
+        w_t_plus,
+        w_t_cross,
+        *,
+        return_profile: bool = False,
+        cache_device_plan: bool = True,
+    ):
+        """Apply one-arm shifts with blockwise polarization fusion.
 
-        if not self._device_cache:
-            self._device_cache.update(
-                {
-                    "amplitude_plus": jnp.asarray(
-                        self.amplitude_plus
-                    ),
-                    "amplitude_cross": jnp.asarray(
-                        self.amplitude_cross
-                    ),
-                }
-            )
+        The full ``(num_links, Nt, Nm)`` unshifted one-arm batch is not
+        constructed. Instead, the generic weighted-source shift kernel forms
+        plus/cross combinations only for source rows required by the current
+        target-row and lag block.
+        """
 
-        return (
-            self._device_cache["amplitude_plus"],
-            self._device_cache["amplitude_cross"],
+        source_coefficients = self._waveform_sources_device(
+            w_t_plus,
+            w_t_cross,
+        )
+        amplitude_weights = self._device_amplitude_weights()
+
+        return self.shift_plan.apply_weighted_sources_device(
+            source_coefficients,
+            amplitude_weights,
+            return_profile=return_profile,
+            cache_device_plan=cache_device_plan,
         )
 
     def apply(
