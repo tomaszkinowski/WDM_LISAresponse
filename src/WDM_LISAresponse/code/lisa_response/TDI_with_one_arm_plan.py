@@ -10,7 +10,10 @@ from WDM_LISAresponse.code.lisa_response.response_with_plan import (
     _build_wdm_dT_grid,
     _split_variable_shift_kwargs,
 )
-from WDM_LISAresponse.code.lisa_response.one_arm_plan import OneArmWDMPlan
+from WDM_LISAresponse.code.lisa_response.one_arm_plan import (
+    OneArmWDMPlan,
+    _normalise_one_arm_execution_mode,
+)
 from WDM_LISAresponse.code.lisa_response.gen2_michelson_plan import Gen2MichelsonWDMPlan
 from WDM.code.time_delay_filters.time_shift_fast import (
     wdm_time_shift_fixed_batch,
@@ -452,6 +455,7 @@ def precompute_gen2_michelson_wdm_inputs(
     shifts_cache=None,
     calc_m0=True,
     return_device_links=False,
+    one_arm_execution_mode="materialized",
 ):
     """Backward-compatible staged Gen-2 Michelson precompute wrapper.
 
@@ -480,6 +484,7 @@ def precompute_gen2_michelson_wdm_inputs(
         variable_shift_kwargs=variable_shift_kwargs,
         one_arm_cache=one_arm_cache,
         return_device_links=return_device_links,
+        one_arm_execution_mode=one_arm_execution_mode,
     )
 
 
@@ -607,6 +612,7 @@ def precompute_gen2_michelson_wdm_waveform(
     variable_shift_kwargs=None,
     one_arm_cache=None,
     return_device_links=False,
+    one_arm_execution_mode="materialized",
 ):
     """A1 precompute: transform one waveform and apply six one-arm plans.
 
@@ -615,6 +621,10 @@ def precompute_gen2_michelson_wdm_waveform(
     also retained for the legacy ``batch_map`` and ``accumulate`` reference
     paths, which remain useful for backend regression tests.
     """
+    resolved_one_arm_execution_mode = _normalise_one_arm_execution_mode(
+        one_arm_execution_mode
+    )
+
     times = geom_precomp["times"]
     theta = geom_precomp["theta"]
     phi = geom_precomp["phi"]
@@ -687,6 +697,7 @@ def precompute_gen2_michelson_wdm_waveform(
         use_jax=use_jax,
         one_arm_plan=one_arm_plan,
         return_device=return_device_links,
+        one_arm_execution_mode=resolved_one_arm_execution_mode,
     )
     six_link_compute_s = time.perf_counter() - t_links0
 
@@ -714,6 +725,11 @@ def precompute_gen2_michelson_wdm_waveform(
         "times_p": geom_precomp["times_p"],
         "link_w": link_w,
         "link_w_on_device": bool(return_device_links),
+        "one_arm_execution_mode": (
+            resolved_one_arm_execution_mode
+            if return_device_links
+            else "host_materialized"
+        ),
         "one_arm_plan": one_arm_plan,
         "tdi_plan": tdi_plan,
         "shifts_X": geom_precomp["shifts_X"],

@@ -8,7 +8,10 @@ from scipy.interpolate import interp1d
 import WDM
 from WDM.code.time_delay_filters.time_shift_fast import wdm_time_shift_variable
 from numpy.fft import fft, fftfreq
-from .one_arm_plan import OneArmWDMPlan
+from .one_arm_plan import (
+    OneArmWDMPlan,
+    _normalise_one_arm_execution_mode,
+)
 from ..utils.utils import wdm_tail_padding_info
 from .response_sub import (
     antenna_pattern_factors,
@@ -526,7 +529,8 @@ def precompute_one_arm_wdm_dT_links_from_context(
     variable_shift_kwargs=None,
     use_jax=None,
     one_arm_plan=None,
-    return_device = False,
+    return_device=False,
+    one_arm_execution_mode="materialized",
 ):
     """Evaluate directed one-arm WDM responses from a prebuilt context.
 
@@ -541,7 +545,10 @@ def precompute_one_arm_wdm_dT_links_from_context(
     return_device : bool, optional
         When true, return link responses as JAX arrays without copying the
         shifted output batch back to NumPy.
-        
+    one_arm_execution_mode : {"materialized", "fused_low_memory"}, optional
+        Device execution strategy used when ``return_device=True``. The
+        materialized route is the normal fast CPU path; the fused route avoids
+        the complete unshifted six-link intermediate.
 
     Returns
     -------
@@ -549,6 +556,9 @@ def precompute_one_arm_wdm_dT_links_from_context(
         ``(wdm, responses)`` using the existing directed-link dictionary API.
     """
     shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
+    execution_mode = _normalise_one_arm_execution_mode(
+        one_arm_execution_mode
+    )
 
     if links is None:
         links = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2))
@@ -569,7 +579,10 @@ def precompute_one_arm_wdm_dT_links_from_context(
             )
 
         if return_device:
-            responses = one_arm_plan.apply_context_device(context)
+            responses = one_arm_plan.apply_context_device(
+                context,
+                execution_mode=execution_mode,
+            )
         else:
             responses = one_arm_plan.apply_context(context)
 
@@ -590,7 +603,8 @@ def precompute_one_arm_wdm_dT_links_from_context(
         None if L_trunc is None else int(L_trunc),
         links,
         shift_key,
-        bool(return_device)
+        bool(return_device),
+        execution_mode if return_device else None,
     )
 
     if cache is not None and cache_key in cache:
@@ -608,7 +622,10 @@ def precompute_one_arm_wdm_dT_links_from_context(
     )
 
     if return_device:
-        responses = plan.apply_context_device(context)
+        responses = plan.apply_context_device(
+            context,
+            execution_mode=execution_mode,
+        )
     else:
         responses = plan.apply_context(context)
 
@@ -796,6 +813,7 @@ def precompute_one_arm_wdm_dT_links(
     q=None,
     calc_m0=True,
     return_device=False,
+    one_arm_execution_mode="materialized",
 ):
     """Precompute directed one-arm dT WDM responses and return them as a map.
 
@@ -854,6 +872,9 @@ def precompute_one_arm_wdm_dT_links(
     times = np.asarray(times, dtype=float)
     sky_basis = build_sky_basis(theta, phi)
     shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
+    execution_mode = _normalise_one_arm_execution_mode(
+        one_arm_execution_mode
+    )
     q_val = _resolve_wdm_q_value(int(times.size), int(Nf), q=q)
     shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
     if links is None:
@@ -879,6 +900,7 @@ def precompute_one_arm_wdm_dT_links(
         links,
         shift_key,
         bool(return_device),
+        execution_mode if return_device else None,
     )
 
     if cache is not None and cache_key in cache:
@@ -907,6 +929,7 @@ def precompute_one_arm_wdm_dT_links(
         variable_shift_kwargs=shift_kwargs,
         use_jax=use_jax,
         return_device=return_device,
+        one_arm_execution_mode=execution_mode,
     )
     if cache is not None:
         cache[cache_key] = payload

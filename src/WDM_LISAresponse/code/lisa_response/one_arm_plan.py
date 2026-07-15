@@ -72,6 +72,44 @@ def _combine_polarizations_device(
     )
 
 
+ONE_ARM_EXECUTION_MODES: tuple[str, ...] = (
+    "materialized",
+    "fused_low_memory",
+)
+
+
+def _normalise_one_arm_execution_mode(mode: str | None) -> str:
+    """Return the canonical one-arm device execution mode.
+
+    ``materialized`` is the normal fast CPU route. It constructs the complete
+    unshifted link-major batch on-device before applying the prepared shifts.
+    ``fused_low_memory`` retains the weighted-halo implementation, which avoids
+    that full intermediate at the cost of additional runtime on the current
+    CPU backend.
+    """
+
+    if mode is None:
+        return "materialized"
+
+    key = str(mode).strip().lower()
+    aliases = {
+        "materialised": "materialized",
+        "fused": "fused_low_memory",
+        "low_memory": "fused_low_memory",
+        "low-memory": "fused_low_memory",
+    }
+    key = aliases.get(key, key)
+
+    if key not in ONE_ARM_EXECUTION_MODES:
+        allowed = ", ".join(ONE_ARM_EXECUTION_MODES)
+        raise ValueError(
+            f"Unknown one-arm execution mode {mode!r}; expected one of: "
+            f"{allowed}."
+        )
+
+    return key
+
+
 def _normalise_links(links: Iterable[Link] | None) -> tuple[Link, ...]:
     if links is None:
         return DEFAULT_DIRECTED_LINKS
@@ -503,14 +541,55 @@ class OneArmWDMPlan:
         self,
         w_t_plus,
         w_t_cross,
+        *,
+        execution_mode: str = "materialized",
+        return_profile: bool = False,
+        cache_device_plan: bool = True,
     ):
-        """Apply the plan and return a JAX-array dictionary by directed link."""
+        """Apply the plan and return device-resident arrays by directed link.
 
-        shifted_device = self.apply_batch_device(
-            w_t_plus,
-            w_t_cross,
-        )
+        Parameters
+        ----------
+        execution_mode : {"materialized", "fused_low_memory"}, optional
+            ``materialized`` uses the faster Commit-3A route: construct the
+            complete unshifted six-link batch on-device and then apply the
+            prepared variable shifts. ``fused_low_memory`` uses the weighted
+            halo implementation and avoids the complete unshifted batch.
+        return_profile : bool, optional
+            When true, synchronise the selected device route and return its
+            timing metadata alongside the directed-link mapping.
+        cache_device_plan : bool, optional
+            Reuse device copies of the prepared shift-plan arrays.
+        """
 
+        mode = _normalise_one_arm_execution_mode(execution_mode)
+
+        if mode == "materialized":
+            shifted_result = self.apply_batch_device_materialized(
+                w_t_plus,
+                w_t_cross,
+                return_profile=return_profile,
+                cache_device_plan=cache_device_plan,
+            )
+        else:
+            shifted_result = self.apply_batch_device(
+                w_t_plus,
+                w_t_cross,
+                return_profile=return_profile,
+                cache_device_plan=cache_device_plan,
+            )
+
+        if return_profile:
+            shifted_device, profile = shifted_result
+            responses = {
+                link: shifted_device[index]
+                for index, link in enumerate(self.links)
+            }
+            profile = dict(profile)
+            profile["one_arm_execution_mode"] = mode
+            return responses, profile
+
+        shifted_device = shifted_result
         return {
             link: shifted_device[index]
             for index, link in enumerate(self.links)
@@ -535,6 +614,10 @@ class OneArmWDMPlan:
     def apply_context_device(
         self,
         context: dict[str, Any],
+        *,
+        execution_mode: str = "materialized",
+        return_profile: bool = False,
+        cache_device_plan: bool = True,
     ):
         """Apply the plan to a context and retain link arrays on-device."""
 
@@ -556,6 +639,9 @@ class OneArmWDMPlan:
         return self.apply_device(
             context["w_t_plus"],
             context["w_t_cross"],
+            execution_mode=execution_mode,
+            return_profile=return_profile,
+            cache_device_plan=cache_device_plan,
         )
     def clear_device_cache(self) -> None:
         """Release cached JAX amplitude and shift-plan arrays."""
