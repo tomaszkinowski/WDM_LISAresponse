@@ -421,11 +421,19 @@ class OneArmWDMPlan:
         unshifted = self.unshifted_coefficients(w_t_plus, w_t_cross)
         return self.shift_plan.apply(unshifted, return_profile=return_profile)
 
-    def _device_amplitude_weights(self):
-        """Return cached job/source one-arm weights on the JAX device.
+    def _device_precision_dtypes(self):
+        """Return complex/real JAX dtypes matching the prepared shift plan."""
 
-        The returned shape is ``(num_links, 2, Nt, Nm)``. Source index zero
-        corresponds to plus polarization and source index one to cross.
+        if self.shift_plan.resolved_assembly_precision == "complex64":
+            return jnp.complex64, jnp.float32
+        return jnp.complex128, jnp.float64
+
+    def _device_amplitude_weights(self):
+        """Return cached job/source weights used by the fused route.
+
+        The returned shape is ``(num_links, 2, Nt, Nm)``. This method keeps
+        the established fused-route precision unchanged so the materialized
+        cleanup can be assessed independently.
         """
 
         if "amplitude_weights" not in self._device_cache:
@@ -439,13 +447,69 @@ class OneArmWDMPlan:
 
         return self._device_cache["amplitude_weights"]
 
+    def _device_materialized_amplitudes(self):
+        """Return separate amplitude arrays for the materialized route.
+
+        The arrays are cached at the real precision corresponding to the
+        prepared shift plan. Keeping them separate avoids constructing the
+        job/source weight stack when only the materialized route is used.
+        """
+
+        if "materialized_amplitude_plus" not in self._device_cache:
+            _, real_dtype = self._device_precision_dtypes()
+            self._device_cache["materialized_amplitude_plus"] = jnp.asarray(
+                self.amplitude_plus,
+                dtype=real_dtype,
+            )
+            self._device_cache["materialized_amplitude_cross"] = jnp.asarray(
+                self.amplitude_cross,
+                dtype=real_dtype,
+            )
+
+        return (
+            self._device_cache["materialized_amplitude_plus"],
+            self._device_cache["materialized_amplitude_cross"],
+        )
+
+    def _waveform_pair_device(
+        self,
+        w_t_plus,
+        w_t_cross,
+    ):
+        """Validate plus/cross coefficients for the materialized route.
+
+        The two polarizations remain separate, so this path does not allocate
+        the temporary ``(2, Nt, Nm)`` source stack required by the fused API.
+        """
+
+        complex_dtype, _ = self._device_precision_dtypes()
+        w_t_plus_device = jnp.asarray(w_t_plus, dtype=complex_dtype)
+        w_t_cross_device = jnp.asarray(w_t_cross, dtype=complex_dtype)
+        expected = (int(self.wdm.Nt), int(self.wdm.Nf))
+
+        if tuple(w_t_plus_device.shape) != expected:
+            raise ValueError(
+                "Expected plus WDM coefficients with shape "
+                f"{expected}, got {tuple(w_t_plus_device.shape)}."
+            )
+        if tuple(w_t_cross_device.shape) != expected:
+            raise ValueError(
+                "Expected cross WDM coefficients with shape "
+                f"{expected}, got {tuple(w_t_cross_device.shape)}."
+            )
+
+        return w_t_plus_device, w_t_cross_device
+
     def _waveform_sources_device(
         self,
         w_t_plus,
         w_t_cross,
     ):
-        """Validate and stack plus/cross WDM coefficients on-device."""
+        """Validate and stack plus/cross coefficients for the fused route."""
 
+        # Preserve the established fused-route input precision. This keeps the
+        # current low-memory reference unchanged while the materialized route
+        # is optimized separately.
         w_t_plus_device = jnp.asarray(w_t_plus)
         w_t_cross_device = jnp.asarray(w_t_cross)
         expected = (int(self.wdm.Nt), int(self.wdm.Nf))
@@ -474,19 +538,25 @@ class OneArmWDMPlan:
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
-        """Commit-3A materialised JAX route retained as a reference."""
+        """Apply the fast device-materialized one-arm route.
 
-        source_coefficients = self._waveform_sources_device(
+        Plus/cross coefficients remain separate through modulation, avoiding
+        the temporary source stack used by the fused weighted-source API.
+        """
+
+        w_t_plus_device, w_t_cross_device = self._waveform_pair_device(
             w_t_plus,
             w_t_cross,
         )
-        amplitude_weights = self._device_amplitude_weights()
+        amplitude_plus_device, amplitude_cross_device = (
+            self._device_materialized_amplitudes()
+        )
 
         unshifted_device = _combine_polarizations_device(
-            amplitude_weights[:, 0],
-            amplitude_weights[:, 1],
-            source_coefficients[0],
-            source_coefficients[1],
+            amplitude_plus_device,
+            amplitude_cross_device,
+            w_t_plus_device,
+            w_t_cross_device,
         )
 
         return self.shift_plan.apply_device(
