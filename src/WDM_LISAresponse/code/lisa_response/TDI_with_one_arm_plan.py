@@ -451,6 +451,7 @@ def precompute_gen2_michelson_wdm_inputs(
     one_arm_cache=None,
     shifts_cache=None,
     calc_m0=True,
+    return_device_links=False,
 ):
     """Backward-compatible staged Gen-2 Michelson precompute wrapper.
 
@@ -478,6 +479,7 @@ def precompute_gen2_michelson_wdm_inputs(
         waveform_cross,
         variable_shift_kwargs=variable_shift_kwargs,
         one_arm_cache=one_arm_cache,
+        return_device_links=return_device_links,
     )
 
 
@@ -604,6 +606,7 @@ def precompute_gen2_michelson_wdm_waveform(
     *,
     variable_shift_kwargs=None,
     one_arm_cache=None,
+    return_device_links=False,
 ):
     """A1 precompute: transform one waveform and apply six one-arm plans.
 
@@ -683,6 +686,7 @@ def precompute_gen2_michelson_wdm_waveform(
         variable_shift_kwargs=one_arm_shift_kwargs,
         use_jax=use_jax,
         one_arm_plan=one_arm_plan,
+        return_device=return_device_links,
     )
     six_link_compute_s = time.perf_counter() - t_links0
 
@@ -709,6 +713,7 @@ def precompute_gen2_michelson_wdm_waveform(
         "wdm": wdm,
         "times_p": geom_precomp["times_p"],
         "link_w": link_w,
+        "link_w_on_device": bool(return_device_links),
         "one_arm_plan": one_arm_plan,
         "tdi_plan": tdi_plan,
         "shifts_X": geom_precomp["shifts_X"],

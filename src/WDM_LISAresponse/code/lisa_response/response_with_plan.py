@@ -526,6 +526,7 @@ def precompute_one_arm_wdm_dT_links_from_context(
     variable_shift_kwargs=None,
     use_jax=None,
     one_arm_plan=None,
+    return_device = False,
 ):
     """Evaluate directed one-arm WDM responses from a prebuilt context.
 
@@ -536,6 +537,11 @@ def precompute_one_arm_wdm_dT_links_from_context(
         plan is built from the context, orbit and sky location.  Pass the same
         plan for subsequent waveforms on the same WDM grid to avoid rebuilding
         geometry, transfer factors and ``Tl/Tp``.
+
+    return_device : bool, optional
+        When true, return link responses as JAX arrays without copying the
+        shifted output batch back to NumPy.
+        
 
     Returns
     -------
@@ -553,12 +559,21 @@ def precompute_one_arm_wdm_dT_links_from_context(
 
     if one_arm_plan is not None:
         if not isinstance(one_arm_plan, OneArmWDMPlan):
-            raise TypeError("one_arm_plan must be a OneArmWDMPlan instance.")
+            raise TypeError(
+                "one_arm_plan must be a OneArmWDMPlan instance."
+            )
         if tuple(one_arm_plan.links) != links:
             raise ValueError(
-                "The supplied one_arm_plan uses a different directed-link order."
+                "The supplied one_arm_plan uses a different "
+                "directed-link order."
             )
-        return wdm, one_arm_plan.apply_context(context)
+
+        if return_device:
+            responses = one_arm_plan.apply_context_device(context)
+        else:
+            responses = one_arm_plan.apply_context(context)
+
+        return wdm, responses
 
     shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
     cache_key = (
@@ -575,6 +590,7 @@ def precompute_one_arm_wdm_dT_links_from_context(
         None if L_trunc is None else int(L_trunc),
         links,
         shift_key,
+        bool(return_device)
     )
 
     if cache is not None and cache_key in cache:
@@ -590,7 +606,11 @@ def precompute_one_arm_wdm_dT_links_from_context(
         variable_shift_kwargs=shift_kwargs,
         use_jax=use_jax,
     )
-    responses = plan.apply_context(context)
+
+    if return_device:
+        responses = plan.apply_context_device(context)
+    else:
+        responses = plan.apply_context(context)
 
     payload = (wdm, responses)
     if cache is not None:
@@ -775,6 +795,7 @@ def precompute_one_arm_wdm_dT_links(
     use_jax=None,
     q=None,
     calc_m0=True,
+    return_device=False,
 ):
     """Precompute directed one-arm dT WDM responses and return them as a map.
 
@@ -857,6 +878,7 @@ def precompute_one_arm_wdm_dT_links(
         id(td_waveform_cross),
         links,
         shift_key,
+        bool(return_device),
     )
 
     if cache is not None and cache_key in cache:
@@ -884,6 +906,7 @@ def precompute_one_arm_wdm_dT_links(
         cache=None,
         variable_shift_kwargs=shift_kwargs,
         use_jax=use_jax,
+        return_device=return_device,
     )
     if cache is not None:
         cache[cache_key] = payload

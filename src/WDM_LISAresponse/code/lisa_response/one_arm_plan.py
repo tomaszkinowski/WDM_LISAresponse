@@ -342,6 +342,33 @@ class OneArmWDMPlan:
         unshifted = self.unshifted_coefficients(w_t_plus, w_t_cross)
         return self.shift_plan.apply(unshifted, return_profile=return_profile)
 
+    def apply_batch_device(
+        self,
+        w_t_plus,
+        w_t_cross,
+        *,
+        return_profile: bool = False,
+        cache_device_plan: bool = True,
+    ):
+        """Apply all one-arm operators and return a link-major JAX array.
+
+        The current first implementation deliberately retains the validated
+        NumPy construction of the unshifted link coefficients. Only the shift
+        output remains on-device. A later optimisation can fuse polarization
+        modulation with the shift kernel.
+        """
+
+        unshifted = self.unshifted_coefficients(
+            w_t_plus,
+            w_t_cross,
+        )
+
+        return self.shift_plan.apply_device(
+            unshifted,
+            return_profile=return_profile,
+            cache_device_plan=cache_device_plan,
+        )
+
     def apply(
         self,
         w_t_plus: np.ndarray,
@@ -352,6 +379,23 @@ class OneArmWDMPlan:
         shifted = self.apply_batch(w_t_plus, w_t_cross)
         return {
             link: shifted[index]
+            for index, link in enumerate(self.links)
+        }
+    
+    def apply_device(
+        self,
+        w_t_plus,
+        w_t_cross,
+    ):
+        """Apply the plan and return a JAX-array dictionary by directed link."""
+
+        shifted_device = self.apply_batch_device(
+            w_t_plus,
+            w_t_cross,
+        )
+
+        return {
+            link: shifted_device[index]
             for index, link in enumerate(self.links)
         }
 
@@ -370,3 +414,29 @@ class OneArmWDMPlan:
                 )
 
         return self.apply(context["w_t_plus"], context["w_t_cross"])
+    
+    def apply_context_device(
+        self,
+        context: dict[str, Any],
+    ):
+        """Apply the plan to a context and retain link arrays on-device."""
+
+        if context.get("wdm") is not self.wdm:
+            candidate = context.get("wdm")
+            if candidate is None or (
+                int(candidate.Nt) != int(self.wdm.Nt)
+                or int(candidate.Nf) != int(self.wdm.Nf)
+                or not np.isclose(
+                    float(candidate.dF),
+                    float(self.wdm.dF),
+                )
+            ):
+                raise ValueError(
+                    "The context WDM grid does not match this "
+                    "OneArmWDMPlan."
+                )
+
+        return self.apply_device(
+            context["w_t_plus"],
+            context["w_t_cross"],
+        )
