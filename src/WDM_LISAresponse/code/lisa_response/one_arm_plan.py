@@ -11,10 +11,13 @@ be reused for any number of waveforms sampled on the same WDM grid.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 import numpy as np
+import jax
+import jax.numpy as jnp
+
 from lisaconstants import c
 
 from WDM.code.time_delay_filters.config import VariableShiftPlanConfig
@@ -38,6 +41,35 @@ DEFAULT_DIRECTED_LINKS: tuple[Link, ...] = (
     (2, 3),
     (1, 2),
 )
+
+@jax.jit
+def _combine_polarizations_device(
+    amplitude_plus,
+    amplitude_cross,
+    w_t_plus,
+    w_t_cross,
+):
+    """Construct link-major unshifted coefficients entirely in JAX.
+
+    Parameters
+    ----------
+    amplitude_plus, amplitude_cross : jax.Array
+        Link-dependent response amplitudes with shape
+        ``(num_links, Nt, Nm)``.
+    w_t_plus, w_t_cross : jax.Array
+        Polarization WDM coefficients with shape ``(Nt, Nm)``.
+
+    Returns
+    -------
+    jax.Array
+        Unshifted link coefficients with shape
+        ``(num_links, Nt, Nm)``.
+    """
+
+    return (
+        amplitude_plus * w_t_plus[None, :, :]
+        + amplitude_cross * w_t_cross[None, :, :]
+    )
 
 
 def _normalise_links(links: Iterable[Link] | None) -> tuple[Link, ...]:
@@ -151,6 +183,15 @@ class OneArmWDMPlan:
     amplitude_cross: np.ndarray
     time_shift: np.ndarray
     shift_plan: VariableShiftBatchPlan
+
+    # JAX copies of the waveform-independent response amplitudes.
+    # The dictionary remains mutable even though the dataclass itself is
+    # frozen, matching the caching approach used by VariableShiftBatchPlan.
+    _device_cache: dict[str, Any] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
 
     @classmethod
     def build_from_context(
@@ -350,23 +391,73 @@ class OneArmWDMPlan:
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
-        """Apply all one-arm operators and return a link-major JAX array.
+        """Apply all one-arm operators using JAX-native modulation.
 
-        The current first implementation deliberately retains the validated
-        NumPy construction of the unshifted link coefficients. Only the shift
-        output remains on-device. A later optimisation can fuse polarization
-        modulation with the shift kernel.
+        The two waveform polarization arrays and the waveform-independent
+        one-arm amplitudes are placed on the JAX device. Their link-major
+        combination is constructed with JAX before being passed directly to
+        the prepared variable-shift plan.
+
+        This implementation still materialises the complete unshifted
+        ``(num_links, Nt, Nm)`` batch. Removing that intermediate is the
+        separate fused/blockwise commit 3B.
         """
 
-        unshifted = self.unshifted_coefficients(
-            w_t_plus,
-            w_t_cross,
+        w_t_plus_device = jnp.asarray(w_t_plus)
+        w_t_cross_device = jnp.asarray(w_t_cross)
+
+        expected = (
+            int(self.wdm.Nt),
+            int(self.wdm.Nf),
+        )
+
+        if tuple(w_t_plus_device.shape) != expected:
+            raise ValueError(
+                "Expected plus WDM coefficients with shape "
+                f"{expected}, got {tuple(w_t_plus_device.shape)}."
+            )
+
+        if tuple(w_t_cross_device.shape) != expected:
+            raise ValueError(
+                "Expected cross WDM coefficients with shape "
+                f"{expected}, got {tuple(w_t_cross_device.shape)}."
+            )
+
+        amplitude_plus_device, amplitude_cross_device = (
+            self._device_amplitudes()
+        )
+
+        unshifted_device = _combine_polarizations_device(
+            amplitude_plus_device,
+            amplitude_cross_device,
+            w_t_plus_device,
+            w_t_cross_device,
         )
 
         return self.shift_plan.apply_device(
-            unshifted,
+            unshifted_device,
             return_profile=return_profile,
             cache_device_plan=cache_device_plan,
+        )
+
+    def _device_amplitudes(self):
+        """Return cached JAX copies of the one-arm amplitude arrays."""
+
+        if not self._device_cache:
+            self._device_cache.update(
+                {
+                    "amplitude_plus": jnp.asarray(
+                        self.amplitude_plus
+                    ),
+                    "amplitude_cross": jnp.asarray(
+                        self.amplitude_cross
+                    ),
+                }
+            )
+
+        return (
+            self._device_cache["amplitude_plus"],
+            self._device_cache["amplitude_cross"],
         )
 
     def apply(
@@ -440,3 +531,8 @@ class OneArmWDMPlan:
             context["w_t_plus"],
             context["w_t_cross"],
         )
+    def clear_device_cache(self) -> None:
+        """Release cached JAX amplitude and shift-plan arrays."""
+
+        self._device_cache.clear()
+        self.shift_plan.clear_device_cache()
