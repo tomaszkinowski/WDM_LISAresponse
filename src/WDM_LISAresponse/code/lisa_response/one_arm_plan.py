@@ -565,6 +565,49 @@ class OneArmWDMPlan:
             cache_device_plan=cache_device_plan,
         )
 
+
+    def apply_batch_device_materialized_linkblock(
+        self,
+        w_t_plus,
+        w_t_cross,
+        *,
+        link_block_size: int,
+        row_chunk_size: int | None = None,
+        lag_block_size: int | None = None,
+        return_profile: bool = False,
+        cache_device_plan: bool = True,
+    ):
+        """Apply the experimental link-block shift to six materialized links.
+
+        Polarization modulation is identical to the production materialized
+        route.  Only the batch scheduling inside the generic shift operator is
+        changed, so the method can be compared directly with
+        :meth:`apply_batch_device_materialized`.
+        """
+
+        w_t_plus_device, w_t_cross_device = self._waveform_pair_device(
+            w_t_plus,
+            w_t_cross,
+        )
+        amplitude_plus_device, amplitude_cross_device = (
+            self._device_materialized_amplitudes()
+        )
+        unshifted_device = _combine_polarizations_device(
+            amplitude_plus_device,
+            amplitude_cross_device,
+            w_t_plus_device,
+            w_t_cross_device,
+        )
+
+        return self.shift_plan.apply_device_linkblock(
+            unshifted_device,
+            link_block_size=link_block_size,
+            row_chunk_size=row_chunk_size,
+            lag_block_size=lag_block_size,
+            return_profile=return_profile,
+            cache_device_plan=cache_device_plan,
+        )
+
     def apply_batch_device(
         self,
         w_t_plus,

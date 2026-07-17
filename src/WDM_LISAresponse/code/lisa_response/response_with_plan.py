@@ -2,6 +2,8 @@
 LISA response calculations for WDM_LISAresponse
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np 
 from lisaconstants import c
 from scipy.interpolate import interp1d
@@ -22,6 +24,37 @@ from .response_sub import (
     wdm_pad_inputs_right,
 )
 # Add your LISA response functions here
+
+
+def _transform_wdm_polarizations(
+    wdm,
+    td_waveform_plus,
+    td_waveform_cross,
+    *,
+    parallel=False,
+):
+    """Transform plus/cross polarizations sequentially or on two threads.
+
+    The two calls are numerically independent.  The parallel route is opt-in
+    because it changes CPU scheduling, not numerical behavior.  A fresh
+    two-worker executor is used for each waveform evaluation so the helper has
+    no persistent thread-pool state.
+    """
+
+    if not parallel:
+        return (
+            wdm.dwt(td_waveform_plus),
+            wdm.dwt(td_waveform_cross),
+        )
+
+    with ThreadPoolExecutor(
+        max_workers=2,
+        thread_name_prefix="wdm-polarization",
+    ) as executor:
+        plus_future = executor.submit(wdm.dwt, td_waveform_plus)
+        cross_future = executor.submit(wdm.dwt, td_waveform_cross)
+        return plus_future.result(), cross_future.result()
+
 
 def one_arm_response_td(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, num_int_points=10):
     """
@@ -248,7 +281,7 @@ def _resolve_wdm_q_value(N, Nf, q=None):
 
 
 
-def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4, q=None, calc_m0=True, A_frac=0.25):
+def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, gnm_method="cubic", gnm_wrap=True, d = 4, q=None, calc_m0=True, A_frac=0.25, parallel_wdm_transforms=False):
     """
     Evaluate the one-arm WDM response on the native sample grid.
 
@@ -286,6 +319,9 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
     calc_m0 : bool, optional
         Whether to include the ``m=0`` WDM component when constructing the
         transform.
+    parallel_wdm_transforms : bool, optional
+        Evaluate the independent plus/cross WDM transforms concurrently on
+        two Python threads.
     Returns
     -------
     ndarray
@@ -314,8 +350,12 @@ def one_arm_response_wdm(times, s, r, orbits, theta, phi, td_waveform_plus, td_w
 
     #print(f"How much padding was added: {(N-current_length)*wdm.dt}")
 
-    w_t_plus = wdm.dwt(td_plus_wdm)
-    w_t_cross = wdm.dwt(td_cross_wdm)
+    w_t_plus, w_t_cross = _transform_wdm_polarizations(
+        wdm,
+        td_plus_wdm,
+        td_cross_wdm,
+        parallel=parallel_wdm_transforms,
+    )
 
     #basic implementation of wdm transform 
 
@@ -425,7 +465,14 @@ def _build_wdm_dT_grid(
     }
 
 
-def _build_wdm_dT_context_from_wdm(times, td_waveform_plus, td_waveform_cross, wdm, m_offset=0.0):
+def _build_wdm_dT_context_from_wdm(
+    times,
+    td_waveform_plus,
+    td_waveform_cross,
+    wdm,
+    m_offset=0.0,
+    parallel_wdm_transforms=False,
+):
     """Build reusable dT context using an existing WDM transform object.
 
     This avoids rebuilding ``WDM.WDM.WDM_transform`` and is intended for
@@ -453,8 +500,12 @@ def _build_wdm_dT_context_from_wdm(times, td_waveform_plus, td_waveform_cross, w
                 f"Input dt={dt_wdm} does not match precomputed WDM dt={float(wdm.dt)}."
             )
 
-    w_t_plus = wdm.dwt(td_plus_wdm)
-    w_t_cross = wdm.dwt(td_cross_wdm)
+    w_t_plus, w_t_cross = _transform_wdm_polarizations(
+        wdm,
+        td_plus_wdm,
+        td_cross_wdm,
+        parallel=parallel_wdm_transforms,
+    )
 
     freq_vals = (np.arange(wdm.Nf) + m_offset) * wdm.dF
     times_vals = np.arange(wdm.Nt) * wdm.dT
@@ -468,6 +519,7 @@ def _build_wdm_dT_context_from_wdm(times, td_waveform_plus, td_waveform_cross, w
         "w_t_cross": w_t_cross,
         "freq_vals": freq_vals,
         "int_times_vals": int_times_vals,
+        "parallel_wdm_transforms": bool(parallel_wdm_transforms),
     }
 
 
@@ -482,6 +534,7 @@ def _build_wdm_dT_context(
     q=None,
     calc_m0=True,
     wdm=None,
+    parallel_wdm_transforms=False,
 ):
     """Build waveform-specific WDM projections on a reusable grid.
 
@@ -509,6 +562,7 @@ def _build_wdm_dT_context(
         td_waveform_cross,
         wdm,
         m_offset=m_offset,
+        parallel_wdm_transforms=parallel_wdm_transforms,
     )
 
     if grid_context is not None:
@@ -814,6 +868,7 @@ def precompute_one_arm_wdm_dT_links(
     calc_m0=True,
     return_device=False,
     one_arm_execution_mode="materialized",
+    parallel_wdm_transforms=False,
 ):
     """Precompute directed one-arm dT WDM responses and return them as a map.
 
@@ -916,6 +971,7 @@ def precompute_one_arm_wdm_dT_links(
         m_offset=m_offset,
         q=q_val,
         calc_m0=calc_m0,
+        parallel_wdm_transforms=parallel_wdm_transforms,
     )
 
     payload = precompute_one_arm_wdm_dT_links_from_context(
@@ -935,7 +991,7 @@ def precompute_one_arm_wdm_dT_links(
         cache[cache_key] = payload
     return payload
 
-def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, A_frac=0.25, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, use_jax=None, q=None, calc_m0=True):
+def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, A_frac=0.25, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, use_jax=None, q=None, calc_m0=True, parallel_wdm_transforms=False):
     """
     Evaluate the one-arm dT WDM response for a single directed link.
 
@@ -1005,6 +1061,7 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
         m_offset=m_offset,
         q=q,
         calc_m0=calc_m0,
+        parallel_wdm_transforms=parallel_wdm_transforms,
     )
     return _one_arm_response_wdm_dT_from_context(
         context,
