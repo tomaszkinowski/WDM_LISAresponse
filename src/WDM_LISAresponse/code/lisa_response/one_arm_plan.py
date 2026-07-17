@@ -566,23 +566,27 @@ class OneArmWDMPlan:
         )
 
 
-    def apply_batch_device_materialized_linkblock(
+    def apply_batch_device_materialized_parallel_groups(
         self,
         w_t_plus,
         w_t_cross,
         *,
-        link_block_size: int,
-        row_chunk_size: int | None = None,
-        lag_block_size: int | None = None,
+        group_size: int,
+        max_workers: int | None = None,
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
-        """Apply the experimental link-block shift to six materialized links.
+        """Apply materialized one-arm links in concurrent production groups.
 
-        Polarization modulation is identical to the production materialized
-        route.  Only the batch scheduling inside the generic shift operator is
-        changed, so the method can be compared directly with
-        :meth:`apply_batch_device_materialized`.
+        Polarization modulation is identical to
+        :meth:`apply_batch_device_materialized`.  Only the scheduling of the
+        six independent shift jobs changes: contiguous groups call the
+        unchanged production shift kernel from separate Python workers.
+
+        For the standard six-link response:
+
+        - ``group_size=3, max_workers=2`` tests two groups of three links;
+        - ``group_size=2, max_workers=3`` tests three groups of two links.
         """
 
         w_t_plus_device, w_t_cross_device = self._waveform_pair_device(
@@ -592,6 +596,7 @@ class OneArmWDMPlan:
         amplitude_plus_device, amplitude_cross_device = (
             self._device_materialized_amplitudes()
         )
+
         unshifted_device = _combine_polarizations_device(
             amplitude_plus_device,
             amplitude_cross_device,
@@ -599,11 +604,10 @@ class OneArmWDMPlan:
             w_t_cross_device,
         )
 
-        return self.shift_plan.apply_device_linkblock(
+        return self.shift_plan.apply_device_parallel_groups(
             unshifted_device,
-            link_block_size=link_block_size,
-            row_chunk_size=row_chunk_size,
-            lag_block_size=lag_block_size,
+            group_size=group_size,
+            max_workers=max_workers,
             return_profile=return_profile,
             cache_device_plan=cache_device_plan,
         )
