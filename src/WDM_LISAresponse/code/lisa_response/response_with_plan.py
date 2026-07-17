@@ -571,6 +571,7 @@ def _build_wdm_dT_context(
     return context
 
 
+
 def precompute_one_arm_wdm_dT_links_from_context(
     context,
     orbits,
@@ -585,34 +586,56 @@ def precompute_one_arm_wdm_dT_links_from_context(
     one_arm_plan=None,
     return_device=False,
     one_arm_execution_mode="materialized",
+    one_arm_parallel_links_per_group=1,
+    one_arm_parallel_max_workers=None,
 ):
     """Evaluate directed one-arm WDM responses from a prebuilt context.
 
     Parameters
     ----------
     one_arm_plan : OneArmWDMPlan or None, optional
-        Reusable waveform-independent response/shift plan.  When omitted, a
-        plan is built from the context, orbit and sky location.  Pass the same
-        plan for subsequent waveforms on the same WDM grid to avoid rebuilding
-        geometry, transfer factors and ``Tl/Tp``.
-
+        Reusable waveform-independent response/shift plan. When omitted, a
+        plan is built from the context, orbit and sky location.
     return_device : bool, optional
         When true, return link responses as JAX arrays without copying the
         shifted output batch back to NumPy.
-    one_arm_execution_mode : {"materialized", "fused_low_memory"}, optional
-        Device execution strategy used when ``return_device=True``. The
-        materialized route is the normal fast CPU path; the fused route avoids
-        the complete unshifted six-link intermediate.
+    one_arm_execution_mode : {"materialized",
+                              "materialized_parallel_links",
+                              "fused_low_memory"}, optional
+        Device execution strategy used when ``return_device=True``.
+    one_arm_parallel_links_per_group : int, optional
+        Number of contiguous directed links evaluated by each production
+        shift call in ``materialized_parallel_links`` mode.
+    one_arm_parallel_max_workers : int or None, optional
+        Maximum number of concurrent link-group workers. The default uses one
+        worker per group.
 
     Returns
     -------
     tuple
-        ``(wdm, responses)`` using the existing directed-link dictionary API.
+        ``(wdm, responses)`` using the directed-link dictionary API.
     """
     shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
     execution_mode = _normalise_one_arm_execution_mode(
         one_arm_execution_mode
     )
+
+    parallel_links_per_group = int(
+        one_arm_parallel_links_per_group
+    )
+    if parallel_links_per_group < 1:
+        raise ValueError(
+            "one_arm_parallel_links_per_group must be >= 1."
+        )
+    parallel_max_workers = (
+        None
+        if one_arm_parallel_max_workers is None
+        else int(one_arm_parallel_max_workers)
+    )
+    if parallel_max_workers is not None and parallel_max_workers < 1:
+        raise ValueError(
+            "one_arm_parallel_max_workers must be >= 1 or None."
+        )
 
     if links is None:
         links = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2))
@@ -636,13 +659,17 @@ def precompute_one_arm_wdm_dT_links_from_context(
             responses = one_arm_plan.apply_context_device(
                 context,
                 execution_mode=execution_mode,
+                parallel_links_per_group=parallel_links_per_group,
+                parallel_max_workers=parallel_max_workers,
             )
         else:
             responses = one_arm_plan.apply_context(context)
 
         return wdm, responses
 
-    shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
+    shift_key = tuple(
+        sorted((str(k), repr(v)) for k, v in shift_kwargs.items())
+    )
     cache_key = (
         id(wdm),
         id(context.get("w_t_plus")),
@@ -659,6 +686,8 @@ def precompute_one_arm_wdm_dT_links_from_context(
         shift_key,
         bool(return_device),
         execution_mode if return_device else None,
+        parallel_links_per_group if return_device else None,
+        parallel_max_workers if return_device else None,
     )
 
     if cache is not None and cache_key in cache:
@@ -679,6 +708,8 @@ def precompute_one_arm_wdm_dT_links_from_context(
         responses = plan.apply_context_device(
             context,
             execution_mode=execution_mode,
+            parallel_links_per_group=parallel_links_per_group,
+            parallel_max_workers=parallel_max_workers,
         )
     else:
         responses = plan.apply_context(context)
@@ -687,6 +718,7 @@ def precompute_one_arm_wdm_dT_links_from_context(
     if cache is not None:
         cache[cache_key] = payload
     return payload
+
 
 
 def _one_arm_response_wdm_dT_from_context(
@@ -848,6 +880,7 @@ def _one_arm_wdm_dT_components_from_context(
     return phase_center, tau_s, w_xi, time_shift
 
 
+
 def precompute_one_arm_wdm_dT_links(
     times,
     orbits,
@@ -868,70 +901,60 @@ def precompute_one_arm_wdm_dT_links(
     calc_m0=True,
     return_device=False,
     one_arm_execution_mode="materialized",
+    one_arm_parallel_links_per_group=1,
+    one_arm_parallel_max_workers=None,
     parallel_wdm_transforms=False,
 ):
     """Precompute directed one-arm dT WDM responses and return them as a map.
 
+    The independent plus/cross WDM transforms may be evaluated concurrently
+    with ``parallel_wdm_transforms=True``. When returning device arrays,
+    ``one_arm_execution_mode='materialized_parallel_links'`` evaluates
+    contiguous link groups concurrently with the unchanged production shift
+    kernel.
+
     Parameters
     ----------
-    times : ndarray
-        Uniformly sampled time grid.
-    orbits : object
-        Orbit object used to evaluate spacecraft positions.
-    theta : float
-        Source polar angle in radians.
-    phi : float
-        Source azimuthal angle in radians.
-    td_waveform_plus : ndarray
-        Plus-polarization time-domain waveform.
-    td_waveform_cross : ndarray
-        Cross-polarization time-domain waveform.
-    Nf : int, optional
-        Number of WDM frequency bins.
-    d : int, optional
-        WDM oversampling/filter parameter.
-    A_frac : float, optional
-        WDM basis/window shape parameter.
-    m_offset : float, optional
-        Optional frequency-index offset.
-    L_trunc : int or None, optional
-        Time-shift truncation parameter forwarded to fast shifting.
-    links : iterable of tuple[int, int] or None
-        Directed links to compute. Defaults to the six LISA arms.
-    cache : dict or None
-        Optional cache dictionary for reuse across multiple TDI calls.
-    variable_shift_kwargs : dict or None
-        Optional keyword arguments forwarded to
-        ``wdm_time_shift_variable_batch``. This can enable interpolated Tl/Tp
-        construction and select the chunked or legacy assembly backend.
-    q : int or None, optional
-        WDM truncation parameter. When ``None``, it is set to the maximum
-        allowed value for the current tiling.
-    calc_m0 : bool, optional
-        Whether to include the ``m=0`` WDM component when constructing the
-        transform.
+    one_arm_parallel_links_per_group : int, optional
+        Number of directed links per concurrent production shift call.
+    one_arm_parallel_max_workers : int or None, optional
+        Maximum number of concurrent link-group workers.
+    parallel_wdm_transforms : bool, optional
+        Evaluate the plus/cross DWTs concurrently on two Python threads.
+
     Returns
     -------
     tuple
-        ``(wdm, responses)`` where ``wdm`` is the WDM transform object and
-        ``responses`` maps directed links ``(s, r)`` to WDM arrays for the
-        link response received at spacecraft ``r`` from spacecraft ``s``.
-
-    Notes
-    -----
-    ``L_trunc`` is forwarded to the shifter and limits the lag range used
-    during assembly when provided. ``variable_shift_kwargs`` controls whether
-    the one-arm shifts use exact or interpolated Tl/Tp construction. The sky
-    basis for ``theta`` and ``phi`` is built once and reused across all links.
+        ``(wdm, responses)`` where ``responses`` maps directed links to WDM
+        coefficient arrays.
     """
     times = np.asarray(times, dtype=float)
-    sky_basis = build_sky_basis(theta, phi)
     shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
     execution_mode = _normalise_one_arm_execution_mode(
         one_arm_execution_mode
     )
     q_val = _resolve_wdm_q_value(int(times.size), int(Nf), q=q)
-    shift_key = tuple(sorted((str(k), repr(v)) for k, v in shift_kwargs.items()))
+
+    parallel_links_per_group = int(
+        one_arm_parallel_links_per_group
+    )
+    if parallel_links_per_group < 1:
+        raise ValueError(
+            "one_arm_parallel_links_per_group must be >= 1."
+        )
+    parallel_max_workers = (
+        None
+        if one_arm_parallel_max_workers is None
+        else int(one_arm_parallel_max_workers)
+    )
+    if parallel_max_workers is not None and parallel_max_workers < 1:
+        raise ValueError(
+            "one_arm_parallel_max_workers must be >= 1 or None."
+        )
+
+    shift_key = tuple(
+        sorted((str(k), repr(v)) for k, v in shift_kwargs.items())
+    )
     if links is None:
         links = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2))
     links = tuple((int(s), int(r)) for s, r in links)
@@ -956,6 +979,9 @@ def precompute_one_arm_wdm_dT_links(
         shift_key,
         bool(return_device),
         execution_mode if return_device else None,
+        parallel_links_per_group if return_device else None,
+        parallel_max_workers if return_device else None,
+        bool(parallel_wdm_transforms),
     )
 
     if cache is not None and cache_key in cache:
@@ -986,10 +1012,13 @@ def precompute_one_arm_wdm_dT_links(
         use_jax=use_jax,
         return_device=return_device,
         one_arm_execution_mode=execution_mode,
+        one_arm_parallel_links_per_group=parallel_links_per_group,
+        one_arm_parallel_max_workers=parallel_max_workers,
     )
     if cache is not None:
         cache[cache_key] = payload
     return payload
+
 
 def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, td_waveform_cross, Nf=500, return_td = False, gnm_method="cubic", gnm_wrap=True, d = 4, A_frac=0.25, m_offset = 0.0, L_trunc=None, variable_shift_kwargs=None, use_jax=None, q=None, calc_m0=True, parallel_wdm_transforms=False):
     """

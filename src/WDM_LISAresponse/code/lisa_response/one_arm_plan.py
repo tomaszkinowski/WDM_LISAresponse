@@ -74,6 +74,7 @@ def _combine_polarizations_device(
 
 ONE_ARM_EXECUTION_MODES: tuple[str, ...] = (
     "materialized",
+    "materialized_parallel_links",
     "fused_low_memory",
 )
 
@@ -81,11 +82,13 @@ ONE_ARM_EXECUTION_MODES: tuple[str, ...] = (
 def _normalise_one_arm_execution_mode(mode: str | None) -> str:
     """Return the canonical one-arm device execution mode.
 
-    ``materialized`` is the normal fast CPU route. It constructs the complete
-    unshifted link-major batch on-device before applying the prepared shifts.
-    ``fused_low_memory`` retains the weighted-halo implementation, which avoids
-    that full intermediate at the cost of additional runtime on the current
-    CPU backend.
+    ``materialized`` constructs the complete unshifted link-major batch
+    on-device and applies all prepared shifts through one production batch
+    call. ``materialized_parallel_links`` constructs the same unshifted batch
+    but evaluates independent contiguous link groups concurrently using the
+    unchanged production shift kernel. ``fused_low_memory`` avoids the full
+    unshifted link-major intermediate at the cost of additional runtime on the
+    current CPU backend.
     """
 
     if mode is None:
@@ -94,6 +97,11 @@ def _normalise_one_arm_execution_mode(mode: str | None) -> str:
     key = str(mode).strip().lower()
     aliases = {
         "materialised": "materialized",
+        "parallel": "materialized_parallel_links",
+        "parallel_links": "materialized_parallel_links",
+        "materialized_parallel": "materialized_parallel_links",
+        "materialised_parallel": "materialized_parallel_links",
+        "materialised_parallel_links": "materialized_parallel_links",
         "fused": "fused_low_memory",
         "low_memory": "fused_low_memory",
         "low-memory": "fused_low_memory",
@@ -566,12 +574,13 @@ class OneArmWDMPlan:
         )
 
 
+    
     def apply_batch_device_materialized_parallel_groups(
         self,
         w_t_plus,
         w_t_cross,
         *,
-        group_size: int,
+        group_size: int = 1,
         max_workers: int | None = None,
         return_profile: bool = False,
         cache_device_plan: bool = True,
@@ -579,14 +588,16 @@ class OneArmWDMPlan:
         """Apply materialized one-arm links in concurrent production groups.
 
         Polarization modulation is identical to
-        :meth:`apply_batch_device_materialized`.  Only the scheduling of the
-        six independent shift jobs changes: contiguous groups call the
-        unchanged production shift kernel from separate Python workers.
+        :meth:`apply_batch_device_materialized`. Only the scheduling of the
+        independent shift jobs changes: contiguous link groups call the unchanged
+        production shift kernel from separate Python workers.
 
         For the standard six-link response:
 
-        - ``group_size=3, max_workers=2`` tests two groups of three links;
-        - ``group_size=2, max_workers=3`` tests three groups of two links.
+        - ``group_size=6, max_workers=1`` reproduces one group of six links;
+        - ``group_size=3, max_workers=2`` uses two groups of three links;
+        - ``group_size=2, max_workers=3`` uses three groups of two links;
+        - ``group_size=1, max_workers=6`` uses six single-link groups.
         """
 
         w_t_plus_device, w_t_cross_device = self._waveform_pair_device(
@@ -611,6 +622,7 @@ class OneArmWDMPlan:
             return_profile=return_profile,
             cache_device_plan=cache_device_plan,
         )
+
 
     def apply_batch_device(
         self,
@@ -654,12 +666,15 @@ class OneArmWDMPlan:
             for index, link in enumerate(self.links)
         }
     
+    
     def apply_device(
         self,
         w_t_plus,
         w_t_cross,
         *,
         execution_mode: str = "materialized",
+        parallel_links_per_group: int = 1,
+        parallel_max_workers: int | None = None,
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
@@ -667,14 +682,23 @@ class OneArmWDMPlan:
 
         Parameters
         ----------
-        execution_mode : {"materialized", "fused_low_memory"}, optional
-            ``materialized`` uses the faster Commit-3A route: construct the
-            complete unshifted six-link batch on-device and then apply the
-            prepared variable shifts. ``fused_low_memory`` uses the weighted
-            halo implementation and avoids the complete unshifted batch.
+        execution_mode : {"materialized", "materialized_parallel_links",
+                          "fused_low_memory"}, optional
+            ``materialized`` constructs the complete unshifted link batch and
+            applies all shifts through one production batch call.
+            ``materialized_parallel_links`` uses the same numerical kernel but
+            evaluates contiguous link groups concurrently.
+            ``fused_low_memory`` avoids the complete unshifted link batch.
+        parallel_links_per_group : int, optional
+            Number of contiguous directed links assigned to each production-kernel
+            call in ``materialized_parallel_links`` mode. For the standard
+            six-link response, ``1`` creates six independent single-link groups.
+        parallel_max_workers : int or None, optional
+            Maximum number of concurrent link-group workers. The default uses one
+            worker per group.
         return_profile : bool, optional
-            When true, synchronise the selected device route and return its
-            timing metadata alongside the directed-link mapping.
+            When true, synchronise the selected device route and return timing
+            metadata alongside the directed-link mapping.
         cache_device_plan : bool, optional
             Reuse device copies of the prepared shift-plan arrays.
         """
@@ -687,6 +711,17 @@ class OneArmWDMPlan:
                 w_t_cross,
                 return_profile=return_profile,
                 cache_device_plan=cache_device_plan,
+            )
+        elif mode == "materialized_parallel_links":
+            shifted_result = (
+                self.apply_batch_device_materialized_parallel_groups(
+                    w_t_plus,
+                    w_t_cross,
+                    group_size=parallel_links_per_group,
+                    max_workers=parallel_max_workers,
+                    return_profile=return_profile,
+                    cache_device_plan=cache_device_plan,
+                )
             )
         else:
             shifted_result = self.apply_batch_device(
@@ -704,6 +739,15 @@ class OneArmWDMPlan:
             }
             profile = dict(profile)
             profile["one_arm_execution_mode"] = mode
+            if mode == "materialized_parallel_links":
+                profile["one_arm_parallel_links_per_group"] = int(
+                    parallel_links_per_group
+                )
+                profile["one_arm_parallel_max_workers"] = (
+                    None
+                    if parallel_max_workers is None
+                    else int(parallel_max_workers)
+                )
             return responses, profile
 
         shifted_device = shifted_result
@@ -711,6 +755,7 @@ class OneArmWDMPlan:
             link: shifted_device[index]
             for index, link in enumerate(self.links)
         }
+
 
     def apply_context(self, context: dict[str, Any]) -> dict[Link, np.ndarray]:
         """Apply the plan to waveform projections stored in a response context."""
@@ -728,11 +773,14 @@ class OneArmWDMPlan:
 
         return self.apply(context["w_t_plus"], context["w_t_cross"])
     
+    
     def apply_context_device(
         self,
         context: dict[str, Any],
         *,
         execution_mode: str = "materialized",
+        parallel_links_per_group: int = 1,
+        parallel_max_workers: int | None = None,
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
@@ -757,9 +805,12 @@ class OneArmWDMPlan:
             context["w_t_plus"],
             context["w_t_cross"],
             execution_mode=execution_mode,
+            parallel_links_per_group=parallel_links_per_group,
+            parallel_max_workers=parallel_max_workers,
             return_profile=return_profile,
             cache_device_plan=cache_device_plan,
         )
+
     def clear_device_cache(self) -> None:
         """Release cached JAX amplitude and shift-plan arrays."""
 

@@ -437,6 +437,7 @@ def _gen2_michelson_wdm_accumulate_downstream(
     return X, Y, Z
 
 
+
 def precompute_gen2_michelson_wdm_inputs(
     times,
     waveform_plus,
@@ -456,11 +457,15 @@ def precompute_gen2_michelson_wdm_inputs(
     calc_m0=True,
     return_device_links=False,
     one_arm_execution_mode="materialized",
+    one_arm_parallel_links_per_group=1,
+    one_arm_parallel_max_workers=None,
+    parallel_wdm_transforms=False,
 ):
     """Backward-compatible staged Gen-2 Michelson precompute wrapper.
 
-    This wrapper now builds:
-    A0 geometry/static precompute -> A1 waveform precompute.
+    This wrapper builds the reusable A0 geometry/static state and then the A1
+    waveform state. The A1 stage may use concurrent plus/cross WDM transforms
+    and concurrent groups of one-arm link shifts.
     """
     geom_precomp = precompute_gen2_michelson_wdm_geometry(
         times,
@@ -485,7 +490,13 @@ def precompute_gen2_michelson_wdm_inputs(
         one_arm_cache=one_arm_cache,
         return_device_links=return_device_links,
         one_arm_execution_mode=one_arm_execution_mode,
+        one_arm_parallel_links_per_group=(
+            one_arm_parallel_links_per_group
+        ),
+        one_arm_parallel_max_workers=one_arm_parallel_max_workers,
+        parallel_wdm_transforms=parallel_wdm_transforms,
     )
+
 
 
 def precompute_gen2_michelson_wdm_geometry(
@@ -604,6 +615,7 @@ def precompute_gen2_michelson_wdm_geometry(
     }
 
 
+
 def precompute_gen2_michelson_wdm_waveform(
     geom_precomp,
     waveform_plus,
@@ -613,17 +625,41 @@ def precompute_gen2_michelson_wdm_waveform(
     one_arm_cache=None,
     return_device_links=False,
     one_arm_execution_mode="materialized",
+    one_arm_parallel_links_per_group=1,
+    one_arm_parallel_max_workers=None,
+    parallel_wdm_transforms=False,
 ):
     """A1 precompute: transform one waveform and apply six one-arm plans.
 
     The prepared TDI plan from A0 is retained for the optimized
-    ``tdi_assembly_mode="prepared_plan"`` path.  Runtime TDI overrides are
-    also retained for the legacy ``batch_map`` and ``accumulate`` reference
-    paths, which remain useful for backend regression tests.
+    ``tdi_assembly_mode="prepared_plan"`` path. Runtime TDI overrides remain
+    available for the legacy ``batch_map`` and ``accumulate`` reference paths.
+
+    ``parallel_wdm_transforms=True`` evaluates the independent plus/cross DWTs
+    concurrently. ``one_arm_execution_mode='materialized_parallel_links'``
+    evaluates contiguous one-arm link groups concurrently with the unchanged
+    production shift kernel.
     """
     resolved_one_arm_execution_mode = _normalise_one_arm_execution_mode(
         one_arm_execution_mode
     )
+
+    parallel_links_per_group = int(
+        one_arm_parallel_links_per_group
+    )
+    if parallel_links_per_group < 1:
+        raise ValueError(
+            "one_arm_parallel_links_per_group must be >= 1."
+        )
+    parallel_max_workers = (
+        None
+        if one_arm_parallel_max_workers is None
+        else int(one_arm_parallel_max_workers)
+    )
+    if parallel_max_workers is not None and parallel_max_workers < 1:
+        raise ValueError(
+            "one_arm_parallel_max_workers must be >= 1 or None."
+        )
 
     times = geom_precomp["times"]
     theta = geom_precomp["theta"]
@@ -637,7 +673,9 @@ def precompute_gen2_michelson_wdm_waveform(
     q = geom_precomp.get("q")
     calc_m0 = bool(geom_precomp.get("calc_m0", True))
 
-    one_arm_shift_kwargs = dict(geom_precomp.get("one_arm_shift_kwargs", {}))
+    one_arm_shift_kwargs = dict(
+        geom_precomp.get("one_arm_shift_kwargs", {})
+    )
     prepared_tdi_shift_kwargs = dict(
         geom_precomp.get("tdi_batch_shift_kwargs", {})
     )
@@ -651,11 +689,11 @@ def precompute_gen2_michelson_wdm_waveform(
 
         updated_one_arm_kwargs = dict(one_arm_shift_kwargs)
         updated_one_arm_kwargs.update(one_arm_override)
-        rebuild_one_arm_plan = updated_one_arm_kwargs != one_arm_shift_kwargs
+        rebuild_one_arm_plan = (
+            updated_one_arm_kwargs != one_arm_shift_kwargs
+        )
         one_arm_shift_kwargs = updated_one_arm_kwargs
 
-        # These options are used only by the legacy B-stage paths.  The
-        # prepared plan remains the immutable operator created in A0.
         runtime_tdi_shift_kwargs.update(tdi_override)
 
     runtime_tdi_differs_from_plan = (
@@ -669,6 +707,7 @@ def precompute_gen2_michelson_wdm_waveform(
         waveform_cross,
         geom_precomp["wdm"],
         m_offset=0.0,
+        parallel_wdm_transforms=parallel_wdm_transforms,
     )
     waveform_context_build_s = time.perf_counter() - t_ctx0
 
@@ -698,6 +737,8 @@ def precompute_gen2_michelson_wdm_waveform(
         one_arm_plan=one_arm_plan,
         return_device=return_device_links,
         one_arm_execution_mode=resolved_one_arm_execution_mode,
+        one_arm_parallel_links_per_group=parallel_links_per_group,
+        one_arm_parallel_max_workers=parallel_max_workers,
     )
     six_link_compute_s = time.perf_counter() - t_links0
 
@@ -707,14 +748,14 @@ def precompute_gen2_michelson_wdm_waveform(
             "geom_precomp is missing the prepared Gen-2 Michelson TDI plan."
         )
 
-    # Keep the old job records as a lightweight reference/testing path.  They
-    # are only metadata and cost essentially nothing compared with shifting.
     t_jobs0 = time.perf_counter()
-    x_jobs, y_jobs, z_jobs, all_jobs = _build_gen2_michelson_job_records(
-        link_w,
-        geom_precomp["shifts_X"],
-        geom_precomp["shifts_Y"],
-        geom_precomp["shifts_Z"],
+    x_jobs, y_jobs, z_jobs, all_jobs = (
+        _build_gen2_michelson_job_records(
+            link_w,
+            geom_precomp["shifts_X"],
+            geom_precomp["shifts_Y"],
+            geom_precomp["shifts_Z"],
+        )
     )
     job_build_s = time.perf_counter() - t_jobs0
 
@@ -730,6 +771,21 @@ def precompute_gen2_michelson_wdm_waveform(
             if return_device_links
             else "host_materialized"
         ),
+        "one_arm_parallel_links_per_group": (
+            parallel_links_per_group
+            if return_device_links
+            and resolved_one_arm_execution_mode
+            == "materialized_parallel_links"
+            else None
+        ),
+        "one_arm_parallel_max_workers": (
+            parallel_max_workers
+            if return_device_links
+            and resolved_one_arm_execution_mode
+            == "materialized_parallel_links"
+            else None
+        ),
+        "parallel_wdm_transforms": bool(parallel_wdm_transforms),
         "one_arm_plan": one_arm_plan,
         "tdi_plan": tdi_plan,
         "shifts_X": geom_precomp["shifts_X"],
@@ -753,10 +809,13 @@ def precompute_gen2_michelson_wdm_waveform(
         "use_jax": use_jax,
         "q": q,
         "calc_m0": calc_m0,
-        "waveform_context_build_s": float(waveform_context_build_s),
+        "waveform_context_build_s": float(
+            waveform_context_build_s
+        ),
         "six_link_compute_s": float(six_link_compute_s),
         "job_build_s": float(job_build_s),
     }
+
 
 def gen2_michelson_wdm_from_waveform_precomputed(
     wave_precomp,
@@ -2121,6 +2180,7 @@ def gen2_sagnac_wdm(
 
     return alpha1, beta1, gamma1
 
+
 def gen2_michelson_wdm(
     times,
     waveform_plus,
@@ -2143,52 +2203,19 @@ def gen2_michelson_wdm(
     profile_shift_stages=False,
     profile_label=None,
     return_shift_profile=False,
+    return_device_links=False,
+    one_arm_execution_mode="materialized",
+    one_arm_parallel_links_per_group=1,
+    one_arm_parallel_max_workers=None,
+    parallel_wdm_transforms=False,
 ):
-    """
-    Gen-2 Michelson-type variables (X1, Y1, Z1) in the WDM domain,
-    with built-in construction of the WDM time grid and gen2 shifts.
+    """Construct Gen-2 Michelson ``X1, Y1, Z1`` in the WDM domain.
 
-    IMPORTANT:
-    - Shifts are computed on times_p = times[0] + arange(wdm.Nt)*wdm.dT
-    - One-arm responses are also evaluated on times_p (so shapes match).
-
-    Parameters
-    ----------
-    times : ndarray
-        Input time grid for the padded waveform.
-    waveform_plus, waveform_cross : ndarray
-        Time-domain GW polarizations sampled on ``times``.
-    theta, phi : float
-        Sky-location angles in radians.
-    orbits : object
-        Orbit provider used for one-arm response and delay calculations.
-    Nf : int
-        Number of WDM frequency bins.
-    shifts_cache : dict or None
-        Optional mutable dict used to memoize computed shift libraries.
-        Keyed by ("michelson_wdm", id(orbits), wdm.Nt, times[0], wdm.dT, Nf).
-    L_trunc : int or None
-        Optional lag truncation forwarded to one-arm response construction and
-        subsequent variable-delay WDM shifts.
-    one_arm_cache : dict or None
-        Optional cache for shared one-arm WDM responses.
-    variable_shift_kwargs : dict or None
-        Optional keyword arguments forwarded to
-        ``wdm_time_shift_variable_batch`` (e.g. ``tl_tp_mode='interp'``,
-        ``tl_tp_interp_kind='linear'|'cubic'``, ``tl_tp_interp_points=...``).
-    q : int or None, optional
-        WDM truncation parameter for one-arm response construction. When
-        ``None``, the maximal allowed q is used (same behavior as one-arm
-        response helpers).
-
-    Returns
-    -------
-    tuple of ndarray
-        ``(X1, Y1, Z1)`` WDM coefficient arrays.
+    The optional one-arm scheduling arguments affect only the waveform-level
+    A1 stage. The downstream TDI operator and its numerical configuration are
+    unchanged.
     """
     times = np.asarray(times, dtype=float)
-    # Smoke test locally: compare calc_m0=True and calc_m0=False and confirm the
-    # WDM frequency axis follows the transform convention without manual slicing.
     precomp = precompute_gen2_michelson_wdm_inputs(
         times,
         waveform_plus,
@@ -2206,6 +2233,13 @@ def gen2_michelson_wdm(
         d=d,
         A_frac=A_frac,
         calc_m0=calc_m0,
+        return_device_links=return_device_links,
+        one_arm_execution_mode=one_arm_execution_mode,
+        one_arm_parallel_links_per_group=(
+            one_arm_parallel_links_per_group
+        ),
+        one_arm_parallel_max_workers=one_arm_parallel_max_workers,
+        parallel_wdm_transforms=parallel_wdm_transforms,
     )
     return gen2_michelson_wdm_from_precomputed(
         precomp,
@@ -2219,6 +2253,7 @@ def gen2_michelson_wdm(
         profile_label=profile_label,
         return_shift_profile=return_shift_profile,
     )
+
 
 def gen2_michelson_td(
     times,
