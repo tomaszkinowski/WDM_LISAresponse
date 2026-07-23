@@ -41,3 +41,6 @@ dmypy.json
 # large data files
 data/*.txt
 data/*.h5
+
+#keeps local save files 
+_local_wdm_*
