@@ -1,3 +1,5 @@
+"""Waveform generation, windowing and padding helpers."""
+
 import numpy as np
 from scipy.signal.windows import tukey
 from few.utils.constants import YRSID_SI
@@ -50,12 +52,12 @@ def generate_windowed_padded_waveform(
 ):
     """
     Master function for generating various waveform models. 
-    We addtionally pad any signal by a multiple of the data affected by the window.
+    The function also pads each signal by a multiple of the data affected by the window.
 
     Parameters
     ----------
     waveform_model : string
-        command specificying which model we use 
+        Name of the waveform model to generate 
     t0 : float [seconds]
         starting time for the signal 
     dt : float [sec]

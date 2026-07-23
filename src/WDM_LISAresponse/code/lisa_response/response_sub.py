@@ -1,9 +1,12 @@
-import numpy as np 
-from lisaconstants import c
+"""Geometry, interpolation and padding helpers for LISA responses."""
+
 from typing import NamedTuple, Tuple
+
+import numpy as np
+from lisaconstants import c
 import WDM
+
 from ..utils.utils import wdm_tail_padding_info
-#functions used to compute lisa responses 
 
 
 def wdm_pad_inputs_right(times, td_waveform_plus, td_waveform_cross, Nf):

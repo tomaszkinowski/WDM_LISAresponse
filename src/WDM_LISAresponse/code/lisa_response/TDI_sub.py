@@ -1,4 +1,4 @@
-#subfunctions from the TDI module 
+"""Low-level delay construction and time-domain shift helpers for TDI."""
 
 import numpy as np
 from WDM_LISAresponse.code.lisa_response.response_sub import _compute_ltt_iterative

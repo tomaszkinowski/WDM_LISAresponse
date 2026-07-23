@@ -1,4 +1,9 @@
-#code to generate TDI signals in TD and WDM domains 
+"""Time-domain and WDM Time-Delay Interferometry response assembly.
+
+The prepared Gen-2 Michelson plan is the maintained production WDM path.
+Direct batch-map and accumulator implementations are retained as numerical
+reference routes for staged validation.
+"""
 import time
 import numpy as np
 from WDM_LISAresponse.code.lisa_response.response_with_plan import (
@@ -13,6 +18,8 @@ from WDM_LISAresponse.code.lisa_response.response_with_plan import (
 from WDM_LISAresponse.code.lisa_response.one_arm_plan import (
     OneArmWDMPlan,
     _normalise_one_arm_execution_mode,
+    _normalise_shift_backend,
+    _validate_jax_request,
 )
 from WDM_LISAresponse.code.lisa_response.gen2_michelson_plan import Gen2MichelsonWDMPlan
 from WDM.code.time_delay_filters.time_shift_fast import (
@@ -35,31 +42,42 @@ def _resolve_variable_shift_batch_kwargs(
     variable_shift_kwargs,
     default_batch_chunk=32,
 ):
-    """Build kwargs for ``wdm_time_shift_variable_batch`` with stable defaults.
+    """Build cleaned kwargs for direct variable-shift batch calls.
 
-    ``batch_chunk`` can be overridden by the caller through
-    ``variable_shift_kwargs``. When omitted, the previous Gen-2 behavior
-    (chunk size 32) is preserved. The default assembly backend uses the
-    lag-first chunked kernels unless overridden.
-
-    Parameters
-    ----------
-    variable_shift_kwargs : dict or None
-        User-provided variable shift options, including backend selection.
-    default_batch_chunk : int or None
-        Default ``batch_chunk`` when not explicitly provided.
+    Historical backend names are normalized to ``production`` or
+    ``reference``. Options belonging to removed job-block, vmap and separate
+    interpolation implementations are rejected explicitly.
     """
-    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
-    # ``use_jax`` is passed explicitly at call sites; drop legacy duplicate key.
-    shift_kwargs.pop("use_jax", None)
-    if "assembly_backend" not in shift_kwargs and "assembly_vmap" not in shift_kwargs:
-        shift_kwargs["assembly_backend"] = "lagfirst_chunked"
-        shift_kwargs["assembly_precision"] = "complex64"
-        shift_kwargs["row_chunk_size"] = 128
-        shift_kwargs["tl_tp_mode"] = "exact"
+
+    shift_kwargs = (
+        {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    )
+    _validate_jax_request(shift_kwargs.pop("use_jax", None))
+
+    removed_options = {
+        "assembly_vmap",
+        "job_block_size",
+        "jax_pad_last_chunk",
+        "tl_tp_interp_backend",
+    }
+    present_removed = sorted(removed_options.intersection(shift_kwargs))
+    if present_removed:
+        raise TypeError(
+            "Removed variable-shift options were supplied: "
+            + ", ".join(present_removed)
+        )
+
+    shift_kwargs["assembly_backend"] = _normalise_shift_backend(
+        shift_kwargs.get("assembly_backend", "production")
+    )
+    shift_kwargs.setdefault("assembly_precision", "complex64")
+    shift_kwargs.setdefault("row_chunk_size", 128)
+    shift_kwargs.setdefault("lag_block_size", 1)
+    shift_kwargs.setdefault("tl_tp_mode", "exact")
+
     batch_chunk = shift_kwargs.pop("batch_chunk", default_batch_chunk)
     if batch_chunk is not None:
-        shift_kwargs["batch_chunk"] = batch_chunk
+        shift_kwargs["batch_chunk"] = int(batch_chunk)
     return shift_kwargs
 
 
@@ -343,7 +361,6 @@ def _gen2_michelson_wdm_accumulate_downstream(
     shifts_Z,
     precomp_Nf,
     batch_L_trunc,
-    resolved_use_jax,
     batch_shift_kwargs,
     accumulator_chunk=1,
     # profiling passthrough
@@ -386,7 +403,6 @@ def _gen2_michelson_wdm_accumulate_downstream(
             [(w_input, t_shift) for _, _, _, w_input, t_shift in chunk],
             Nf=precomp_Nf,
             L_trunc=batch_L_trunc,
-            use_jax=resolved_use_jax,
             batch_chunk=min(chunk_size, len(chunk)),
             profile_shift_stages=profile_shift_stages,
             profile_label=profile_label,
@@ -605,7 +621,7 @@ def precompute_gen2_michelson_wdm_geometry(
         "q": q,
         "d": int(d),
         "A_frac": float(A_frac),
-        "use_jax": use_jax,
+        "use_jax": True,
         "wdm_grid_build_s": float(wdm_grid_build_s),
         "one_arm_plan_build_s": float(one_arm_plan_build_s),
         "tdi_delay_build_s": float(tdi_delay_build_s),
@@ -806,7 +822,7 @@ def precompute_gen2_michelson_wdm_waveform(
         "L_trunc": L_trunc,
         "d": d,
         "A_frac": A_frac,
-        "use_jax": use_jax,
+        "use_jax": True,
         "q": q,
         "calc_m0": calc_m0,
         "waveform_context_build_s": float(
@@ -832,10 +848,9 @@ def gen2_michelson_wdm_from_waveform_precomputed(
 ):
     """B stage: construct Gen-2 Michelson ``X, Y, Z``.
 
-    ``prepared_plan`` is the optimized production path: it applies the
-    immutable 42-job operator built in A0.  ``batch_map`` and ``accumulate``
-    are retained as reference/testing paths and may accept runtime backend
-    overrides, at the cost of rebuilding delay kernels in B.
+    ``prepared_plan`` is the production path: it applies the immutable
+    42-job operator built in A0. ``batch_map`` and ``accumulate`` are retained
+    as reference paths and rebuild delay kernels during this stage.
     """
     if "link_w" not in wave_precomp:
         raise ValueError(
@@ -877,12 +892,7 @@ def gen2_michelson_wdm_from_waveform_precomputed(
                 "wave_precomp."
             )
 
-        resolved_plan_use_jax = bool(tdi_plan.shift_plan.resolved_use_jax)
-        if use_jax is not None and bool(use_jax) != resolved_plan_use_jax:
-            raise ValueError(
-                "use_jax is part of the prepared TDI plan; rebuild A0 to "
-                "change it."
-            )
+        _validate_jax_request(use_jax)
 
         if wave_precomp.get("tdi_runtime_differs_from_plan", False):
             raise ValueError(
@@ -904,8 +914,8 @@ def gen2_michelson_wdm_from_waveform_precomputed(
             if updated_tdi_kwargs != stored_tdi_kwargs:
                 raise ValueError(
                     "variable_shift_kwargs are part of the prepared TDI "
-                    "plan; rebuild A0 to change them, or use a legacy "
-                    "assembly mode for backend comparisons."
+                    "plan; rebuild A0 to change them, or use a reference "
+                    "assembly mode for comparisons."
                 )
 
         if profile_shift_stages:
@@ -941,9 +951,7 @@ def gen2_michelson_wdm_from_waveform_precomputed(
         y_jobs = wave_precomp.get("y_jobs")
         z_jobs = wave_precomp.get("z_jobs")
 
-    resolved_use_jax = wave_precomp.get("use_jax", use_jax)
-    if use_jax is not None:
-        resolved_use_jax = use_jax
+    _validate_jax_request(use_jax)
 
     batch_shift_kwargs = dict(
         wave_precomp.get(
@@ -971,7 +979,6 @@ def gen2_michelson_wdm_from_waveform_precomputed(
             [(w, t_shift) for _, w, t_shift in all_jobs],
             Nf=precomp_Nf,
             L_trunc=batch_L_trunc,
-            use_jax=resolved_use_jax,
             profile_shift_stages=profile_shift_stages,
             profile_label=profile_label,
             **batch_shift_kwargs,
@@ -1017,7 +1024,6 @@ def gen2_michelson_wdm_from_waveform_precomputed(
             shifts_Z=wave_precomp["shifts_Z"],
             precomp_Nf=precomp_Nf,
             batch_L_trunc=batch_L_trunc,
-            resolved_use_jax=resolved_use_jax,
             batch_shift_kwargs=batch_shift_kwargs,
             accumulator_chunk=accumulator_chunk,
             profile_shift_stages=profile_shift_stages,
@@ -1433,7 +1439,6 @@ def gen1_sagnac_wdm(
         [(w, delta) for _, w, delta in jobs],
         Nf=Nf,
         L_trunc=L_trunc,
-        use_jax=use_jax,
     )
     shifted_map = {name: arr for (name, _, _), arr in zip(jobs, shifted)}
 
@@ -1468,7 +1473,6 @@ def gen1_sagnac_wdm(
             zeta_jobs,
             Nf=Nf,
             L_trunc=L_trunc,
-            use_jax=use_jax,
         )
 
         zeta = w21_L32 - w31_L32 + w32_L13 - w12_L13 + w13_L21 - w23_L21
@@ -1673,7 +1677,6 @@ def gen1_michelson_wdm(
         [(w, delta) for _, w, delta in jobs],
         Nf=Nf,
         L_trunc=L_trunc,
-        use_jax=use_jax,
     )
     shifted_map = {name: arr for (name, _, _), arr in zip(jobs, shifted)}
 
@@ -2095,7 +2098,6 @@ def gen2_sagnac_wdm(
         [(w, t_shift) for _, w, t_shift in all_jobs],
         Nf=Nf,
         L_trunc=L_trunc,
-        use_jax=use_jax,
         **shift_kwargs,
     )
     shifted_map = {name: arr for (name, _, _), arr in zip(all_jobs, all_shifted)}

@@ -1,29 +1,36 @@
-"""
-LISA response calculations for WDM_LISAresponse
+"""LISA one-arm response calculations in time, frequency and WDM form.
+
+The production WDM path is built around :class:`OneArmWDMPlan`.  The direct
+time-domain and basis-interpolation functions are retained as scientific
+reference implementations; they are not alternative production shift
+backends.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 
-import numpy as np 
+import numpy as np
 from lisaconstants import c
+from numpy.fft import fft, fftfreq
 from scipy.interpolate import interp1d
 import WDM
+
 from WDM.code.time_delay_filters.time_shift_fast import wdm_time_shift_variable
-from numpy.fft import fft, fftfreq
+
 from .one_arm_plan import (
     OneArmWDMPlan,
     _normalise_one_arm_execution_mode,
+    _normalise_shift_backend,
+    _validate_jax_request,
 )
-from ..utils.utils import wdm_tail_padding_info
 from .response_sub import (
+    _compute_ltt_iterative,
     antenna_pattern_factors,
     build_sky_basis,
-    _compute_ltt_iterative,
-    rhat, 
     gnm_at_times_grid_np_interp,
+    rhat,
     wdm_pad_inputs_right,
 )
-# Add your LISA response functions here
+from ..utils.utils import wdm_tail_padding_info
 
 
 def _transform_wdm_polarizations(
@@ -33,12 +40,10 @@ def _transform_wdm_polarizations(
     *,
     parallel=False,
 ):
-    """Transform plus/cross polarizations sequentially or on two threads.
+    """Transform plus/cross polarizations sequentially or concurrently.
 
-    The two calls are numerically independent.  The parallel route is opt-in
-    because it changes CPU scheduling, not numerical behavior.  A fresh
-    two-worker executor is used for each waveform evaluation so the helper has
-    no persistent thread-pool state.
+    The two DWT calls are numerically independent. The threaded route is a
+    CPU scheduling option and does not change the WDM definition.
     """
 
     if not parallel:
@@ -600,8 +605,7 @@ def precompute_one_arm_wdm_dT_links_from_context(
         When true, return link responses as JAX arrays without copying the
         shifted output batch back to NumPy.
     one_arm_execution_mode : {"materialized",
-                              "materialized_parallel_links",
-                              "fused_low_memory"}, optional
+                              "materialized_parallel_links"}, optional
         Device execution strategy used when ``return_device=True``.
     one_arm_parallel_links_per_group : int, optional
         Number of contiguous directed links evaluated by each production
@@ -615,6 +619,7 @@ def precompute_one_arm_wdm_dT_links_from_context(
     tuple
         ``(wdm, responses)`` using the directed-link dictionary API.
     """
+    _validate_jax_request(use_jax)
     shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
     execution_mode = _normalise_one_arm_execution_mode(
         one_arm_execution_mode
@@ -738,20 +743,15 @@ def _one_arm_response_wdm_dT_from_context(
 ):
     """Evaluate one-arm dT WDM response from precomputed context data.
 
-    The coefficient-space time shift uses ``wdm_time_shift_variable`` and can
-    be configured through ``variable_shift_kwargs`` to choose the chunked or
-    legacy assembly backends, along with exact or interpolated ``Tl/Tp``
-    construction. A precomputed ``sky_basis`` can be supplied to avoid
-    rebuilding the source-direction basis.
+    The coefficient-space shift uses the maintained production or reference
+    WDM backend, with exact or interpolated ``Tl/Tp`` construction. A
+    precomputed ``sky_basis`` may be supplied to avoid rebuilding the
+    source-direction basis.
     """
     times = context["times"]
     wdm = context["wdm"]
-    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
-    shift_kwargs.pop("use_jax", None)
-    shift_kwargs.setdefault("assembly_backend", "lagfirst_chunked")
-    shift_kwargs.setdefault("assembly_precision", "complex64")
-    shift_kwargs.setdefault("row_chunk_size", 128)
-    shift_kwargs.setdefault("tl_tp_mode", "exact")
+    _validate_jax_request(use_jax)
+    shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
 
     phase_center, tau_s, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
         context,
@@ -771,7 +771,6 @@ def _one_arm_response_wdm_dT_from_context(
         Nf=wdm.Nf,
         delta_mode="target",
         L_trunc=L_trunc,
-        use_jax=use_jax,
         **shift_kwargs,
     )
 
@@ -786,25 +785,50 @@ def _one_arm_response_wdm_dT_from_context(
 
 
 def _split_variable_shift_kwargs(variable_shift_kwargs):
-    """Split variable-shift kwargs into one-arm and batch-friendly copies.
+    """Return cleaned one-arm and downstream TDI shift options.
 
-    ``batch_chunk`` only affects batched downstream shifting, so it is removed
-    from the one-arm kwargs while remaining available in the batch kwargs.
+    The one-arm plan builds all six links together and therefore uses its own
+    default batch size.  ``batch_chunk`` and optional profiling flags remain
+    available to downstream direct TDI batch calls.  Historical backend names
+    are normalized onto the maintained ``production`` or ``reference`` paths.
     """
-    shift_kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
-    shift_kwargs.pop("use_jax", None)
-    shift_kwargs.pop("batch_chunk", None)
 
-    if "assembly_backend" not in shift_kwargs and "assembly_vmap" not in shift_kwargs:
-        shift_kwargs["assembly_backend"] = "lagfirst_chunked"
-        shift_kwargs["assembly_precision"] = "complex64"
-        shift_kwargs["row_chunk_size"] = 128
-        shift_kwargs["tl_tp_mode"] = "exact"
+    shift_kwargs = (
+        {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
+    )
+    _validate_jax_request(shift_kwargs.pop("use_jax", None))
+
+    removed_options = {
+        "assembly_vmap",
+        "job_block_size",
+        "jax_pad_last_chunk",
+        "tl_tp_interp_backend",
+    }
+    present_removed = sorted(removed_options.intersection(shift_kwargs))
+    if present_removed:
+        raise TypeError(
+            "Removed variable-shift options were supplied: "
+            + ", ".join(present_removed)
+        )
+
+    shift_kwargs["assembly_backend"] = _normalise_shift_backend(
+        shift_kwargs.get("assembly_backend", "production")
+    )
+    shift_kwargs.setdefault("assembly_precision", "complex64")
+    shift_kwargs.setdefault("row_chunk_size", 128)
+    shift_kwargs.setdefault("lag_block_size", 1)
+    shift_kwargs.setdefault("tl_tp_mode", "exact")
 
     one_arm_shift_kwargs = dict(shift_kwargs)
+    for key in (
+        "batch_chunk",
+        "profile_shift_stages",
+        "profile_label",
+        "return_shift_profile",
+    ):
+        one_arm_shift_kwargs.pop(key, None)
+
     tdi_batch_shift_kwargs = dict(shift_kwargs)
-    if variable_shift_kwargs is not None and "batch_chunk" in variable_shift_kwargs:
-        tdi_batch_shift_kwargs["batch_chunk"] = variable_shift_kwargs["batch_chunk"]
     return one_arm_shift_kwargs, tdi_batch_shift_kwargs
 
 
@@ -929,6 +953,7 @@ def precompute_one_arm_wdm_dT_links(
         coefficient arrays.
     """
     times = np.asarray(times, dtype=float)
+    _validate_jax_request(use_jax)
     shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
     execution_mode = _normalise_one_arm_execution_mode(
         one_arm_execution_mode
@@ -1063,9 +1088,8 @@ def one_arm_response_wdm_dT(times, s, r, orbits, theta, phi, td_waveform_plus, t
     L_trunc : int or None
         Optional lag truncation forwarded to the coefficient-space time shift.
     variable_shift_kwargs : dict or None
-        Optional keyword arguments forwarded to ``wdm_time_shift_variable``.
-        This can enable interpolated Tl/Tp construction and select the
-        chunked or legacy assembly backend for the one-arm shift.
+        Optional numerical settings forwarded to the maintained production or
+        reference WDM shift backend.
     q : int or None, optional
         WDM truncation parameter. When ``None``, it is set to the maximum
         allowed value for the current tiling.

@@ -5,8 +5,8 @@ library onto the generic :class:`VariableShiftBatchPlan` implemented by
 ``WDM_GW_wavelets``.
 
 The prepared plan depends on the WDM grid, recursive TDI delay fields and
-shift configuration, but not on waveform coefficients.  It can therefore be
-built in the A0 stage and applied repeatedly in the B stage.
+shift configuration, but not on waveform coefficients. It can therefore be
+built in the A0 stage and applied repeatedly in the waveform/TDI stage.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import numpy as np
 
 from WDM.code.time_delay_filters.plans import VariableShiftBatchPlan
 
-from .one_arm_plan import _legacy_shift_options_to_plan_config
+from .one_arm_plan import _shift_options_to_plan_config
 
 
 Link = tuple[int, int]
@@ -65,7 +65,7 @@ class Gen2MichelsonWDMPlan:
     ) -> "Gen2MichelsonWDMPlan":
         started = perf_counter()
 
-        config, build_kwargs = _legacy_shift_options_to_plan_config(
+        config, build_kwargs = _shift_options_to_plan_config(
             L_trunc=L_trunc,
             variable_shift_kwargs=variable_shift_kwargs,
             use_jax=use_jax,
@@ -299,10 +299,10 @@ class Gen2MichelsonWDMPlan:
     ):
         """Apply 42 shifts and accumulate directly into ``X, Y, Z``.
 
-        The optimized path transfers only the six distinct directed-link
-        arrays, gathers the required job inputs on-device, and returns only
-        the three final TDI channels.  A materialized fallback is retained for
-        test doubles and backwards compatibility.
+        The grouped path transfers only the six distinct directed-link arrays,
+        gathers the required job inputs on-device and returns only the three
+        final TDI channels. A materialized fallback is retained as a numerical
+        reference and for lightweight test doubles.
         """
 
         grouped_apply = getattr(

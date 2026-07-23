@@ -43,21 +43,21 @@ def _compare_triplet(test_triplet, ref_triplet, atol, rtol):
         assert np.allclose(test_arr, ref_arr, atol=atol, rtol=rtol)
 
 
-def _exact_shift_kwargs(backend="lagfirst_chunked", batch_chunk=None):
+def _exact_shift_kwargs(backend="reference", batch_chunk=None):
     out = {
         "assembly_backend": backend,
         "assembly_precision": "complex128",
         "row_chunk_size": 8,
         "tl_tp_mode": "exact",
     }
-    if backend == "lagfirst_chunked_lagblock":
+    if backend == "production":
         out["lag_block_size"] = 2
     if batch_chunk is not None:
         out["batch_chunk"] = int(batch_chunk)
     return out
 
 
-def _build_staged_wave_precomp(seed=1234, backend="lagfirst_chunked_lagblock", batch_chunk=2):
+def _build_staged_wave_precomp(seed=1234, backend="production", batch_chunk=2):
     times, waveform_plus, waveform_cross = _build_inputs(seed=seed)
     orbits = SimpleOrbits()
     theta = 0.8
@@ -91,7 +91,7 @@ def test_backward_compatible_wrapper_matches_direct_call():
     theta = 1.0
     phi = 0.4
     n_f = 8
-    variable_shift_kwargs = _exact_shift_kwargs("lagfirst_chunked")
+    variable_shift_kwargs = _exact_shift_kwargs("reference")
 
     direct = gen2_michelson_wdm(
         times,
@@ -137,7 +137,7 @@ def test_new_split_matches_old_staged_and_direct():
     theta = 0.6
     phi = 1.1
     n_f = 8
-    kwargs = _exact_shift_kwargs("lagfirst_chunked_lagblock", batch_chunk=2)
+    kwargs = _exact_shift_kwargs("production", batch_chunk=2)
 
     direct = gen2_michelson_wdm(
         times,
@@ -211,7 +211,7 @@ def test_geometry_reuse_across_waveforms_and_no_waveform_payload_in_geom():
     theta = 0.8
     phi = 1.2
     n_f = 8
-    kwargs = _exact_shift_kwargs("lagfirst_chunked")
+    kwargs = _exact_shift_kwargs("reference")
 
     geom = precompute_gen2_michelson_wdm_geometry(
         times,
@@ -313,13 +313,13 @@ def test_batch_chunk_independence_from_same_wave_precompute():
         L_trunc=2,
         q=4,
         use_jax=True,
-        variable_shift_kwargs=_exact_shift_kwargs("lagfirst_chunked_lagblock", batch_chunk=1),
+        variable_shift_kwargs=_exact_shift_kwargs("production", batch_chunk=1),
     )
     wave = precompute_gen2_michelson_wdm_waveform(
         geom,
         waveform_plus,
         waveform_cross,
-        variable_shift_kwargs=_exact_shift_kwargs("lagfirst_chunked_lagblock", batch_chunk=1),
+        variable_shift_kwargs=_exact_shift_kwargs("production", batch_chunk=1),
     )
 
     link_w_id = id(wave["link_w"])
@@ -429,7 +429,7 @@ def test_one_arm_precompute_cache_ignores_batch_chunk():
         L_trunc=2,
         cache=cache,
         variable_shift_kwargs={
-            "assembly_backend": "lagfirst_chunked_lagblock",
+            "assembly_backend": "production",
             "assembly_precision": "complex128",
             "row_chunk_size": 8,
             "lag_block_size": 2,
@@ -450,7 +450,7 @@ def test_one_arm_precompute_cache_ignores_batch_chunk():
         L_trunc=2,
         cache=cache,
         variable_shift_kwargs={
-            "assembly_backend": "lagfirst_chunked_lagblock",
+            "assembly_backend": "production",
             "assembly_precision": "complex128",
             "row_chunk_size": 8,
             "lag_block_size": 2,
@@ -468,28 +468,28 @@ def test_one_arm_precompute_cache_ignores_batch_chunk():
         assert np.allclose(first[1][key], second[1][key], atol=1e-12, rtol=1e-12)
 
 
-def test_lagblock_backend_works_through_new_split_api():
+def test_production_backend_works_through_new_split_api():
     times, waveform_plus, waveform_cross = _build_inputs(seed=2468)
     orbits = SimpleOrbits()
     theta = 0.9
     phi = 0.7
     n_f = 8
 
-    lagblock_kwargs = {
-        "assembly_backend": "lagfirst_chunked_lagblock",
+    production_kwargs = {
+        "assembly_backend": "production",
         "assembly_precision": "complex128",
         "row_chunk_size": 8,
         "lag_block_size": 2,
         "tl_tp_mode": "exact",
     }
-    baseline_kwargs = {
-        "assembly_backend": "lagfirst_chunked",
+    reference_kwargs = {
+        "assembly_backend": "reference",
         "assembly_precision": "complex128",
         "row_chunk_size": 8,
         "tl_tp_mode": "exact",
     }
 
-    geom_lagblock = precompute_gen2_michelson_wdm_geometry(
+    geom_production = precompute_gen2_michelson_wdm_geometry(
         times,
         theta,
         phi,
@@ -498,22 +498,22 @@ def test_lagblock_backend_works_through_new_split_api():
         L_trunc=2,
         q=4,
         use_jax=True,
-        variable_shift_kwargs=lagblock_kwargs,
+        variable_shift_kwargs=production_kwargs,
     )
-    wave_lagblock = precompute_gen2_michelson_wdm_waveform(
-        geom_lagblock,
+    wave_production = precompute_gen2_michelson_wdm_waveform(
+        geom_production,
         waveform_plus,
         waveform_cross,
-        variable_shift_kwargs=lagblock_kwargs,
+        variable_shift_kwargs=production_kwargs,
     )
-    staged_lagblock = gen2_michelson_wdm_from_waveform_precomputed(
-        wave_lagblock,
+    staged_production = gen2_michelson_wdm_from_waveform_precomputed(
+        wave_production,
         variable_shift_kwargs={"batch_chunk": 2},
         L_trunc=2,
         use_jax=True,
         Nf=n_f,
     )
-    geom_baseline = precompute_gen2_michelson_wdm_geometry(
+    geom_reference = precompute_gen2_michelson_wdm_geometry(
         times,
         theta,
         phi,
@@ -522,23 +522,23 @@ def test_lagblock_backend_works_through_new_split_api():
         L_trunc=2,
         q=4,
         use_jax=True,
-        variable_shift_kwargs=baseline_kwargs,
+        variable_shift_kwargs=reference_kwargs,
     )
-    wave_baseline = precompute_gen2_michelson_wdm_waveform(
-        geom_baseline,
+    wave_reference = precompute_gen2_michelson_wdm_waveform(
+        geom_reference,
         waveform_plus,
         waveform_cross,
-        variable_shift_kwargs=baseline_kwargs,
+        variable_shift_kwargs=reference_kwargs,
     )
-    staged_baseline = gen2_michelson_wdm_from_waveform_precomputed(
-        wave_baseline,
+    staged_reference = gen2_michelson_wdm_from_waveform_precomputed(
+        wave_reference,
         variable_shift_kwargs={"batch_chunk": 2},
         L_trunc=2,
         use_jax=True,
         Nf=n_f,
     )
 
-    _compare_triplet(staged_lagblock, staged_baseline, atol=1e-12, rtol=1e-12)
+    _compare_triplet(staged_production, staged_reference, atol=1e-12, rtol=1e-12)
 
 
 def test_geometry_stage_calls_shift_precompute_but_waveform_stage_does_not(monkeypatch):
@@ -568,7 +568,7 @@ def test_geometry_stage_calls_shift_precompute_but_waveform_stage_does_not(monke
         L_trunc=2,
         q=4,
         use_jax=True,
-        variable_shift_kwargs=_exact_shift_kwargs("lagfirst_chunked"),
+        variable_shift_kwargs=_exact_shift_kwargs("reference"),
     )
     assert call_counter["count"] == 1
 
@@ -576,7 +576,7 @@ def test_geometry_stage_calls_shift_precompute_but_waveform_stage_does_not(monke
         geom,
         waveform_plus,
         waveform_cross,
-        variable_shift_kwargs=_exact_shift_kwargs("lagfirst_chunked"),
+        variable_shift_kwargs=_exact_shift_kwargs("reference"),
     )
     assert call_counter["count"] == 1
 
@@ -597,7 +597,7 @@ def test_waveform_stage_reuses_geometry_wdm_and_skips_wdm_context_rebuild(monkey
         L_trunc=2,
         q=4,
         use_jax=True,
-        variable_shift_kwargs=_exact_shift_kwargs("lagfirst_chunked_lagblock", batch_chunk=2),
+        variable_shift_kwargs=_exact_shift_kwargs("production", batch_chunk=2),
     )
 
     import WDM_LISAresponse.code.lisa_response.response_with_plan as response_module
@@ -611,7 +611,7 @@ def test_waveform_stage_reuses_geometry_wdm_and_skips_wdm_context_rebuild(monkey
         geom,
         waveform_plus,
         waveform_cross,
-        variable_shift_kwargs=_exact_shift_kwargs("lagfirst_chunked_lagblock", batch_chunk=2),
+        variable_shift_kwargs=_exact_shift_kwargs("production", batch_chunk=2),
     )
 
     assert wave["wdm"] is geom["wdm"]

@@ -1,12 +1,24 @@
 """Reusable six-link WDM one-arm response plans for LISA.
 
-The generic variable-shift operator lives in ``WDM_GW_wavelets``.  This module
-contains only the LISA-specific quantities needed to construct its delay fields
-and unshifted one-arm response coefficients.
+The generic variable-delay operator is implemented by ``WDM_GW_wavelets``.
+This module adds only the LISA geometry, antenna projections and transfer
+amplitudes required to construct six directed one-arm responses.
 
-A :class:`OneArmWDMPlan` depends on the WDM grid, LISA orbit, sky position and
-shift configuration, but not on the waveform coefficients.  It can therefore
-be reused for any number of waveforms sampled on the same WDM grid.
+A :class:`OneArmWDMPlan` is waveform independent.  It may be reused for any
+number of plus/cross waveforms on the same WDM grid, orbit model and sky
+position.  The maintained execution paths are:
+
+``materialized``
+    Form the six unshifted link arrays on the JAX device and apply the prepared
+    shifts in one batch.
+
+``materialized_parallel_links``
+    Form the same six-link batch, then evaluate contiguous link groups from
+    separate Python workers.  This is a CPU scheduling option; it does not
+    change the numerical operator.
+
+The former weighted-source/fused-low-memory route was removed because it was
+slower than the materialized implementation on the production CPU benchmarks.
 """
 
 from __future__ import annotations
@@ -14,9 +26,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from lisaconstants import c
 
@@ -42,6 +54,12 @@ DEFAULT_DIRECTED_LINKS: tuple[Link, ...] = (
     (1, 2),
 )
 
+ONE_ARM_EXECUTION_MODES: tuple[str, ...] = (
+    "materialized",
+    "materialized_parallel_links",
+)
+
+
 @jax.jit
 def _combine_polarizations_device(
     amplitude_plus,
@@ -49,21 +67,10 @@ def _combine_polarizations_device(
     w_t_plus,
     w_t_cross,
 ):
-    """Construct link-major unshifted coefficients entirely in JAX.
+    """Form the unshifted link-major coefficient batch on-device.
 
-    Parameters
-    ----------
-    amplitude_plus, amplitude_cross : jax.Array
-        Link-dependent response amplitudes with shape
-        ``(num_links, Nt, Nm)``.
-    w_t_plus, w_t_cross : jax.Array
-        Polarization WDM coefficients with shape ``(Nt, Nm)``.
-
-    Returns
-    -------
-    jax.Array
-        Unshifted link coefficients with shape
-        ``(num_links, Nt, Nm)``.
+    Real WDM coefficients remain real.  Complex arithmetic is used only when
+    either input polarization is complex.
     """
 
     return (
@@ -72,24 +79,23 @@ def _combine_polarizations_device(
     )
 
 
-ONE_ARM_EXECUTION_MODES: tuple[str, ...] = (
-    "materialized",
-    "materialized_parallel_links",
-    "fused_low_memory",
-)
+def _validate_jax_request(use_jax: bool | None) -> None:
+    """Validate the retained compatibility flag.
+
+    The maintained WDM time-shift implementation is JAX-only.  ``None`` and
+    ``True`` are accepted so existing call sites need not change immediately;
+    ``False`` is rejected rather than silently selecting a removed backend.
+    """
+
+    if use_jax is False:
+        raise ValueError(
+            "The maintained WDM time-shift implementation requires JAX; "
+            "use_jax=False is no longer supported."
+        )
 
 
 def _normalise_one_arm_execution_mode(mode: str | None) -> str:
-    """Return the canonical one-arm device execution mode.
-
-    ``materialized`` constructs the complete unshifted link-major batch
-    on-device and applies all prepared shifts through one production batch
-    call. ``materialized_parallel_links`` constructs the same unshifted batch
-    but evaluates independent contiguous link groups concurrently using the
-    unchanged production shift kernel. ``fused_low_memory`` avoids the full
-    unshifted link-major intermediate at the cost of additional runtime on the
-    current CPU backend.
-    """
+    """Return one of the two maintained one-arm execution modes."""
 
     if mode is None:
         return "materialized"
@@ -102,11 +108,14 @@ def _normalise_one_arm_execution_mode(mode: str | None) -> str:
         "materialized_parallel": "materialized_parallel_links",
         "materialised_parallel": "materialized_parallel_links",
         "materialised_parallel_links": "materialized_parallel_links",
-        "fused": "fused_low_memory",
-        "low_memory": "fused_low_memory",
-        "low-memory": "fused_low_memory",
     }
     key = aliases.get(key, key)
+
+    if key in {"fused", "fused_low_memory", "low_memory", "low-memory"}:
+        raise ValueError(
+            "The fused_low_memory one-arm route was removed because it was "
+            "slower than the materialized production path."
+        )
 
     if key not in ONE_ARM_EXECUTION_MODES:
         allowed = ", ".join(ONE_ARM_EXECUTION_MODES)
@@ -114,11 +123,12 @@ def _normalise_one_arm_execution_mode(mode: str | None) -> str:
             f"Unknown one-arm execution mode {mode!r}; expected one of: "
             f"{allowed}."
         )
-
     return key
 
 
 def _normalise_links(links: Iterable[Link] | None) -> tuple[Link, ...]:
+    """Validate and canonicalize a directed-link sequence."""
+
     if links is None:
         return DEFAULT_DIRECTED_LINKS
 
@@ -128,42 +138,101 @@ def _normalise_links(links: Iterable[Link] | None) -> tuple[Link, ...]:
     return normalised
 
 
-def _legacy_shift_options_to_plan_config(
+def _normalise_shift_backend(value: str | None) -> str:
+    """Map historical backend names onto production or reference."""
+
+    if value is None:
+        return "production"
+
+    key = str(value).strip().lower()
+    production_aliases = {
+        "production",
+        "lagfirst_chunked_lagblock",
+        "lagblock",
+        "lagfirst_lagblock",
+        "auto",
+    }
+    reference_aliases = {
+        "reference",
+        "legacy",
+        "row",
+        "lagfirst_row",
+        "vmap",
+        "lagfirst_chunked",
+        "chunked",
+    }
+    removed_jobblock_aliases = {
+        "lagfirst_chunked_lagblock_jobblock",
+        "lagblock_jobblock",
+        "jobblock",
+        "lagfirst_lagblock_jobblock",
+    }
+
+    if key in production_aliases:
+        return "production"
+    if key in reference_aliases:
+        return "reference"
+    if key in removed_jobblock_aliases:
+        raise ValueError(
+            "The job-block WDM assembly backend was removed. Use "
+            "assembly_backend='production' and tune row_chunk_size and "
+            "lag_block_size instead."
+        )
+    raise ValueError(
+        "assembly_backend must resolve to 'production' or 'reference'."
+    )
+
+
+def _shift_options_to_plan_config(
     *,
     L_trunc: int | None,
     variable_shift_kwargs: dict[str, Any] | None,
     use_jax: bool | None,
 ) -> tuple[VariableShiftPlanConfig, dict[str, Any]]:
-    """Translate the existing shifter kwargs into a reusable plan config.
+    """Convert public shift options into the cleaned reusable-plan API.
 
-    This adapter keeps the first integration backwards compatible with the
-    current ``variable_shift_kwargs`` interface.  It can be removed once the
-    LISA package exposes ``VariableShiftPlanConfig`` directly.
+    Historical backend names are accepted as migration aliases.  Options for
+    removed experimental implementations are rejected with explicit messages.
 
     Returns
     -------
     config, build_kwargs
-        ``build_kwargs`` contains the plan-construction arguments that are not
-        fields of :class:`VariableShiftPlanConfig` (``Nker``, ``safety`` and
-        ``kernel_kwargs``).
+        ``config`` contains repeated-application settings. ``build_kwargs``
+        contains one-time plan-construction options: ``Nker``, ``safety`` and
+        ``kernel_kwargs``.
     """
 
+    _validate_jax_request(use_jax)
     kwargs = {} if variable_shift_kwargs is None else dict(variable_shift_kwargs)
 
-    # Profiling belongs to plan application rather than plan construction.  The
-    # current one-arm wrapper does not expose it, so reject it explicitly rather
-    # than silently changing behaviour.
-    unsupported = {
+    nested_use_jax = kwargs.pop("use_jax", None)
+    _validate_jax_request(nested_use_jax)
+
+    removed_options = {
+        "assembly_vmap": "the vmap assembly route",
+        "job_block_size": "the job-block assembly route",
+        "jax_pad_last_chunk": "vmap last-chunk padding",
+        "tl_tp_interp_backend": "the separate JAX interpolation backend",
+    }
+    present_removed = [name for name in removed_options if name in kwargs]
+    if present_removed:
+        details = ", ".join(
+            f"{name} ({removed_options[name]})" for name in present_removed
+        )
+        raise TypeError(
+            "Removed variable-shift options were supplied: " + details
+        )
+
+    unsupported_profile = {
         "profile_shift_stages",
         "profile_label",
         "return_shift_profile",
     }.intersection(kwargs)
-    if unsupported:
-        names = ", ".join(sorted(unsupported))
+    if unsupported_profile:
+        names = ", ".join(sorted(unsupported_profile))
         raise ValueError(
-            "The reusable one-arm plan does not accept profiling options through "
-            f"variable_shift_kwargs: {names}. Profile plan.build_seconds and "
-            "plan.apply(..., return_profile=True) instead."
+            "Plan construction does not accept per-call profiling options: "
+            f"{names}. Use plan.apply(..., return_profile=True)."
         )
 
     build_kwargs = {
@@ -172,34 +241,28 @@ def _legacy_shift_options_to_plan_config(
         "kernel_kwargs": kwargs.pop("kernel_kwargs", None),
     }
 
-    # Preserve the defaults selected by the current one-arm code path.
-    assembly_backend = kwargs.pop("assembly_backend", None)
-    assembly_vmap = kwargs.pop("assembly_vmap", None)
-    if assembly_backend is None and assembly_vmap is None:
-        assembly_backend = "lagfirst_chunked"
-
+    # Exact Tl/Tp construction remains the compatibility default.  The fast
+    # analytic-parity production assembly is selected explicitly.
     config = VariableShiftPlanConfig(
         lag_truncation=L_trunc,
         tl_tp_mode=kwargs.pop("tl_tp_mode", "exact"),
         tl_tp_interp_points=kwargs.pop("tl_tp_interp_points", 64),
         tl_tp_interp_pad=kwargs.pop("tl_tp_interp_pad", 0.0),
         tl_tp_interp_kind=kwargs.pop("tl_tp_interp_kind", "linear"),
-        tl_tp_interp_backend=kwargs.pop("tl_tp_interp_backend", "numpy"),
-        assembly_backend=assembly_backend,
+        assembly_backend=_normalise_shift_backend(
+            kwargs.pop("assembly_backend", "production")
+        ),
         assembly_precision=kwargs.pop("assembly_precision", "complex64"),
         row_chunk_size=kwargs.pop("row_chunk_size", 128),
         lag_block_size=kwargs.pop("lag_block_size", 1),
-        job_block_size=kwargs.pop("job_block_size", 1),
-        assembly_vmap=assembly_vmap,
         batch_chunk=kwargs.pop("batch_chunk", 32),
-        jax_pad_last_chunk=kwargs.pop("jax_pad_last_chunk", False),
-        use_jax=kwargs.pop("use_jax", use_jax),
     )
 
-    # These parameters are controlled by the WDM object/context rather than by
-    # the plan.  Accepting matching legacy values is useful during migration.
+    # These values are controlled by the WDM object and target-mode plan.
     kwargs.pop("Nf", None)
-    kwargs.pop("delta_mode", None)
+    delta_mode = kwargs.pop("delta_mode", "target")
+    if delta_mode != "target":
+        raise ValueError("OneArmWDMPlan supports only delta_mode='target'.")
 
     if kwargs:
         unexpected = ", ".join(sorted(kwargs))
@@ -213,11 +276,11 @@ def _legacy_shift_options_to_plan_config(
 
 @dataclass(frozen=True, slots=True)
 class OneArmWDMPlan:
-    """Prepared LISA one-arm response and six variable-delay operators.
+    """Prepared LISA one-arm amplitudes and variable-delay operators.
 
-    ``amplitude_plus`` and ``amplitude_cross`` contain the waveform-independent
-    transfer factors for each directed link.  ``shift_plan`` stores the
-    corresponding delay-dependent WDM operators.
+    ``amplitude_plus`` and ``amplitude_cross`` contain waveform-independent
+    transfer factors with shape ``(num_links, Nt, Nf)``.  ``shift_plan`` stores
+    the corresponding generic WDM delay operators.
     """
 
     wdm: Any
@@ -230,9 +293,6 @@ class OneArmWDMPlan:
     time_shift: np.ndarray
     shift_plan: VariableShiftBatchPlan
 
-    # JAX copies of the waveform-independent response amplitudes.
-    # The dictionary remains mutable even though the dataclass itself is
-    # frozen, matching the caching approach used by VariableShiftBatchPlan.
     _device_cache: dict[str, Any] = field(
         default_factory=dict,
         repr=False,
@@ -252,15 +312,16 @@ class OneArmWDMPlan:
         variable_shift_kwargs: dict[str, Any] | None = None,
         use_jax: bool | None = None,
     ) -> "OneArmWDMPlan":
-        """Build a waveform-independent one-arm plan from WDM grid metadata.
+        """Build a waveform-independent plan from WDM grid metadata.
 
-        The context must contain ``wdm``, ``freq_vals`` and ``int_times_vals``.
-        The waveform projections ``w_t_plus`` and ``w_t_cross`` are deliberately
-        not read during construction.
+        ``context`` must contain ``wdm``, ``freq_vals`` and
+        ``int_times_vals``. Waveform projections are deliberately not read.
         """
 
         missing = {
-            key for key in ("wdm", "freq_vals", "int_times_vals") if key not in context
+            key
+            for key in ("wdm", "freq_vals", "int_times_vals")
+            if key not in context
         }
         if missing:
             raise KeyError(
@@ -268,7 +329,7 @@ class OneArmWDMPlan:
                 + ", ".join(sorted(missing))
             )
 
-        config, build_kwargs = _legacy_shift_options_to_plan_config(
+        config, build_kwargs = _shift_options_to_plan_config(
             L_trunc=L_trunc,
             variable_shift_kwargs=variable_shift_kwargs,
             use_jax=use_jax,
@@ -302,18 +363,23 @@ class OneArmWDMPlan:
         safety: float = 1.02,
         kernel_kwargs: dict[str, Any] | None = None,
     ) -> "OneArmWDMPlan":
+        """Build link geometry, amplitudes and prepared shift operators."""
+
         links = _normalise_links(links)
         freq_vals = np.asarray(freq_vals, dtype=float)
         int_times_vals = np.asarray(int_times_vals, dtype=float)
 
-        if freq_vals.shape != (int(wdm.Nf),):
+        expected_freq_shape = (int(wdm.Nf),)
+        expected_time_shape = (int(wdm.Nt),)
+        if freq_vals.shape != expected_freq_shape:
             raise ValueError(
-                f"Expected freq_vals shape {(int(wdm.Nf),)}, got {freq_vals.shape}."
+                f"Expected freq_vals shape {expected_freq_shape}, "
+                f"got {freq_vals.shape}."
             )
-        if int_times_vals.shape != (int(wdm.Nt),):
+        if int_times_vals.shape != expected_time_shape:
             raise ValueError(
-                "Expected int_times_vals shape "
-                f"{(int(wdm.Nt),)}, got {int_times_vals.shape}."
+                f"Expected int_times_vals shape {expected_time_shape}, "
+                f"got {int_times_vals.shape}."
             )
 
         sky_basis = build_sky_basis(theta, phi)
@@ -348,11 +414,12 @@ class OneArmWDMPlan:
                 sky_basis,
             )
 
-            sinc_matrix = np.sinc(
-                2.0 * freq_vals[None, :] * tau[:, None]
+            common = (
+                0.5
+                * c
+                * light_time[:, None]
+                * np.sinc(2.0 * freq_vals[None, :] * tau[:, None])
             )
-            common = 0.5 * c * light_time[:, None] * sinc_matrix
-
             amplitude_plus_parts.append(common * projection_plus[:, None])
             amplitude_cross_parts.append(common * projection_cross[:, None])
             time_shift_parts.append(receiver_position @ (n / c) - tau)
@@ -362,7 +429,9 @@ class OneArmWDMPlan:
         time_shift = np.stack(time_shift_parts, axis=0)
 
         shift_config = (
-            VariableShiftPlanConfig() if shift_config is None else shift_config
+            VariableShiftPlanConfig()
+            if shift_config is None
+            else shift_config
         )
         shift_plan = VariableShiftBatchPlan.build(
             wdm,
@@ -374,14 +443,19 @@ class OneArmWDMPlan:
             kernel_kwargs=kernel_kwargs,
         )
 
+        real_dtype = (
+            np.float32
+            if shift_plan.resolved_assembly_precision == "complex64"
+            else np.float64
+        )
         return cls(
             wdm=wdm,
             links=links,
             theta=float(theta),
             phi=float(phi),
-            amplitude_plus=amplitude_plus,
-            amplitude_cross=amplitude_cross,
-            time_shift=time_shift,
+            amplitude_plus=np.asarray(amplitude_plus, dtype=real_dtype),
+            amplitude_cross=np.asarray(amplitude_cross, dtype=real_dtype),
+            time_shift=np.asarray(time_shift, dtype=real_dtype),
             shift_plan=shift_plan,
         )
 
@@ -390,14 +464,16 @@ class OneArmWDMPlan:
         w_t_plus: np.ndarray,
         w_t_cross: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
+        """Validate host plus/cross coefficient grids without casting them."""
+
         w_t_plus = np.asarray(w_t_plus)
         w_t_cross = np.asarray(w_t_cross)
         expected = (int(self.wdm.Nt), int(self.wdm.Nf))
-
         if w_t_plus.shape != expected or w_t_cross.shape != expected:
             raise ValueError(
                 "Expected plus/cross WDM coefficients with shape "
-                f"{expected}; got plus={w_t_plus.shape}, cross={w_t_cross.shape}."
+                f"{expected}; got plus={w_t_plus.shape}, "
+                f"cross={w_t_cross.shape}."
             )
         return w_t_plus, w_t_cross
 
@@ -406,7 +482,7 @@ class OneArmWDMPlan:
         w_t_plus: np.ndarray,
         w_t_cross: np.ndarray,
     ) -> np.ndarray:
-        """Build the unshifted six-link coefficient batch."""
+        """Construct the host six-link coefficient batch."""
 
         w_t_plus, w_t_cross = self._validate_wdm_coefficients(
             w_t_plus,
@@ -424,118 +500,77 @@ class OneArmWDMPlan:
         *,
         return_profile: bool = False,
     ):
-        """Apply the prepared one-arm operators and return link-major arrays."""
+        """Apply the plan and return a link-major NumPy batch."""
 
         unshifted = self.unshifted_coefficients(w_t_plus, w_t_cross)
         return self.shift_plan.apply(unshifted, return_profile=return_profile)
 
-    def _device_precision_dtypes(self):
-        """Return complex/real JAX dtypes matching the prepared shift plan."""
+    def _device_real_dtype(self):
+        """Return the real JAX dtype configured by the shift plan."""
 
         if self.shift_plan.resolved_assembly_precision == "complex64":
-            return jnp.complex64, jnp.float32
-        return jnp.complex128, jnp.float64
+            return jnp.float32
+        return jnp.float64
 
-    def _device_amplitude_weights(self):
-        """Return cached job/source weights used by the fused route.
+    def _waveform_pair_device(self, w_t_plus, w_t_cross):
+        """Validate and cast a waveform pair while preserving real inputs."""
 
-        The returned shape is ``(num_links, 2, Nt, Nm)``. This method keeps
-        the established fused-route precision unchanged so the materialized
-        cleanup can be assessed independently.
-        """
-
-        if "amplitude_weights" not in self._device_cache:
-            self._device_cache["amplitude_weights"] = jnp.stack(
-                (
-                    jnp.asarray(self.amplitude_plus),
-                    jnp.asarray(self.amplitude_cross),
-                ),
-                axis=1,
+        plus = jnp.asarray(w_t_plus)
+        cross = jnp.asarray(w_t_cross)
+        expected = (int(self.wdm.Nt), int(self.wdm.Nf))
+        if tuple(plus.shape) != expected:
+            raise ValueError(
+                f"Expected plus WDM coefficients with shape {expected}, "
+                f"got {tuple(plus.shape)}."
+            )
+        if tuple(cross.shape) != expected:
+            raise ValueError(
+                f"Expected cross WDM coefficients with shape {expected}, "
+                f"got {tuple(cross.shape)}."
             )
 
-        return self._device_cache["amplitude_weights"]
+        requires_complex = (
+            jnp.issubdtype(plus.dtype, jnp.complexfloating)
+            or jnp.issubdtype(cross.dtype, jnp.complexfloating)
+        )
+        if self.shift_plan.resolved_assembly_precision == "complex64":
+            coefficient_dtype = jnp.complex64 if requires_complex else jnp.float32
+        else:
+            coefficient_dtype = jnp.complex128 if requires_complex else jnp.float64
 
-    def _device_materialized_amplitudes(self):
-        """Return separate amplitude arrays for the materialized route.
+        return (
+            jnp.asarray(plus, dtype=coefficient_dtype),
+            jnp.asarray(cross, dtype=coefficient_dtype),
+        )
 
-        The arrays are cached at the real precision corresponding to the
-        prepared shift plan. Keeping them separate avoids constructing the
-        job/source weight stack when only the materialized route is used.
-        """
+    def _device_amplitudes(self):
+        """Return cached real amplitude arrays on the active JAX device."""
 
-        if "materialized_amplitude_plus" not in self._device_cache:
-            _, real_dtype = self._device_precision_dtypes()
-            self._device_cache["materialized_amplitude_plus"] = jnp.asarray(
+        if "amplitude_plus" not in self._device_cache:
+            real_dtype = self._device_real_dtype()
+            self._device_cache["amplitude_plus"] = jnp.asarray(
                 self.amplitude_plus,
                 dtype=real_dtype,
             )
-            self._device_cache["materialized_amplitude_cross"] = jnp.asarray(
+            self._device_cache["amplitude_cross"] = jnp.asarray(
                 self.amplitude_cross,
                 dtype=real_dtype,
             )
-
         return (
-            self._device_cache["materialized_amplitude_plus"],
-            self._device_cache["materialized_amplitude_cross"],
+            self._device_cache["amplitude_plus"],
+            self._device_cache["amplitude_cross"],
         )
 
-    def _waveform_pair_device(
-        self,
-        w_t_plus,
-        w_t_cross,
-    ):
-        """Validate plus/cross coefficients for the materialized route.
+    def _materialized_device_batch(self, w_t_plus, w_t_cross):
+        """Construct the six unshifted link arrays on-device."""
 
-        The two polarizations remain separate, so this path does not allocate
-        the temporary ``(2, Nt, Nm)`` source stack required by the fused API.
-        """
-
-        complex_dtype, _ = self._device_precision_dtypes()
-        w_t_plus_device = jnp.asarray(w_t_plus, dtype=complex_dtype)
-        w_t_cross_device = jnp.asarray(w_t_cross, dtype=complex_dtype)
-        expected = (int(self.wdm.Nt), int(self.wdm.Nf))
-
-        if tuple(w_t_plus_device.shape) != expected:
-            raise ValueError(
-                "Expected plus WDM coefficients with shape "
-                f"{expected}, got {tuple(w_t_plus_device.shape)}."
-            )
-        if tuple(w_t_cross_device.shape) != expected:
-            raise ValueError(
-                "Expected cross WDM coefficients with shape "
-                f"{expected}, got {tuple(w_t_cross_device.shape)}."
-            )
-
-        return w_t_plus_device, w_t_cross_device
-
-    def _waveform_sources_device(
-        self,
-        w_t_plus,
-        w_t_cross,
-    ):
-        """Validate and stack plus/cross coefficients for the fused route."""
-
-        # Preserve the established fused-route input precision. This keeps the
-        # current low-memory reference unchanged while the materialized route
-        # is optimized separately.
-        w_t_plus_device = jnp.asarray(w_t_plus)
-        w_t_cross_device = jnp.asarray(w_t_cross)
-        expected = (int(self.wdm.Nt), int(self.wdm.Nf))
-
-        if tuple(w_t_plus_device.shape) != expected:
-            raise ValueError(
-                "Expected plus WDM coefficients with shape "
-                f"{expected}, got {tuple(w_t_plus_device.shape)}."
-            )
-        if tuple(w_t_cross_device.shape) != expected:
-            raise ValueError(
-                "Expected cross WDM coefficients with shape "
-                f"{expected}, got {tuple(w_t_cross_device.shape)}."
-            )
-
-        return jnp.stack(
-            (w_t_plus_device, w_t_cross_device),
-            axis=0,
+        plus, cross = self._waveform_pair_device(w_t_plus, w_t_cross)
+        amplitude_plus, amplitude_cross = self._device_amplitudes()
+        return _combine_polarizations_device(
+            amplitude_plus,
+            amplitude_cross,
+            plus,
+            cross,
         )
 
     def apply_batch_device_materialized(
@@ -546,35 +581,15 @@ class OneArmWDMPlan:
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
-        """Apply the fast device-materialized one-arm route.
+        """Apply all links through one device-resident production batch."""
 
-        Plus/cross coefficients remain separate through modulation, avoiding
-        the temporary source stack used by the fused weighted-source API.
-        """
-
-        w_t_plus_device, w_t_cross_device = self._waveform_pair_device(
-            w_t_plus,
-            w_t_cross,
-        )
-        amplitude_plus_device, amplitude_cross_device = (
-            self._device_materialized_amplitudes()
-        )
-
-        unshifted_device = _combine_polarizations_device(
-            amplitude_plus_device,
-            amplitude_cross_device,
-            w_t_plus_device,
-            w_t_cross_device,
-        )
-
+        unshifted = self._materialized_device_batch(w_t_plus, w_t_cross)
         return self.shift_plan.apply_device(
-            unshifted_device,
+            unshifted,
             return_profile=return_profile,
             cache_device_plan=cache_device_plan,
         )
 
-
-    
     def apply_batch_device_materialized_parallel_groups(
         self,
         w_t_plus,
@@ -585,44 +600,16 @@ class OneArmWDMPlan:
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
-        """Apply materialized one-arm links in concurrent production groups.
+        """Apply contiguous link groups concurrently on the CPU backend."""
 
-        Polarization modulation is identical to
-        :meth:`apply_batch_device_materialized`. Only the scheduling of the
-        independent shift jobs changes: contiguous link groups call the unchanged
-        production shift kernel from separate Python workers.
-
-        For the standard six-link response:
-
-        - ``group_size=6, max_workers=1`` reproduces one group of six links;
-        - ``group_size=3, max_workers=2`` uses two groups of three links;
-        - ``group_size=2, max_workers=3`` uses three groups of two links;
-        - ``group_size=1, max_workers=6`` uses six single-link groups.
-        """
-
-        w_t_plus_device, w_t_cross_device = self._waveform_pair_device(
-            w_t_plus,
-            w_t_cross,
-        )
-        amplitude_plus_device, amplitude_cross_device = (
-            self._device_materialized_amplitudes()
-        )
-
-        unshifted_device = _combine_polarizations_device(
-            amplitude_plus_device,
-            amplitude_cross_device,
-            w_t_plus_device,
-            w_t_cross_device,
-        )
-
+        unshifted = self._materialized_device_batch(w_t_plus, w_t_cross)
         return self.shift_plan.apply_device_parallel_groups(
-            unshifted_device,
+            unshifted,
             group_size=group_size,
             max_workers=max_workers,
             return_profile=return_profile,
             cache_device_plan=cache_device_plan,
         )
-
 
     def apply_batch_device(
         self,
@@ -632,23 +619,11 @@ class OneArmWDMPlan:
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
-        """Apply one-arm shifts with blockwise polarization fusion.
+        """Compatibility alias for the maintained materialized device path."""
 
-        The full ``(num_links, Nt, Nm)`` unshifted one-arm batch is not
-        constructed. Instead, the generic weighted-source shift kernel forms
-        plus/cross combinations only for source rows required by the current
-        target-row and lag block.
-        """
-
-        source_coefficients = self._waveform_sources_device(
+        return self.apply_batch_device_materialized(
             w_t_plus,
             w_t_cross,
-        )
-        amplitude_weights = self._device_amplitude_weights()
-
-        return self.shift_plan.apply_weighted_sources_device(
-            source_coefficients,
-            amplitude_weights,
             return_profile=return_profile,
             cache_device_plan=cache_device_plan,
         )
@@ -658,15 +633,14 @@ class OneArmWDMPlan:
         w_t_plus: np.ndarray,
         w_t_cross: np.ndarray,
     ) -> dict[Link, np.ndarray]:
-        """Apply the plan and return the existing directed-link mapping."""
+        """Apply the host path and return the directed-link mapping."""
 
         shifted = self.apply_batch(w_t_plus, w_t_cross)
         return {
             link: shifted[index]
             for index, link in enumerate(self.links)
         }
-    
-    
+
     def apply_device(
         self,
         w_t_plus,
@@ -680,31 +654,11 @@ class OneArmWDMPlan:
     ):
         """Apply the plan and return device-resident arrays by directed link.
 
-        Parameters
-        ----------
-        execution_mode : {"materialized", "materialized_parallel_links",
-                          "fused_low_memory"}, optional
-            ``materialized`` constructs the complete unshifted link batch and
-            applies all shifts through one production batch call.
-            ``materialized_parallel_links`` uses the same numerical kernel but
-            evaluates contiguous link groups concurrently.
-            ``fused_low_memory`` avoids the complete unshifted link batch.
-        parallel_links_per_group : int, optional
-            Number of contiguous directed links assigned to each production-kernel
-            call in ``materialized_parallel_links`` mode. For the standard
-            six-link response, ``1`` creates six independent single-link groups.
-        parallel_max_workers : int or None, optional
-            Maximum number of concurrent link-group workers. The default uses one
-            worker per group.
-        return_profile : bool, optional
-            When true, synchronise the selected device route and return timing
-            metadata alongside the directed-link mapping.
-        cache_device_plan : bool, optional
-            Reuse device copies of the prepared shift-plan arrays.
+        ``materialized_parallel_links`` is an optional CPU scheduling mode.
+        The default ``materialized`` route is deterministic and portable.
         """
 
         mode = _normalise_one_arm_execution_mode(execution_mode)
-
         if mode == "materialized":
             shifted_result = self.apply_batch_device_materialized(
                 w_t_plus,
@@ -712,21 +666,12 @@ class OneArmWDMPlan:
                 return_profile=return_profile,
                 cache_device_plan=cache_device_plan,
             )
-        elif mode == "materialized_parallel_links":
-            shifted_result = (
-                self.apply_batch_device_materialized_parallel_groups(
-                    w_t_plus,
-                    w_t_cross,
-                    group_size=parallel_links_per_group,
-                    max_workers=parallel_max_workers,
-                    return_profile=return_profile,
-                    cache_device_plan=cache_device_plan,
-                )
-            )
         else:
-            shifted_result = self.apply_batch_device(
+            shifted_result = self.apply_batch_device_materialized_parallel_groups(
                 w_t_plus,
                 w_t_cross,
+                group_size=parallel_links_per_group,
+                max_workers=parallel_max_workers,
                 return_profile=return_profile,
                 cache_device_plan=cache_device_plan,
             )
@@ -756,24 +701,27 @@ class OneArmWDMPlan:
             for index, link in enumerate(self.links)
         }
 
+    def _validate_context_grid(self, context: dict[str, Any]) -> None:
+        """Ensure a waveform context uses the plan's WDM grid."""
+
+        candidate = context.get("wdm")
+        if candidate is self.wdm:
+            return
+        if candidate is None or (
+            int(candidate.Nt) != int(self.wdm.Nt)
+            or int(candidate.Nf) != int(self.wdm.Nf)
+            or not np.isclose(float(candidate.dF), float(self.wdm.dF))
+        ):
+            raise ValueError(
+                "The context WDM grid does not match this OneArmWDMPlan."
+            )
 
     def apply_context(self, context: dict[str, Any]) -> dict[Link, np.ndarray]:
-        """Apply the plan to waveform projections stored in a response context."""
+        """Apply the host path to waveform projections stored in a context."""
 
-        if context.get("wdm") is not self.wdm:
-            candidate = context.get("wdm")
-            if candidate is None or (
-                int(candidate.Nt) != int(self.wdm.Nt)
-                or int(candidate.Nf) != int(self.wdm.Nf)
-                or not np.isclose(float(candidate.dF), float(self.wdm.dF))
-            ):
-                raise ValueError(
-                    "The context WDM grid does not match this OneArmWDMPlan."
-                )
-
+        self._validate_context_grid(context)
         return self.apply(context["w_t_plus"], context["w_t_cross"])
-    
-    
+
     def apply_context_device(
         self,
         context: dict[str, Any],
@@ -784,23 +732,9 @@ class OneArmWDMPlan:
         return_profile: bool = False,
         cache_device_plan: bool = True,
     ):
-        """Apply the plan to a context and retain link arrays on-device."""
+        """Apply a waveform context while keeping link arrays on-device."""
 
-        if context.get("wdm") is not self.wdm:
-            candidate = context.get("wdm")
-            if candidate is None or (
-                int(candidate.Nt) != int(self.wdm.Nt)
-                or int(candidate.Nf) != int(self.wdm.Nf)
-                or not np.isclose(
-                    float(candidate.dF),
-                    float(self.wdm.dF),
-                )
-            ):
-                raise ValueError(
-                    "The context WDM grid does not match this "
-                    "OneArmWDMPlan."
-                )
-
+        self._validate_context_grid(context)
         return self.apply_device(
             context["w_t_plus"],
             context["w_t_cross"],
@@ -812,7 +746,7 @@ class OneArmWDMPlan:
         )
 
     def clear_device_cache(self) -> None:
-        """Release cached JAX amplitude and shift-plan arrays."""
+        """Release cached amplitude and shift-plan arrays from the device."""
 
         self._device_cache.clear()
         self.shift_plan.clear_device_cache()
