@@ -18,6 +18,7 @@ from WDM.code.time_delay_filters.time_shift_fast import wdm_time_shift_variable
 
 from .one_arm_plan import (
     OneArmWDMPlan,
+    OneArmWDMStaticPlan,
     _normalise_one_arm_execution_mode,
     _normalise_shift_backend,
     _validate_jax_request,
@@ -575,6 +576,67 @@ def _build_wdm_dT_context(
 
     return context
 
+
+
+
+def apply_one_arm_wdm_runtime_from_context(
+    context,
+    one_arm_static_plan,
+    theta,
+    phi,
+    *,
+    return_device=False,
+    return_profile=False,
+):
+    """Apply a sky-independent one-arm plan at a runtime sky location."""
+
+    if not isinstance(one_arm_static_plan, OneArmWDMStaticPlan):
+        raise TypeError(
+            "one_arm_static_plan must be a OneArmWDMStaticPlan instance."
+        )
+    candidate = context.get("wdm")
+    if candidate is not one_arm_static_plan.wdm and (
+        candidate is None
+        or int(candidate.Nt) != int(one_arm_static_plan.wdm.Nt)
+        or int(candidate.Nf) != int(one_arm_static_plan.wdm.Nf)
+        or not np.isclose(float(candidate.dF), float(one_arm_static_plan.wdm.dF))
+    ):
+        raise ValueError(
+            "The waveform context WDM grid does not match the static one-arm plan."
+        )
+
+    if return_device:
+        result = one_arm_static_plan.apply_device(
+            context["w_t_plus"],
+            context["w_t_cross"],
+            theta,
+            phi,
+            return_profile=return_profile,
+        )
+    else:
+        if return_profile:
+            shifted, profile = one_arm_static_plan.apply_batch(
+                context["w_t_plus"],
+                context["w_t_cross"],
+                theta,
+                phi,
+                return_profile=True,
+            )
+            result = (
+                {
+                    link: shifted[index]
+                    for index, link in enumerate(one_arm_static_plan.links)
+                },
+                profile,
+            )
+        else:
+            result = one_arm_static_plan.apply(
+                context["w_t_plus"],
+                context["w_t_cross"],
+                theta,
+                phi,
+            )
+    return context["wdm"], result
 
 
 def precompute_one_arm_wdm_dT_links_from_context(

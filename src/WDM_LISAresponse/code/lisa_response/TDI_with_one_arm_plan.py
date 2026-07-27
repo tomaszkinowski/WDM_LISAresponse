@@ -11,12 +11,14 @@ from WDM_LISAresponse.code.lisa_response.response_with_plan import (
     one_arm_response_td_chunked,
     precompute_one_arm_wdm_dT_links,
     precompute_one_arm_wdm_dT_links_from_context,
+    apply_one_arm_wdm_runtime_from_context,
     _build_wdm_dT_context_from_wdm,
     _build_wdm_dT_grid,
     _split_variable_shift_kwargs,
 )
 from WDM_LISAresponse.code.lisa_response.one_arm_plan import (
     OneArmWDMPlan,
+    OneArmWDMStaticPlan,
     _normalise_one_arm_execution_mode,
     _normalise_shift_backend,
     _validate_jax_request,
@@ -452,6 +454,203 @@ def _gen2_michelson_wdm_accumulate_downstream(
 
     return X, Y, Z
 
+
+
+
+def precompute_gen2_michelson_wdm_static(
+    times,
+    orbits,
+    *,
+    Nf,
+    L_trunc=None,
+    q=None,
+    d=4,
+    A_frac=0.25,
+    calc_m0=True,
+    use_jax=None,
+    variable_shift_kwargs=None,
+    shifts_cache=None,
+):
+    """Build sky- and waveform-independent Gen-2 Michelson WDM state."""
+
+    times = np.asarray(times, dtype=float)
+    one_arm_shift_kwargs, tdi_batch_shift_kwargs = _split_variable_shift_kwargs(
+        variable_shift_kwargs
+    )
+
+    t_grid0 = time.perf_counter()
+    wdm_context = _build_wdm_dT_grid(
+        times,
+        Nf=Nf,
+        d=d,
+        A_frac=A_frac,
+        q=q,
+        calc_m0=calc_m0,
+    )
+    wdm_grid_build_s = time.perf_counter() - t_grid0
+    wdm = wdm_context["wdm"]
+    times_p = wdm_context["int_times_vals"]
+
+    t_one_arm0 = time.perf_counter()
+    one_arm_static_plan = OneArmWDMStaticPlan.build_from_context(
+        wdm_context,
+        orbits,
+        L_trunc=L_trunc,
+        variable_shift_kwargs=one_arm_shift_kwargs,
+        use_jax=use_jax,
+    )
+    one_arm_static_build_s = time.perf_counter() - t_one_arm0
+
+    cache_key = (
+        "michelson_wdm",
+        id(orbits),
+        int(wdm.Nt),
+        float(times[0]),
+        float(wdm.dT),
+        int(Nf),
+    )
+    t_tdi_delay0 = time.perf_counter()
+    if shifts_cache is not None and cache_key in shifts_cache:
+        shifts_X, shifts_Y, shifts_Z = shifts_cache[cache_key]
+        tdi_delays_from_cache = True
+    else:
+        shifts_X, shifts_Y, shifts_Z = precompute_gen2_michelson_shifts(
+            times_p,
+            orbits,
+        )
+        tdi_delays_from_cache = False
+        if shifts_cache is not None:
+            shifts_cache[cache_key] = (shifts_X, shifts_Y, shifts_Z)
+    tdi_delay_build_s = time.perf_counter() - t_tdi_delay0
+
+    t_tdi_plan0 = time.perf_counter()
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+        wdm=wdm,
+        shifts_X=shifts_X,
+        shifts_Y=shifts_Y,
+        shifts_Z=shifts_Z,
+        job_templates=_GEN2_MICHELSON_JOB_TEMPLATES,
+        L_trunc=L_trunc,
+        variable_shift_kwargs=tdi_batch_shift_kwargs,
+        use_jax=use_jax,
+    )
+    tdi_plan_build_s = time.perf_counter() - t_tdi_plan0
+
+    return {
+        "kind": "gen2_michelson_wdm_static",
+        "times": times,
+        "orbits": orbits,
+        "wdm": wdm,
+        "wdm_grid_context": wdm_context,
+        "times_p": times_p,
+        "one_arm_static_plan": one_arm_static_plan,
+        "tdi_plan": tdi_plan,
+        "shifts_X": shifts_X,
+        "shifts_Y": shifts_Y,
+        "shifts_Z": shifts_Z,
+        "job_templates": _GEN2_MICHELSON_JOB_TEMPLATES,
+        "one_arm_shift_kwargs": one_arm_shift_kwargs,
+        "tdi_batch_shift_kwargs": tdi_batch_shift_kwargs,
+        "Nf": int(Nf),
+        "L_trunc": None if L_trunc is None else int(L_trunc),
+        "calc_m0": bool(calc_m0),
+        "q": q,
+        "d": int(d),
+        "A_frac": float(A_frac),
+        "use_jax": True,
+        "wdm_grid_build_s": float(wdm_grid_build_s),
+        "one_arm_static_build_s": float(one_arm_static_build_s),
+        "one_arm_interpolation_table_memory_bytes": int(
+            one_arm_static_plan.kernel_memory_bytes
+        ),
+        "tdi_delay_build_s": float(tdi_delay_build_s),
+        "tdi_plan_build_s": float(tdi_plan_build_s),
+        "tdi_plan_kernel_memory_bytes": int(tdi_plan.kernel_memory_bytes),
+        "tdi_delays_from_cache": bool(tdi_delays_from_cache),
+    }
+
+
+def precompute_gen2_michelson_wdm_waveform_runtime(
+    static_precomp,
+    waveform_plus,
+    waveform_cross,
+    *,
+    parallel_wdm_transforms=False,
+):
+    """Build only waveform WDM coefficients on a static response grid."""
+
+    if static_precomp.get("kind") != "gen2_michelson_wdm_static":
+        raise ValueError(
+            "static_precomp must come from "
+            "precompute_gen2_michelson_wdm_static()."
+        )
+    started = time.perf_counter()
+    wave_context = _build_wdm_dT_context_from_wdm(
+        static_precomp["times"],
+        waveform_plus,
+        waveform_cross,
+        static_precomp["wdm"],
+        m_offset=0.0,
+        parallel_wdm_transforms=parallel_wdm_transforms,
+    )
+    return {
+        "kind": "gen2_michelson_wdm_waveform_runtime",
+        "static_precomp": static_precomp,
+        "wdm": static_precomp["wdm"],
+        "wave_context": wave_context,
+        "parallel_wdm_transforms": bool(parallel_wdm_transforms),
+        "waveform_context_build_s": float(time.perf_counter() - started),
+    }
+
+
+def gen2_michelson_wdm_from_static_waveform(
+    static_precomp,
+    waveform_precomp,
+    theta,
+    phi,
+    *,
+    return_profile=False,
+):
+    """Evaluate sky-dependent one-arm response and static prepared TDI."""
+
+    if waveform_precomp.get("static_precomp") is not static_precomp:
+        raise ValueError(
+            "waveform_precomp was not built from this static_precomp object."
+        )
+    one_arm_static_plan = static_precomp["one_arm_static_plan"]
+    wave_context = waveform_precomp["wave_context"]
+
+    started = time.perf_counter()
+    _, one_arm_result = apply_one_arm_wdm_runtime_from_context(
+        wave_context,
+        one_arm_static_plan,
+        theta,
+        phi,
+        return_device=False,
+        return_profile=return_profile,
+    )
+    if return_profile:
+        link_w, one_arm_profile = one_arm_result
+    else:
+        link_w = one_arm_result
+
+    tdi_started = time.perf_counter()
+    if return_profile:
+        outputs, tdi_profile = static_precomp["tdi_plan"].apply(
+            link_w,
+            return_profile=True,
+        )
+        return outputs, {
+            "theta": float(theta),
+            "phi": float(phi),
+            "one_arm": one_arm_profile,
+            "tdi": tdi_profile,
+            "tdi_apply_s": float(time.perf_counter() - tdi_started),
+            "total_runtime_s": float(time.perf_counter() - started),
+        }
+
+    outputs = static_precomp["tdi_plan"].apply(link_w)
+    return outputs
 
 
 def precompute_gen2_michelson_wdm_inputs(
@@ -2200,7 +2399,7 @@ def gen2_michelson_wdm(
     d=4,
     A_frac=0.25,
     calc_m0=True,
-    tdi_assembly_mode="batch_map",
+    tdi_assembly_mode="prepared_plan",
     accumulator_chunk=1,
     profile_shift_stages=False,
     profile_label=None,
@@ -2211,51 +2410,95 @@ def gen2_michelson_wdm(
     one_arm_parallel_max_workers=None,
     parallel_wdm_transforms=False,
 ):
-    """Construct Gen-2 Michelson ``X1, Y1, Z1`` in the WDM domain.
+    """Construct Gen-2 Michelson channels with runtime sky assembly.
 
-    The optional one-arm scheduling arguments affect only the waveform-level
-    A1 stage. The downstream TDI operator and its numerical configuration are
-    unchanged.
+    The direct API now builds a sky-independent static object, transforms the
+    waveform, and supplies ``theta``/``phi`` only to the runtime response
+    stage. Legacy scheduling parameters are accepted for compatibility but the
+    runtime static-plan path currently uses one materialized six-link batch.
     """
-    times = np.asarray(times, dtype=float)
-    precomp = precompute_gen2_michelson_wdm_inputs(
+
+    requested_backend = (
+        "production"
+        if variable_shift_kwargs is None
+        else str(variable_shift_kwargs.get("assembly_backend", "production")).lower()
+    )
+    requested_tl_tp_mode = (
+        "exact"
+        if variable_shift_kwargs is None
+        else str(variable_shift_kwargs.get("tl_tp_mode", "exact")).lower()
+    )
+    use_legacy_fixed_plan = (
+        requested_backend in {
+            "reference", "legacy", "row", "vmap", "chunked", "lagfirst_row"
+        }
+        or requested_tl_tp_mode == "exact"
+    )
+
+    if tdi_assembly_mode != "prepared_plan" or use_legacy_fixed_plan:
+        # Preserve the existing configurable reference routes.
+        precomp = precompute_gen2_michelson_wdm_inputs(
+            times,
+            waveform_plus,
+            waveform_cross,
+            theta,
+            phi,
+            orbits,
+            Nf,
+            shifts_cache=shifts_cache,
+            L_trunc=L_trunc,
+            one_arm_cache=one_arm_cache,
+            variable_shift_kwargs=variable_shift_kwargs,
+            use_jax=use_jax,
+            q=q,
+            d=d,
+            A_frac=A_frac,
+            calc_m0=calc_m0,
+            return_device_links=return_device_links,
+            one_arm_execution_mode=one_arm_execution_mode,
+            one_arm_parallel_links_per_group=one_arm_parallel_links_per_group,
+            one_arm_parallel_max_workers=one_arm_parallel_max_workers,
+            parallel_wdm_transforms=parallel_wdm_transforms,
+        )
+        return gen2_michelson_wdm_from_precomputed(
+            precomp,
+            variable_shift_kwargs=variable_shift_kwargs,
+            L_trunc=L_trunc,
+            use_jax=use_jax,
+            Nf=Nf,
+            tdi_assembly_mode=tdi_assembly_mode,
+            accumulator_chunk=accumulator_chunk,
+            profile_shift_stages=profile_shift_stages,
+            profile_label=profile_label,
+            return_shift_profile=return_shift_profile,
+        )
+
+    static = precompute_gen2_michelson_wdm_static(
         times,
-        waveform_plus,
-        waveform_cross,
-        theta,
-        phi,
         orbits,
-        Nf,
-        shifts_cache=shifts_cache,
+        Nf=Nf,
         L_trunc=L_trunc,
-        one_arm_cache=one_arm_cache,
-        variable_shift_kwargs=variable_shift_kwargs,
-        use_jax=use_jax,
         q=q,
         d=d,
         A_frac=A_frac,
         calc_m0=calc_m0,
-        return_device_links=return_device_links,
-        one_arm_execution_mode=one_arm_execution_mode,
-        one_arm_parallel_links_per_group=(
-            one_arm_parallel_links_per_group
-        ),
-        one_arm_parallel_max_workers=one_arm_parallel_max_workers,
+        use_jax=use_jax,
+        variable_shift_kwargs=variable_shift_kwargs,
+        shifts_cache=shifts_cache,
+    )
+    waveform = precompute_gen2_michelson_wdm_waveform_runtime(
+        static,
+        waveform_plus,
+        waveform_cross,
         parallel_wdm_transforms=parallel_wdm_transforms,
     )
-    return gen2_michelson_wdm_from_precomputed(
-        precomp,
-        variable_shift_kwargs=variable_shift_kwargs,
-        L_trunc=L_trunc,
-        use_jax=use_jax,
-        Nf=Nf,
-        tdi_assembly_mode=tdi_assembly_mode,
-        accumulator_chunk=accumulator_chunk,
-        profile_shift_stages=profile_shift_stages,
-        profile_label=profile_label,
-        return_shift_profile=return_shift_profile,
+    return gen2_michelson_wdm_from_static_waveform(
+        static,
+        waveform,
+        theta,
+        phi,
+        return_profile=bool(profile_shift_stages and return_shift_profile),
     )
-
 
 def gen2_michelson_td(
     times,

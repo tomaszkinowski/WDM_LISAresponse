@@ -71,6 +71,20 @@ class Gen2MichelsonWDMPlan:
             use_jax=use_jax,
         )
 
+        # The prepared Gen-2 TDI operator has fixed, orbit-dependent delays.
+        # Runtime-sky Tl/Tp interpolation-table options belong only to the
+        # one-arm response path, so forward only arguments accepted by
+        # VariableShiftBatchPlan.build().
+        tdi_plan_build_kwargs = {
+            key: build_kwargs[key]
+            for key in (
+                "Nker",
+                "safety",
+                "kernel_kwargs",
+            )
+            if key in build_kwargs
+        }
+
         channel_names = ("X", "Y", "Z")
         shift_libraries = (shifts_X, shifts_Y, shifts_Z)
 
@@ -112,7 +126,7 @@ class Gen2MichelsonWDMPlan:
             delay_matrix,
             config=config,
             Nf=int(wdm.Nf),
-            **build_kwargs,
+            **tdi_plan_build_kwargs,
         )
 
         # Undelayed terms are the leading +link and -link for each cyclic

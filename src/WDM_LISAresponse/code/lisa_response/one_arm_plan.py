@@ -33,12 +33,18 @@ import numpy as np
 from lisaconstants import c
 
 from WDM.code.time_delay_filters.config import VariableShiftPlanConfig
-from WDM.code.time_delay_filters.plans import VariableShiftBatchPlan
+from WDM.code.time_delay_filters.plans import (
+    VariableShiftBatchPlan,
+    VariableShiftKernelContext,
+)
 
 from .response_sub import (
     _compute_ltt_iterative,
     antenna_pattern_factors,
+    all_sky_time_shift_bounds,
+    build_directed_link_geometry,
     build_sky_basis,
+    evaluate_sky_link_geometry,
     rhat,
 )
 
@@ -239,6 +245,8 @@ def _shift_options_to_plan_config(
         "Nker": kwargs.pop("Nker", None),
         "safety": kwargs.pop("safety", 1.02),
         "kernel_kwargs": kwargs.pop("kernel_kwargs", None),
+        "tl_tp_table_points": kwargs.pop("tl_tp_table_points", 1024),
+        "tl_tp_table_pad": kwargs.pop("tl_tp_table_pad", 0.02),
     }
 
     # Exact Tl/Tp construction remains the compatibility default.  The fast
@@ -272,6 +280,292 @@ def _shift_options_to_plan_config(
         )
 
     return config, build_kwargs
+
+
+
+@dataclass(frozen=True, slots=True)
+class OneArmWDMStaticPlan:
+    """Sky-independent one-arm WDM geometry and runtime shift context."""
+
+    wdm: Any
+    links: tuple[Link, ...]
+    freq_vals: np.ndarray
+    int_times_vals: np.ndarray
+    geometry: Any
+    shift_context: VariableShiftKernelContext
+    build_seconds: float
+
+    @classmethod
+    def build_from_context(
+        cls,
+        context: dict[str, Any],
+        orbits: Any,
+        *,
+        links: Iterable[Link] | None = None,
+        L_trunc: int | None = None,
+        variable_shift_kwargs: dict[str, Any] | None = None,
+        use_jax: bool | None = None,
+    ) -> "OneArmWDMStaticPlan":
+        missing = {
+            key for key in ("wdm", "freq_vals", "int_times_vals")
+            if key not in context
+        }
+        if missing:
+            raise KeyError(
+                "OneArmWDMStaticPlan context is missing required keys: "
+                + ", ".join(sorted(missing))
+            )
+        config, build_kwargs = _shift_options_to_plan_config(
+            L_trunc=L_trunc,
+            variable_shift_kwargs=variable_shift_kwargs,
+            use_jax=use_jax,
+        )
+        return cls.build(
+            wdm=context["wdm"],
+            freq_vals=context["freq_vals"],
+            int_times_vals=context["int_times_vals"],
+            orbits=orbits,
+            links=links,
+            shift_config=config,
+            **build_kwargs,
+        )
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        wdm: Any,
+        freq_vals: np.ndarray,
+        int_times_vals: np.ndarray,
+        orbits: Any,
+        links: Iterable[Link] | None = None,
+        shift_config: VariableShiftPlanConfig | None = None,
+        Nker: int | None = None,
+        safety: float = 1.02,
+        kernel_kwargs: dict[str, Any] | None = None,
+        tl_tp_table_points: int = 1024,
+        tl_tp_table_pad: float = 0.02,
+    ) -> "OneArmWDMStaticPlan":
+        from time import perf_counter
+
+        started = perf_counter()
+        links = _normalise_links(links)
+        freq_vals = np.asarray(freq_vals, dtype=float)
+        int_times_vals = np.asarray(int_times_vals, dtype=float)
+        if freq_vals.shape != (int(wdm.Nf),):
+            raise ValueError(
+                f"Expected freq_vals shape {(int(wdm.Nf),)}, got {freq_vals.shape}."
+            )
+        if int_times_vals.shape != (int(wdm.Nt),):
+            raise ValueError(
+                "Expected int_times_vals shape "
+                f"{(int(wdm.Nt),)}, got {int_times_vals.shape}."
+            )
+
+        geometry = build_directed_link_geometry(
+            int_times_vals,
+            orbits,
+            links,
+        )
+        shift_min, shift_max = all_sky_time_shift_bounds(geometry)
+        # The WDM operator is called with -time_shift.
+        delay_min = -shift_max
+        delay_max = -shift_min
+
+        config = (
+            VariableShiftPlanConfig.production()
+            if shift_config is None
+            else shift_config
+        )
+        if config.tl_tp_mode != "interp":
+            # Runtime sky updates require a reusable interpolation table.
+            config = VariableShiftPlanConfig(
+                lag_truncation=config.lag_truncation,
+                tl_tp_mode="interp",
+                tl_tp_interp_points=config.tl_tp_interp_points,
+                tl_tp_interp_pad=config.tl_tp_interp_pad,
+                tl_tp_interp_kind=config.tl_tp_interp_kind,
+                assembly_backend=config.assembly_backend,
+                assembly_precision=config.assembly_precision,
+                row_chunk_size=config.row_chunk_size,
+                lag_block_size=config.lag_block_size,
+                batch_chunk=config.batch_chunk,
+            )
+
+        shift_context = VariableShiftKernelContext.build(
+            wdm,
+            delay_min=delay_min,
+            delay_max=delay_max,
+            config=config,
+            Nf=int(wdm.Nf),
+            Nker=Nker,
+            safety=safety,
+            kernel_kwargs=kernel_kwargs,
+            interpolation_points=int(tl_tp_table_points),
+            interpolation_pad=float(tl_tp_table_pad),
+            interpolation_kind=config.tl_tp_interp_kind,
+        )
+        return cls(
+            wdm=wdm,
+            links=links,
+            freq_vals=freq_vals,
+            int_times_vals=int_times_vals,
+            geometry=geometry,
+            shift_context=shift_context,
+            build_seconds=float(perf_counter() - started),
+        )
+
+    def sky_arrays(self, theta: float, phi: float):
+        """Return runtime amplitudes and one-arm delay fields."""
+
+        sky = evaluate_sky_link_geometry(
+            self.geometry,
+            theta,
+            phi,
+        )
+        common = (
+            0.5
+            * c
+            * self.geometry.light_time[:, :, None]
+            * np.sinc(
+                2.0
+                * self.freq_vals[None, None, :]
+                * sky.tau[:, :, None]
+            )
+        )
+        amplitude_plus = common * sky.projection_plus[:, :, None]
+        amplitude_cross = common * sky.projection_cross[:, :, None]
+        if self.shift_context.resolved_assembly_precision == "complex64":
+            real_dtype = np.float32
+        else:
+            real_dtype = np.float64
+        return (
+            np.asarray(amplitude_plus, dtype=real_dtype),
+            np.asarray(amplitude_cross, dtype=real_dtype),
+            np.asarray(sky.time_shift, dtype=real_dtype),
+        )
+
+    def _validate_waveform_pair(self, w_t_plus, w_t_cross):
+        plus = np.asarray(w_t_plus)
+        cross = np.asarray(w_t_cross)
+        expected = (int(self.wdm.Nt), int(self.wdm.Nf))
+        if plus.shape != expected or cross.shape != expected:
+            raise ValueError(
+                f"Expected plus/cross WDM coefficients {expected}; "
+                f"got plus={plus.shape}, cross={cross.shape}."
+            )
+        return plus, cross
+
+    def apply_batch(
+        self,
+        w_t_plus,
+        w_t_cross,
+        theta,
+        phi,
+        *,
+        return_profile: bool = False,
+    ):
+        """Evaluate one sky location and return a six-link NumPy batch."""
+
+        plus, cross = self._validate_waveform_pair(w_t_plus, w_t_cross)
+        amp_plus, amp_cross, time_shift = self.sky_arrays(theta, phi)
+        unshifted = (
+            amp_plus * plus[None, :, :]
+            + amp_cross * cross[None, :, :]
+        )
+        return self.shift_context.apply(
+            unshifted,
+            -time_shift,
+            return_profile=return_profile,
+        )
+
+    def apply_batch_device(
+        self,
+        w_t_plus,
+        w_t_cross,
+        theta,
+        phi,
+        *,
+        return_profile: bool = False,
+        cache_device_context: bool = True,
+    ):
+        """Evaluate one sky location while keeping response arrays on-device."""
+
+        plus, cross = self._validate_waveform_pair(w_t_plus, w_t_cross)
+        amp_plus, amp_cross, time_shift = self.sky_arrays(theta, phi)
+        plus_device, cross_device = (
+            jnp.asarray(plus),
+            jnp.asarray(cross),
+        )
+        real_dtype = (
+            jnp.float32
+            if self.shift_context.resolved_assembly_precision == "complex64"
+            else jnp.float64
+        )
+        unshifted = _combine_polarizations_device(
+            jnp.asarray(amp_plus, dtype=real_dtype),
+            jnp.asarray(amp_cross, dtype=real_dtype),
+            jnp.asarray(plus_device, dtype=real_dtype),
+            jnp.asarray(cross_device, dtype=real_dtype),
+        )
+        return self.shift_context.apply_device(
+            unshifted,
+            -time_shift,
+            return_profile=return_profile,
+            cache_device_context=cache_device_context,
+        )
+
+    def apply(
+        self,
+        w_t_plus,
+        w_t_cross,
+        theta,
+        phi,
+    ) -> dict[Link, np.ndarray]:
+        shifted = self.apply_batch(w_t_plus, w_t_cross, theta, phi)
+        return {
+            link: shifted[index]
+            for index, link in enumerate(self.links)
+        }
+
+    def apply_device(
+        self,
+        w_t_plus,
+        w_t_cross,
+        theta,
+        phi,
+        *,
+        return_profile: bool = False,
+        cache_device_context: bool = True,
+    ):
+        result = self.apply_batch_device(
+            w_t_plus,
+            w_t_cross,
+            theta,
+            phi,
+            return_profile=return_profile,
+            cache_device_context=cache_device_context,
+        )
+        if return_profile:
+            shifted, profile = result
+            return (
+                {
+                    link: shifted[index]
+                    for index, link in enumerate(self.links)
+                },
+                profile,
+            )
+        return {
+            link: result[index]
+            for index, link in enumerate(self.links)
+        }
+
+    def clear_device_cache(self) -> None:
+        self.shift_context.clear_device_cache()
+
+    @property
+    def kernel_memory_bytes(self) -> int:
+        return int(self.shift_context.kernel_memory_bytes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,7 +638,9 @@ class OneArmWDMPlan:
             phi=phi,
             links=links,
             shift_config=config,
-            **build_kwargs,
+            Nker=build_kwargs["Nker"],
+            safety=build_kwargs["safety"],
+            kernel_kwargs=build_kwargs["kernel_kwargs"],
         )
 
     @classmethod

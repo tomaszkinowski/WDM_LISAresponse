@@ -85,6 +85,105 @@ def build_sky_basis(theta: float, phi: float) -> SkyBasis:
     return SkyBasis(u=u, v=v, n=n, Omega=Omega, e_plus=e_plus, e_cross=e_cross)
 
 
+
+class DirectedLinkGeometry(NamedTuple):
+    """Sky-independent six-link geometry sampled on the WDM time grid."""
+
+    links: tuple[tuple[int, int], ...]
+    times: np.ndarray
+    light_time: np.ndarray
+    receiver_position: np.ndarray
+    direction: np.ndarray
+
+
+class SkyLinkGeometry(NamedTuple):
+    """Sky-dependent one-arm quantities derived from static link geometry."""
+
+    sky_basis: SkyBasis
+    tau: np.ndarray
+    time_shift: np.ndarray
+    projection_plus: np.ndarray
+    projection_cross: np.ndarray
+
+
+def build_directed_link_geometry(times, orbits, links):
+    """Precompute orbit-only geometry for directed links."""
+
+    times = np.asarray(times, dtype=float)
+    links = tuple((int(s), int(r)) for s, r in links)
+    light_times = []
+    receiver_positions = []
+    directions = []
+    for sender, receiver in links:
+        light_time, receiver_position = _compute_ltt_iterative(
+            times,
+            sender,
+            receiver,
+            orbits,
+            return_receiver_position=True,
+        )
+        direction = rhat(
+            times,
+            sender,
+            receiver,
+            orbits,
+            tt=light_time,
+            x_r_rec=receiver_position,
+        )
+        light_times.append(light_time)
+        receiver_positions.append(receiver_position)
+        directions.append(direction)
+    return DirectedLinkGeometry(
+        links=links,
+        times=times,
+        light_time=np.stack(light_times, axis=0),
+        receiver_position=np.stack(receiver_positions, axis=0),
+        direction=np.stack(directions, axis=0),
+    )
+
+
+def evaluate_sky_link_geometry(geometry, theta, phi):
+    """Evaluate sky-dependent delays and antenna projections."""
+
+    sky_basis = build_sky_basis(theta, phi)
+    n = sky_basis.n
+    omega = sky_basis.Omega
+    omega_dot_direction = np.einsum(
+        "lti,i->lt",
+        geometry.direction,
+        omega,
+    )
+    tau = 0.5 * geometry.light_time * (1.0 - omega_dot_direction)
+    time_shift = (
+        np.einsum("lti,i->lt", geometry.receiver_position, n / c)
+        - tau
+    )
+    ru = np.einsum("lti,i->lt", geometry.direction, sky_basis.u)
+    rv = np.einsum("lti,i->lt", geometry.direction, sky_basis.v)
+    projection_plus = ru**2 - rv**2
+    projection_cross = 2.0 * ru * rv
+    return SkyLinkGeometry(
+        sky_basis=sky_basis,
+        tau=tau,
+        time_shift=time_shift,
+        projection_plus=projection_plus,
+        projection_cross=projection_cross,
+    )
+
+
+def all_sky_time_shift_bounds(geometry):
+    """Return conservative global bounds for one-arm ``time_shift`` values."""
+
+    # time_shift = -L/2 + n dot (x_r/c - L*rhat/2)
+    vector = (
+        geometry.receiver_position / c
+        - 0.5 * geometry.light_time[:, :, None] * geometry.direction
+    )
+    centre = -0.5 * geometry.light_time
+    radius = np.linalg.norm(vector, axis=2)
+    return float(np.min(centre - radius)), float(np.max(centre + radius))
+
+
 def basis_vectors(theta : float, 
                   phi : float) -> Tuple[np.ndarray, 
                                         np.ndarray, 
