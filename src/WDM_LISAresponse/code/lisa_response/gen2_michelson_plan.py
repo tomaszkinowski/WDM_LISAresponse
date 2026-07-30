@@ -63,6 +63,45 @@ class Gen2MichelsonWDMPlan:
         variable_shift_kwargs: dict[str, Any] | None = None,
         use_jax: bool | None = None,
     ) -> "Gen2MichelsonWDMPlan":
+        """Build the prepared 42-job second-generation Michelson operator.
+
+        Parameters
+        ----------
+        wdm : object
+            WDM transform. Each delay field must have length ``wdm.Nt``.
+        shifts_X, shifts_Y, shifts_Z : mapping[DelayChain, ndarray]
+            Recursive TDI delay libraries. Each value has shape ``(Nt,)`` and is in
+            seconds. Chain keys must match those referenced by ``job_templates``.
+        job_templates : tuple[iterable[JobTemplate], iterable[JobTemplate], iterable[JobTemplate]]
+            Templates for X, Y and Z. Every channel must provide exactly 14 tuples
+            ``(name, source_link, delay_chain)``. The first seven shifted terms receive
+            sign ``+1`` and the final seven sign ``-1``.
+        L_trunc : int or None
+            Maximum retained WDM time lag.
+        variable_shift_kwargs : dict[str, Any] or None, optional
+            Prepared-plan filter and assembly options.
+        use_jax : bool or None, optional
+            Compatibility flag; the maintained implementation is JAX-only.
+
+        Returns
+        -------
+        Gen2MichelsonWDMPlan
+            Immutable LISA-specific bookkeeping plus a generic
+            ``VariableShiftBatchPlan`` containing all 42 prepared delay operators.
+
+        Raises
+        ------
+        ValueError
+            If a channel does not contain 14 templates or the stacked delay matrix is
+            not shaped ``(42, Nt)``.
+        KeyError
+            If a template references a delay chain absent from its channel library.
+
+        Notes
+        -----
+        The plan is waveform- and sky-independent. Reuse it for every set of six
+        one-arm responses on the same orbit and WDM grid.
+        """
         started = perf_counter()
 
         config, build_kwargs = _shift_options_to_plan_config(

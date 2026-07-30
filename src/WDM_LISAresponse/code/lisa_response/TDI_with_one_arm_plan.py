@@ -471,7 +471,33 @@ def precompute_gen2_michelson_wdm_static(
     variable_shift_kwargs=None,
     shifts_cache=None,
 ):
-    """Build sky- and waveform-independent Gen-2 Michelson WDM state."""
+    """Build sky- and waveform-independent Gen-2 Michelson WDM state.
+
+    This is the recommended A0 production entry point. It creates the WDM
+    grid, orbit-only six-link geometry, the all-sky one-arm kernel context,
+    recursive Gen-2 delay fields and the prepared 42-job TDI plan.
+
+    Returns
+    -------
+    dict[str, Any]
+        Static payload with the most important entries:
+
+        ``wdm``
+            Reusable WDM transform.
+        ``wdm_grid_context``
+            Grid metadata including frequency and WDM-centre-time arrays.
+        ``one_arm_static_plan``
+            Runtime-sky six-link response plan.
+        ``tdi_plan``
+            Prepared 42-job Gen-2 Michelson operator.
+        ``shifts_X``, ``shifts_Y``, ``shifts_Z``
+            Recursive delay libraries.
+
+        The payload also records numerical settings, build timings and
+        persistent kernel-memory estimates. It is safe to reuse across
+        waveforms and sky positions while the time grid, orbit model and WDM
+        settings remain unchanged.
+    """
 
     times = np.asarray(times, dtype=float)
     one_arm_shift_kwargs, tdi_batch_shift_kwargs = _split_variable_shift_kwargs(
@@ -577,7 +603,24 @@ def precompute_gen2_michelson_wdm_waveform_runtime(
     *,
     parallel_wdm_transforms=False,
 ):
-    """Build only waveform WDM coefficients on a static response grid."""
+    """Build only waveform WDM coefficients on a static response grid.
+
+    Parameters
+    ----------
+    static_precomp : dict[str, Any]
+        Payload returned by ``precompute_gen2_michelson_wdm_static``.
+    waveform_plus, waveform_cross : array-like, shape (N,)
+        Time-domain polarizations sampled on ``static_precomp['times']``.
+    parallel_wdm_transforms : bool, optional
+        Run the two independent DWTs on two Python threads.
+
+    Returns
+    -------
+    dict[str, Any]
+        Waveform payload containing ``wave_context`` with ``w_t_plus`` and
+        ``w_t_cross`` arrays of shape ``(Nt, Nf)`` and a reference to the
+        originating static payload. No LISA sky response is evaluated here.
+    """
 
     if static_precomp.get("kind") != "gen2_michelson_wdm_static":
         raise ValueError(
@@ -611,7 +654,32 @@ def gen2_michelson_wdm_from_static_waveform(
     *,
     return_profile=False,
 ):
-    """Evaluate sky-dependent one-arm response and static prepared TDI."""
+    """Evaluate six sky-dependent links and then prepared Gen-2 TDI.
+
+    Parameters
+    ----------
+    static_precomp : dict[str, Any]
+        Static A0 payload.
+    waveform_precomp : dict[str, Any]
+        Waveform payload built from the same static object.
+    theta, phi : float
+        Runtime source angles, in radians.
+    return_profile : bool, optional
+        Return nested one-arm and TDI profiling dictionaries.
+
+    Returns
+    -------
+    tuple[ndarray, ndarray, ndarray]
+        ``(X, Y, Z)`` WDM coefficients, each with shape ``(Nt, Nf)``.
+    tuple[tuple[ndarray, ndarray, ndarray], dict], optional
+        Returned when ``return_profile=True``.
+
+    Notes
+    -----
+    This call recomputes the six one-arm links for the supplied sky position,
+    but reuses orbit geometry, the global one-arm delay table and all prepared
+    TDI kernels.
+    """
 
     if waveform_precomp.get("static_precomp") is not static_precomp:
         raise ValueError(

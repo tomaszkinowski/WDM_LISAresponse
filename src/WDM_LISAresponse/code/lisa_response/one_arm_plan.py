@@ -306,6 +306,40 @@ class OneArmWDMStaticPlan:
         variable_shift_kwargs: dict[str, Any] | None = None,
         use_jax: bool | None = None,
     ) -> "OneArmWDMStaticPlan":
+        """Build a sky-independent one-arm plan from WDM grid metadata.
+
+        Parameters
+        ----------
+        context : dict[str, Any]
+            Grid context produced by ``_build_wdm_dT_grid``. It must contain
+            ``wdm``, ``freq_vals`` with shape ``(Nf,)`` and ``int_times_vals`` with
+            shape ``(Nt,)``. Waveform coefficients are not required.
+        orbits : object
+            LISA orbit provider exposing ``compute_position(times, sc=[...])``.
+        links : iterable[tuple[int, int]] or None, optional
+            Directed links as ``(sender, receiver)`` pairs. ``None`` selects the six
+            canonical LISA links in ``DEFAULT_DIRECTED_LINKS`` order.
+        L_trunc : int or None, optional
+            Maximum retained WDM time-pixel lag. ``None`` retains the full lag range.
+        variable_shift_kwargs : dict[str, Any] or None, optional
+            Numerical and scheduling options converted to ``VariableShiftPlanConfig``.
+            The runtime-sky plan requires interpolated production kernels.
+        use_jax : bool or None, optional
+            Compatibility flag. ``None`` and ``True`` are accepted; ``False`` raises.
+
+        Returns
+        -------
+        OneArmWDMStaticPlan
+            Reusable orbit-only geometry and a global delay-kernel interpolation
+            context. The result is independent of waveform coefficients and sky
+            position.
+
+        Notes
+        -----
+        Build this once for a fixed time grid, WDM basis and orbit model. Runtime
+        ``theta`` and ``phi`` values are supplied later to ``apply`` or
+        ``apply_batch``.
+        """
         missing = {
             key for key in ("wdm", "freq_vals", "int_times_vals")
             if key not in context
@@ -346,6 +380,46 @@ class OneArmWDMStaticPlan:
         tl_tp_table_points: int = 1024,
         tl_tp_table_pad: float = 0.02,
     ) -> "OneArmWDMStaticPlan":
+        """Construct orbit-only six-link geometry and runtime shift kernels.
+
+        Parameters
+        ----------
+        wdm : object
+            WDM transform defining ``Nt``, ``Nf``, ``dF`` and the basis windows.
+        freq_vals : ndarray, shape (Nf,)
+            Physical frequency assigned to each WDM frequency pixel, in hertz.
+        int_times_vals : ndarray, shape (Nt,)
+            Reception/readout times at WDM time-pixel centres, in seconds.
+        orbits : object
+            LISA orbit provider.
+        links : iterable[tuple[int, int]] or None, optional
+            Directed ``(sender, receiver)`` links.
+        shift_config : VariableShiftPlanConfig or None, optional
+            Production shift configuration. Runtime sky variation forces
+            ``tl_tp_mode='interp'`` even when an exact configuration is supplied.
+        Nker : int or None, optional
+            Auxiliary kernel-WDM sample count. ``None`` selects a safe value.
+        safety : float, optional
+            Multiplicative safety factor used when choosing ``Nker``.
+        kernel_kwargs : dict[str, Any] or None, optional
+            Overrides for construction of the auxiliary kernel WDM object.
+        tl_tp_table_points : int, optional
+            Number of delay samples in the global all-sky ``Tl/Tp`` table.
+        tl_tp_table_pad : float, optional
+            Fractional padding added to the conservative all-sky delay interval.
+
+        Returns
+        -------
+        OneArmWDMStaticPlan
+            Plan containing six-link orbit geometry and a
+            ``VariableShiftKernelContext`` valid for every sky position within the
+            conservative bounds.
+
+        Raises
+        ------
+        ValueError
+            If the frequency or WDM-time arrays do not match the supplied WDM grid.
+        """
         from time import perf_counter
 
         started = perf_counter()
@@ -416,7 +490,23 @@ class OneArmWDMStaticPlan:
         )
 
     def sky_arrays(self, theta: float, phi: float):
-        """Return runtime amplitudes and one-arm delay fields."""
+        """Evaluate sky-dependent amplitudes and one-arm delay fields.
+
+        Parameters
+        ----------
+        theta, phi : float
+            Source polar and azimuthal angles, in radians.
+
+        Returns
+        -------
+        amplitude_plus, amplitude_cross : ndarray, shape (num_links, Nt, Nf)
+            Real finite-arm transfer amplitudes multiplying the plus and cross
+            WDM coefficients.
+        time_shift : ndarray, shape (num_links, Nt)
+            Phase-centre shifts in seconds, using
+            ``x_r dot n / c - tau``. The generic shift operator is called with
+            the negative of this array.
+        """
 
         sky = evaluate_sky_link_geometry(
             self.geometry,
@@ -522,6 +612,21 @@ class OneArmWDMStaticPlan:
         theta,
         phi,
     ) -> dict[Link, np.ndarray]:
+        """Return all directed one-arm responses as a NumPy mapping.
+
+        Parameters
+        ----------
+        w_t_plus, w_t_cross : array-like, shape (Nt, Nf)
+            Plus and cross WDM coefficients on this plan's grid.
+        theta, phi : float
+            Source polar and azimuthal angles, in radians.
+
+        Returns
+        -------
+        dict[tuple[int, int], ndarray]
+            Mapping from ``(sender, receiver)`` to one-arm WDM coefficients with shape
+            ``(Nt, Nf)``. Keys follow ``self.links`` order.
+        """
         shifted = self.apply_batch(w_t_plus, w_t_cross, theta, phi)
         return {
             link: shifted[index]
@@ -538,6 +643,12 @@ class OneArmWDMStaticPlan:
         return_profile: bool = False,
         cache_device_context: bool = True,
     ):
+        """Return all directed one-arm responses while retaining JAX arrays.
+
+        Parameters are the same as :meth:`apply`. When ``return_profile`` is true,
+        returns ``(responses, profile)`` where ``responses`` maps links to device
+        arrays and ``profile`` reports interpolation, assembly and cache timings.
+        """
         result = self.apply_batch_device(
             w_t_plus,
             w_t_cross,
@@ -561,10 +672,12 @@ class OneArmWDMStaticPlan:
         }
 
     def clear_device_cache(self) -> None:
+        """Release lazily cached JAX arrays owned by the shift context."""
         self.shift_context.clear_device_cache()
 
     @property
     def kernel_memory_bytes(self) -> int:
+        """Persistent bytes occupied by the global ``Tl/Tp`` table."""
         return int(self.shift_context.kernel_memory_bytes)
 
 

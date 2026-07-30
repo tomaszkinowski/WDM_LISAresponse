@@ -588,7 +588,16 @@ def apply_one_arm_wdm_runtime_from_context(
     return_device=False,
     return_profile=False,
 ):
-    """Apply a sky-independent one-arm plan at a runtime sky location."""
+    """Apply a sky-independent one-arm plan at a runtime sky location.
+
+    Returns
+    -------
+    tuple
+        ``(wdm, responses)`` where ``responses`` maps the six directed links
+        to arrays of shape ``(Nt, Nf)``. With ``return_profile=True``, the
+        second item is ``(responses, profile)``. If ``return_device=True``,
+        response values remain JAX arrays; otherwise they are NumPy arrays.
+    """
 
     if not isinstance(one_arm_static_plan, OneArmWDMStaticPlan):
         raise TypeError(
