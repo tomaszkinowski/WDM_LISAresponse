@@ -41,3 +41,8 @@ dmypy.json
 # large data files
 data/*.txt
 data/*.h5
+
+#keeps local save files 
+_local_wdm_*
+dense_runtime_*
+examples/exact_shift_results/
