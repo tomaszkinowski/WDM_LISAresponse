@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("jax")
 pytest.importorskip("lisaconstants")
 
-from WDM_LISAresponse.code.lisa_response.response_sub import gnm_at_times_grid_np_interp
+from WDM_LISAresponse.code.lisa_response.response_sub_old import gnm_at_times_grid_np_interp
 
 
 class DummyWDM:

@@ -1,7 +1,7 @@
 [project]
 name = "WDM_LISAresponse"
 version = "0.0.1"
-authors = [
+authors = [ { name="Tomasz Kinowski", email="tk593@cam.ac.uk"},
   { name="Christopher J. Moore", email="cjm96@cam.ac.uk"},
 ]
 description = "A fast, JAX-based Python implementation for computing LISA detector response functions using the Wilson-Daubechies-Meyer (WDM) wavelet framework."
@@ -9,13 +9,12 @@ readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
+    "WDM",
     "numpy",
     "scipy",
-    "matplotlib",
     "jax",
-    "ipykernel",
+    "lisaconstants",
     "lisaorbits",
-    "WDM @ git+https://github.com/cjm96/WDM_GW_wavelets.git"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -27,6 +26,9 @@ classifiers = [
 dev = [
     "pytest",
     "astropy",
+    "ipykernel",
+    "matplotlib",
+    "few",
 ]
 
 docs = [
@@ -37,9 +39,8 @@ docs = [
     "sphinx-autodoc-typehints",
 ]
 
-[tool.setuptools]
-packages = ["WDM_LISAresponse"]
-package-dir = {"" = "src"}
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

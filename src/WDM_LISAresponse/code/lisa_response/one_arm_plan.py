@@ -38,7 +38,7 @@ from WDM.code.time_delay_filters.plans import (
     VariableShiftKernelContext,
 )
 
-from .response_sub import (
+from .response_sub_old import (
     _compute_ltt_iterative,
     antenna_pattern_factors,
     all_sky_time_shift_bounds,

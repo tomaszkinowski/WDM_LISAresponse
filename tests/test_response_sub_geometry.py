@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("jax")
 pytest.importorskip("lisaconstants")
 
-from WDM_LISAresponse.code.lisa_response.response_sub import (
+from WDM_LISAresponse.code.lisa_response.response_sub_old import (
     _compute_ltt_iterative,
     antenna_pattern_factors,
     basis_tensors,

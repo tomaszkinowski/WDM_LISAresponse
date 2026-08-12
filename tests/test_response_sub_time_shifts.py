@@ -12,7 +12,7 @@ pytest.importorskip("lisaconstants")
 
 from lisaconstants import c
 
-from WDM_LISAresponse.code.lisa_response.response_sub import (
+from WDM_LISAresponse.code.lisa_response.response_sub_old import (
     basis_vectors,
     generate_time_shifts,
 )

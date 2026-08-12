@@ -2,9 +2,14 @@
 
 import numpy as np
 from scipy.signal.windows import tukey
-from few.utils.constants import YRSID_SI
+from lisaconstants import SIDEREALYEAR_J2000DAY
 from typing import Dict, Optional, Any
 from ..utils.utils import wdm_tail_padding_info
+
+# Sidereal year in seconds. Matches ``few.utils.constants.YRSID_SI`` to within
+# one ULP, so FEW stays an optional (dev-only) dependency: EMRI generators are
+# passed in by the caller rather than constructed here.
+YRSID_SI = SIDEREALYEAR_J2000DAY * 86400.0
 
 
 def _get_waveform_models():

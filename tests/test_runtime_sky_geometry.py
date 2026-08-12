@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("jax")
 pytest.importorskip("lisaconstants")
 
-from WDM_LISAresponse.code.lisa_response.response_sub import (
+from WDM_LISAresponse.code.lisa_response.response_sub_old import (
     all_sky_time_shift_bounds,
     build_directed_link_geometry,
     evaluate_sky_link_geometry,

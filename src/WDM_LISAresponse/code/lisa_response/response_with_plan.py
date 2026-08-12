@@ -23,7 +23,7 @@ from .one_arm_plan import (
     _normalise_shift_backend,
     _validate_jax_request,
 )
-from .response_sub import (
+from .response_sub_old import (
     _compute_ltt_iterative,
     antenna_pattern_factors,
     build_sky_basis,
@@ -691,7 +691,7 @@ def precompute_one_arm_wdm_dT_links_from_context(
         ``(wdm, responses)`` using the directed-link dictionary API.
     """
     _validate_jax_request(use_jax)
-    shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
+    shift_kwargs = _clean_variable_shift_kwargs(variable_shift_kwargs)
     execution_mode = _normalise_one_arm_execution_mode(
         one_arm_execution_mode
     )
@@ -822,7 +822,7 @@ def _one_arm_response_wdm_dT_from_context(
     times = context["times"]
     wdm = context["wdm"]
     _validate_jax_request(use_jax)
-    shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
+    shift_kwargs = _clean_variable_shift_kwargs(variable_shift_kwargs)
 
     phase_center, tau_s, w_xi, time_shift = _one_arm_wdm_dT_components_from_context(
         context,
@@ -855,13 +855,13 @@ def _one_arm_response_wdm_dT_from_context(
     return dl_sr, w_sr
 
 
-def _split_variable_shift_kwargs(variable_shift_kwargs):
-    """Return cleaned one-arm and downstream TDI shift options.
+def _clean_variable_shift_kwargs(variable_shift_kwargs):
+    """Return cleaned one-arm variable-shift options.
 
     The one-arm plan builds all six links together and therefore uses its own
-    default batch size.  ``batch_chunk`` and optional profiling flags remain
-    available to downstream direct TDI batch calls.  Historical backend names
-    are normalized onto the maintained ``production`` or ``reference`` paths.
+    default batch size, so ``batch_chunk`` and the optional profiling flags are
+    dropped here.  Historical backend names are normalized onto the maintained
+    ``production`` or ``reference`` paths.
     """
 
     shift_kwargs = (
@@ -890,17 +890,15 @@ def _split_variable_shift_kwargs(variable_shift_kwargs):
     shift_kwargs.setdefault("lag_block_size", 1)
     shift_kwargs.setdefault("tl_tp_mode", "exact")
 
-    one_arm_shift_kwargs = dict(shift_kwargs)
     for key in (
         "batch_chunk",
         "profile_shift_stages",
         "profile_label",
         "return_shift_profile",
     ):
-        one_arm_shift_kwargs.pop(key, None)
+        shift_kwargs.pop(key, None)
 
-    tdi_batch_shift_kwargs = dict(shift_kwargs)
-    return one_arm_shift_kwargs, tdi_batch_shift_kwargs
+    return shift_kwargs
 
 
 def _one_arm_wdm_dT_components_from_context(
@@ -1025,7 +1023,7 @@ def precompute_one_arm_wdm_dT_links(
     """
     times = np.asarray(times, dtype=float)
     _validate_jax_request(use_jax)
-    shift_kwargs, _ = _split_variable_shift_kwargs(variable_shift_kwargs)
+    shift_kwargs = _clean_variable_shift_kwargs(variable_shift_kwargs)
     execution_mode = _normalise_one_arm_execution_mode(
         one_arm_execution_mode
     )
