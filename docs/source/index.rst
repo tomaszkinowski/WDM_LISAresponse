@@ -1,7 +1,7 @@
 WDM_LISAresponse documentation
 ==============================
 
-Author: Christopher J. Moore
+Authors: Tomasz Kinowski & Christopher J. Moore
 
 A fast, JAX-based Python implementation for computing LISA detector response functions
 using the Wilson-Daubechies-Meyer (WDM) wavelet framework.
