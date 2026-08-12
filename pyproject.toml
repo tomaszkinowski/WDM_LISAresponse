@@ -14,6 +14,7 @@ dependencies = [
     "matplotlib",
     "jax",
     "ipykernel",
+    "lisaorbits",
     "WDM @ git+https://github.com/cjm96/WDM_GW_wavelets.git"
 ]
 classifiers = [

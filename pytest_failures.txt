@@ -1,0 +1,132 @@
+......................FF..FFFFFFF.FFF..                                  [100%]
+=================================== FAILURES ===================================
+_______ test_static_pipeline_reuses_orbits_wdm_table_and_tdi_across_sky ________
+tests/test_runtime_sky_pipeline.py:50: in test_static_pipeline_reuses_orbits_wdm_table_and_tdi_across_sky
+    static = precompute_gen2_michelson_wdm_static(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:527: in precompute_gen2_michelson_wdm_static
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+______________ test_waveform_stage_contains_no_sky_specific_links ______________
+tests/test_runtime_sky_pipeline.py:90: in test_waveform_stage_contains_no_sky_specific_links
+    static = precompute_gen2_michelson_wdm_static(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:527: in precompute_gen2_michelson_wdm_static
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+_____________ test_backward_compatible_wrapper_matches_direct_call _____________
+tests/test_tdi_wdm_staged.py:96: in test_backward_compatible_wrapper_matches_direct_call
+    direct = gen2_michelson_wdm(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:2440: in gen2_michelson_wdm
+    precomp = precompute_gen2_michelson_wdm_inputs(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:685: in precompute_gen2_michelson_wdm_inputs
+    geom_precomp = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+_________________ test_new_split_matches_old_staged_and_direct _________________
+tests/test_tdi_wdm_staged.py:142: in test_new_split_matches_old_staged_and_direct
+    direct = gen2_michelson_wdm(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:2440: in gen2_michelson_wdm
+    precomp = precompute_gen2_michelson_wdm_inputs(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:685: in precompute_gen2_michelson_wdm_inputs
+    geom_precomp = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+_____ test_geometry_reuse_across_waveforms_and_no_waveform_payload_in_geom _____
+tests/test_tdi_wdm_staged.py:216: in test_geometry_reuse_across_waveforms_and_no_waveform_payload_in_geom
+    geom = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+_____________ test_geometry_carries_custom_a_frac_into_wdm_object ______________
+tests/test_tdi_wdm_staged.py:282: in test_geometry_carries_custom_a_frac_into_wdm_object
+    geom = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+___________ test_batch_chunk_independence_from_same_wave_precompute ____________
+tests/test_tdi_wdm_staged.py:307: in test_batch_chunk_independence_from_same_wave_precompute
+    geom = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+__________ test_tdi_assembly_accumulate_matches_batch_map_and_default __________
+tests/test_tdi_wdm_staged.py:357: in test_tdi_assembly_accumulate_matches_batch_map_and_default
+    wave, kwargs, n_f = _build_staged_wave_precomp(seed=7777)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_tdi_wdm_staged.py:68: in _build_staged_wave_precomp
+    geom = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+____________________ test_invalid_tdi_assembly_mode_raises _____________________
+tests/test_tdi_wdm_staged.py:400: in test_invalid_tdi_assembly_mode_raises
+    wave, kwargs, n_f = _build_staged_wave_precomp(seed=8888)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_tdi_wdm_staged.py:68: in _build_staged_wave_precomp
+    geom = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+_____________ test_production_backend_works_through_new_split_api ______________
+tests/test_tdi_wdm_staged.py:492: in test_production_backend_works_through_new_split_api
+    geom_production = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+____ test_geometry_stage_calls_shift_precompute_but_waveform_stage_does_not ____
+tests/test_tdi_wdm_staged.py:562: in test_geometry_stage_calls_shift_precompute_but_waveform_stage_does_not
+    geom = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+____ test_waveform_stage_reuses_geometry_wdm_and_skips_wdm_context_rebuild _____
+tests/test_tdi_wdm_staged.py:591: in test_waveform_stage_reuses_geometry_wdm_and_skips_wdm_context_rebuild
+    geom = precompute_gen2_michelson_wdm_geometry(
+src/WDM_LISAresponse/code/lisa_response/TDI_with_one_arm_plan.py:788: in precompute_gen2_michelson_wdm_geometry
+    tdi_plan = Gen2MichelsonWDMPlan.build(
+src/WDM_LISAresponse/code/lisa_response/gen2_michelson_plan.py:110: in build
+    shift_plan = VariableShiftBatchPlan.build(
+E   TypeError: VariableShiftBatchPlan.build() got an unexpected keyword argument 'tl_tp_table_points'
+=============================== warnings summary ===============================
+../../../miniforge3/envs/lisatools/lib/python3.13/site-packages/few/utils/citations.py:20
+  /Users/tomekkinowski/miniforge3/envs/lisatools/lib/python3.13/site-packages/few/utils/citations.py:20: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class HyphenUnderscoreAliasModel(BaseModel):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_runtime_sky_pipeline.py::test_static_pipeline_reuses_orbits_wdm_table_and_tdi_across_sky
+FAILED tests/test_runtime_sky_pipeline.py::test_waveform_stage_contains_no_sky_specific_links
+FAILED tests/test_tdi_wdm_staged.py::test_backward_compatible_wrapper_matches_direct_call
+FAILED tests/test_tdi_wdm_staged.py::test_new_split_matches_old_staged_and_direct
+FAILED tests/test_tdi_wdm_staged.py::test_geometry_reuse_across_waveforms_and_no_waveform_payload_in_geom
+FAILED tests/test_tdi_wdm_staged.py::test_geometry_carries_custom_a_frac_into_wdm_object
+FAILED tests/test_tdi_wdm_staged.py::test_batch_chunk_independence_from_same_wave_precompute
+FAILED tests/test_tdi_wdm_staged.py::test_tdi_assembly_accumulate_matches_batch_map_and_default
+FAILED tests/test_tdi_wdm_staged.py::test_invalid_tdi_assembly_mode_raises - ...
+FAILED tests/test_tdi_wdm_staged.py::test_production_backend_works_through_new_split_api
+FAILED tests/test_tdi_wdm_staged.py::test_geometry_stage_calls_shift_precompute_but_waveform_stage_does_not
+FAILED tests/test_tdi_wdm_staged.py::test_waveform_stage_reuses_geometry_wdm_and_skips_wdm_context_rebuild
+12 failed, 27 passed, 1 warning in 7.68s
