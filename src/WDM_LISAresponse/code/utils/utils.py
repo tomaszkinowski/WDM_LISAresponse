@@ -1,6 +1,15 @@
 """
-Utility functions for WDM_LISAresponse
+Utility functions for WDM_LISAresponse.
+
+Everything here is support machinery rather than physics: WDM tiling
+arithmetic, signal comparison, argument resolution for the response API,
+generic interpolation on a uniform grid, and the memory budgeting that decides
+how the response blocks its work. The response model itself - the link
+geometry, the sky basis and the one-arm kernel - lives in
+``lisa_response.response_sub``.
 """
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 
@@ -287,3 +296,280 @@ def wdm_mismatch(w1, w2, return_raw_overlap=False):
         return float(overlap), float(mismatch), float(raw_overlap)
 
     return float(overlap), float(mismatch)
+
+
+def resolve_link_index(specifier, link_convention : tuple) -> int:
+    r"""
+    Resolve one link specifier to its index in a link convention.
+
+    Parameters
+    ----------
+    specifier : int or tuple
+        Either a position in ``link_convention``, negative counting from the
+        end as in ``numpy``, or a ``(sender, receiver)`` pair naming the link
+        directly.
+    link_convention : tuple
+        Directed links as ``(sender, receiver)`` pairs, in the order that
+        indexes axis 0 of the geometry arrays.
+
+    Returns
+    -------
+    index : int
+        Position of the link in ``link_convention``.
+    """
+    num_links = len(link_convention)
+
+    if isinstance(specifier, (int, np.integer)):
+        index = int(specifier)
+
+        assert -num_links <= index < num_links, \
+                    f"Link index must lie in [-{num_links}, {num_links}), " \
+                    f"got {index}."
+
+        return index % num_links
+
+    pair = tuple(int(entry) for entry in specifier)
+
+    assert pair in link_convention, \
+                f"Link {pair} is not in the link convention " \
+                f"{link_convention}. Build a LISAresponse whose " \
+                f"link_convention contains it, or pass an index instead."
+
+    return link_convention.index(pair)
+
+
+def resolve_link_selection(link, link_convention : tuple):
+    r"""
+    Resolve the ``link`` argument of the response methods.
+
+    A *tuple* of two integers is read as a ``(sender, receiver)`` pair,
+    following the convention used everywhere else in this package; a *list* is
+    read as a sequence of specifiers, each of which may itself be an index or a
+    pair. So ``(2, 1)`` is one link, while ``[2, 1]`` is two of them, namely
+    ``link_convention[2]`` and ``link_convention[1]``.
+
+    Selecting a single link with a scalar specifier drops the link axis from
+    the result, the same way ``array[0]`` drops an axis where ``array[[0]]``
+    keeps it.
+
+    This lives here rather than on ``LISAresponse`` because it is pure tuple
+    lookup that happens to need one attribute. As a method it could only be
+    exercised by building a whole instance, which means an orbit provider and a
+    WDM transform; as a function it is testable on a bare tuple.
+
+    Parameters
+    ----------
+    link : None or int or tuple or list
+        ``None`` selects every link in ``link_convention``. Otherwise an index,
+        a ``(sender, receiver)`` pair, or a list of either.
+    link_convention : tuple
+        Directed links as ``(sender, receiver)`` pairs.
+
+    Returns
+    -------
+    indices : tuple
+        Positions in ``link_convention``, in the requested order.
+    drop_axis : bool
+        Whether the caller should drop the link axis from its output.
+    """
+    if link is None:
+        return tuple(range(len(link_convention))), False
+
+    if isinstance(link, (int, np.integer)):
+        return (resolve_link_index(link, link_convention),), True
+
+    if (isinstance(link, tuple) and len(link) == 2
+            and all(isinstance(entry, (int, np.integer)) for entry in link)):
+        return (resolve_link_index(link, link_convention),), True
+
+    indices = tuple(
+        resolve_link_index(entry, link_convention) for entry in link
+    )
+
+    assert len(indices) > 0, \
+                "At least one link must be selected, got an empty link."
+
+    return indices, False
+
+
+def interpolate_uniform_grid(samples,
+                             grid_start : float,
+                             grid_step : float,
+                             query_times,
+                             num_taps : int = 12):
+    r"""
+    Interpolate uniformly sampled series at arbitrary times.
+
+    The samples sit at :math:`t_k = t_{\mathrm{start}} + k\,\delta t`, so the
+    sample coordinate of a query time is :math:`(t - t_{\mathrm{start}})/
+    \delta t` and no search is needed - the stencil follows from
+    :math:`\lfloor \cdot \rfloor` alone.
+
+    The scheme is Lagrange interpolation on ``num_taps`` samples centred on the
+    query, with the classical weights
+
+    .. math::
+
+        h(t) = \sum_j w_j(x)\, p_j , \qquad
+        w_j(x) = \prod_{m \neq j} \frac{x - o_m}{o_j - o_m} ,
+
+    where :math:`x` is the fractional part of the sample coordinate and
+    :math:`o_j` runs over the integer offsets :math:`-n/2+1 \ldots n/2`. The
+    denominators are products of integers, known at trace time, so each weight
+    costs one running product and a single division by a constant.
+
+    The stencil is local, gathering taps rather than solving a system over
+    the whole record, which is what lets the response quadrature evaluate it at
+    arbitrary retarded phases.
+
+    Twelve taps is the smallest even count whose error stays below the
+    :math:`10^{-4}` local-delay term of the wavelet path across the whole
+    usable band, EMRI harmonics included: against an exact sinusoid it gives
+    1.4e-5 at 6.7 samples per cycle and ~1e-14 at 33, where the four-tap
+    Catmull-Rom this replaced gives 1.5e-2 and 8.0e-5. Sixteen costs 1.6 times
+    as much and buys nothing real, saturating against float64 and, sooner,
+    against the error the waveform samples already carry.
+
+    Taps falling off either end are clamped to the end sample; queries outside
+    the sampled span return zero. The two are deliberately separate, since
+    dropping out-of-range taps would leave the weights unnormalised and ramp a
+    delayed waveform to zero across a cell instead of stopping it.
+
+    Parameters
+    ----------
+    samples : jnp.ndarray
+        Sampled series. Array shape=(batch, num_samples).
+    grid_start : float
+        Time of sample zero, :math:`t_{\mathrm{start}}`, in seconds.
+    grid_step : float
+        Sample spacing, :math:`\delta t`, in seconds.
+    query_times : jnp.ndarray
+        Times at which to evaluate, in seconds. Array shape=(batch, num_query),
+        sharing the leading axis with ``samples``.
+    num_taps : int
+        Stencil width. Must be even and at least two, and is a compile-time
+        constant since it sets the loop structure. Optional.
+
+    Returns
+    -------
+    values : jnp.ndarray
+        Interpolated values. Array shape=(batch, num_query).
+    """
+    assert num_taps >= 2 and num_taps % 2 == 0, \
+                f"num_taps must be even and at least two, got {num_taps=}."
+
+    num_samples = samples.shape[-1]
+
+    coordinate = (query_times - grid_start) / grid_step
+    base = jnp.floor(coordinate)
+    fraction = coordinate - base
+    index = base.astype(
+        jnp.int64 if jax.config.read("jax_enable_x64") else jnp.int32
+    )
+
+    half = num_taps // 2
+    offsets = tuple(range(-half + 1, half + 1))
+
+    values = jnp.zeros_like(fraction)
+    for node in offsets:
+        # Numerator varies with the query; the denominator is an integer
+        # product fixed by the stencil, so it folds away at trace time.
+        numerator = jnp.ones_like(fraction)
+        denominator = 1
+        for other in offsets:
+            if other != node:
+                numerator = numerator * (fraction - other)
+                denominator *= node - other
+
+        taps = jnp.take_along_axis(
+            samples, jnp.clip(index + node, 0, num_samples - 1), axis=-1,
+        )
+        values = values + (numerator / denominator) * taps
+
+    return jnp.where(
+        (coordinate >= 0.0) & (coordinate <= num_samples - 1), values, 0.0,
+    )
+
+
+def resolve_time_chunk_size(num_samples : int,
+                            batch_size : int,
+                            num_links : int,
+                            output_domain : str = "time",
+                            memory_budget_bytes : float = 2 ** 30) -> int:
+    r"""
+    Choose a time-block length that keeps the response inside a byte budget.
+
+    The time-domain path allocates in two places, and only one of them can be
+    blocked.
+
+    The output itself, ``batch * num_links * num_samples`` elements, cannot be
+    blocked - it is the answer the caller asked for - so if that alone exceeds
+    the budget there is nothing to do but raise. What does scale with the block
+    length is the host geometry, ``80 * num_links`` bytes per sample, and the
+    quadrature working set, ``8 * batch * num_links`` per live array. The
+    geometry is the larger risk on a full grid, six links over four years at
+    5 s cadence being 4 GB, which is why it is rebuilt per block.
+
+    Neither ``num_integral_points`` nor ``num_taps`` appears, by construction:
+    both are swept one at a time rather than materialised, so they cost time
+    and not memory.
+
+    Parameters
+    ----------
+    num_samples : int
+        Length of the reception-time grid, :math:`N`.
+    batch_size : int
+        Number of sources evaluated together.
+    num_links : int
+        Number of directed links requested.
+    output_domain : str
+        Domain the response is returned in, ``"time"`` or ``"wdm"``. Optional.
+    memory_budget_bytes : float
+        Ceiling on the peak allocation, in bytes. Optional.
+
+    Returns
+    -------
+    chunk_size : int
+        Block length in samples, at least one and at most ``num_samples``.
+
+    Raises
+    ------
+    MemoryError
+        If the output array alone exceeds the budget.
+    """
+    # The response is always computed as a real time series, so a "time"
+    # output is one float64 per element. A "wdm" one is converted afterwards
+    # and holds the time series, the wavelet array and the transform's complex
+    # intermediate at once, so it is charged four times that.
+    output_bytes_per_element = {"time": 8, "wdm": 32}[output_domain]
+    output_bytes = (
+        output_bytes_per_element * batch_size * num_links * num_samples
+    )
+
+    if output_bytes >= memory_budget_bytes:
+        raise MemoryError(
+            f"The one-arm response output alone needs "
+            f"{output_bytes / 2**30:.2f} GiB "
+            f"({batch_size} sources x {num_links} links x {num_samples} "
+            f"samples, returned in the {output_domain!r} domain), which "
+            f"exceeds the {memory_budget_bytes / 2**30:.2f} GiB budget. "
+            f"Chunking cannot help - the output is not blockable. Request "
+            f"fewer links or sources per call, shorten the waveform, or raise "
+            f"memory_budget_bytes."
+        )
+
+    # Live (batch, links, chunk) float64 arrays at the peak of one quadrature
+    # node: query times, sample index, fractional part, then per tap a running
+    # numerator, a gathered tap and the accumulator, plus slack for the two
+    # quadrature sums. Scales with neither the tap count nor the node count,
+    # since both are accumulated one at a time. XLA fuses much of it, so this
+    # is an upper bound and the sizing it drives is conservative.
+    quadrature_working_arrays = 12
+    bytes_per_sample = (
+        80 * num_links
+        + 8 * quadrature_working_arrays * batch_size * num_links
+    )
+
+    chunk_size = int((memory_budget_bytes - output_bytes) // bytes_per_sample)
+
+    return max(1, min(chunk_size, int(num_samples)))
