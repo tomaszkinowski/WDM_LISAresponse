@@ -494,25 +494,25 @@ def interpolate_uniform_grid(samples,
 def resolve_time_chunk_size(num_samples : int,
                             batch_size : int,
                             num_links : int,
-                            output_domain : str = "time",
                             memory_budget_bytes : float = 2 ** 30) -> int:
     r"""
-    Choose a time-block length that keeps the response inside a byte budget.
+    Choose a time-block length that keeps working memory inside a budget.
 
-    The time-domain path allocates in two places, and only one of them can be
-    blocked.
+    The time-domain response allocates far more than it returns, and the excess
+    is invisible from the API: per block of ``chunk`` reception times it holds
+    ``80 * num_links * chunk`` bytes of host geometry - a light-travel time, a
+    unit vector and two positions per link and sample - and
+    ``8 * batch * num_links * chunk`` per live array of quadrature working set.
+    Over four years at 5 s cadence for six links that is 11 GiB of geometry and
+    14 GiB of working set against a 1 GiB result, which is why the geometry is
+    rebuilt per block rather than once up front.
 
-    The output itself, ``batch * num_links * num_samples`` elements, cannot be
-    blocked - it is the answer the caller asked for - so if that alone exceeds
-    the budget there is nothing to do but raise. What does scale with the block
-    length is the host geometry, ``80 * num_links`` bytes per sample, and the
-    quadrature working set, ``8 * batch * num_links`` per live array. The
-    geometry is the larger risk on a full grid, six links over four years at
-    5 s cadence being 4 GB, which is why it is rebuilt per block.
-
-    Neither ``num_integral_points`` nor ``num_taps`` appears, by construction:
-    both are swept one at a time rather than materialised, so they cost time
-    and not memory.
+    Only that working memory is budgeted here. The output is the caller's own
+    request, sized ``8 * batch * num_links * num_samples`` and obvious from the
+    arguments, so it is left to them exactly as elsewhere in the package rather
+    than second-guessed. Neither ``num_integral_points`` nor ``num_taps``
+    enters: both are swept one at a time rather than materialised, so they cost
+    time and not memory.
 
     Parameters
     ----------
@@ -522,42 +522,14 @@ def resolve_time_chunk_size(num_samples : int,
         Number of sources evaluated together.
     num_links : int
         Number of directed links requested.
-    output_domain : str
-        Domain the response is returned in, ``"time"`` or ``"wdm"``. Optional.
     memory_budget_bytes : float
-        Ceiling on the peak allocation, in bytes. Optional.
+        Ceiling on working memory, in bytes. Optional.
 
     Returns
     -------
     chunk_size : int
         Block length in samples, at least one and at most ``num_samples``.
-
-    Raises
-    ------
-    MemoryError
-        If the output array alone exceeds the budget.
     """
-    # The response is always computed as a real time series, so a "time"
-    # output is one float64 per element. A "wdm" one is converted afterwards
-    # and holds the time series, the wavelet array and the transform's complex
-    # intermediate at once, so it is charged four times that.
-    output_bytes_per_element = {"time": 8, "wdm": 32}[output_domain]
-    output_bytes = (
-        output_bytes_per_element * batch_size * num_links * num_samples
-    )
-
-    if output_bytes >= memory_budget_bytes:
-        raise MemoryError(
-            f"The one-arm response output alone needs "
-            f"{output_bytes / 2**30:.2f} GiB "
-            f"({batch_size} sources x {num_links} links x {num_samples} "
-            f"samples, returned in the {output_domain!r} domain), which "
-            f"exceeds the {memory_budget_bytes / 2**30:.2f} GiB budget. "
-            f"Chunking cannot help - the output is not blockable. Request "
-            f"fewer links or sources per call, shorten the waveform, or raise "
-            f"memory_budget_bytes."
-        )
-
     # Live (batch, links, chunk) float64 arrays at the peak of one quadrature
     # node: query times, sample index, fractional part, then per tap a running
     # numerator, a gathered tap and the accumulator, plus slack for the two
@@ -570,6 +542,6 @@ def resolve_time_chunk_size(num_samples : int,
         + 8 * quadrature_working_arrays * batch_size * num_links
     )
 
-    chunk_size = int((memory_budget_bytes - output_bytes) // bytes_per_sample)
+    chunk_size = int(memory_budget_bytes // bytes_per_sample)
 
     return max(1, min(chunk_size, int(num_samples)))

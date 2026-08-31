@@ -409,8 +409,12 @@ class LISAresponse:
             explicitly only to reproduce a particular blocking; the result does
             not otherwise depend on it. Optional.
         memory_budget_bytes : float
-            Ceiling on the peak allocation, in bytes. Raising it lets longer
-            blocks run at fewer host round trips. Optional.
+            Ceiling on *working* memory, in bytes - the per-block geometry and
+            quadrature temporaries, which at four years and six links run to
+            tens of gibibytes if unblocked. The returned array is not counted:
+            its size follows from the arguments and is the caller's to judge.
+            Raising this lets longer blocks run at fewer host round trips.
+            Optional.
 
         Returns
         -------
@@ -493,7 +497,6 @@ class LISAresponse:
                 self.N,
                 batch_size,
                 num_selected,
-                output_domain=out_domain,
                 memory_budget_bytes=memory_budget_bytes,
             )
         else:
