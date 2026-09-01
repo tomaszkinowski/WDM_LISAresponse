@@ -6,9 +6,11 @@ import numpy as np
 from functools import partial
 
 from .response_sub import (
+    broadcast_sources,
     build_link_geometry,
-    build_sky_basis,
-    one_arm_time_domain_chunk,
+    finalise_response,
+    one_arm_response_wdm,
+    one_arm_time_domain_blocked,
 )
 from ..utils.utils import (
     resolve_link_selection,
@@ -438,9 +440,6 @@ class LISAresponse:
         of the method, and the wavelet path has its own edge behaviour, so
         compare the two on the interior or pad both.
         """
-        assert in_domain in ("time", "wdm"), \
-                    f"in_domain must be 'time' or 'wdm', got {in_domain!r}."
-
         assert out_domain in ("time", "wdm"), \
                     f"out_domain must be 'time' or 'wdm', got {out_domain!r}."
 
@@ -448,138 +447,211 @@ class LISAresponse:
                     f"num_integral_points must be at least two to form a " \
                     f"trapezoid, got {num_integral_points=}."
 
-        num_integral_points = int(num_integral_points)
-
         link_indices, drop_link_axis = resolve_link_selection(
             link, self.link_convention,
         )
         links = tuple(self.link_convention[index] for index in link_indices)
-        num_selected = len(links)
 
-        h_plus = jnp.asarray(h_plus)
-        h_cross = jnp.asarray(h_cross)
-
-        expected = (self.Nt, self.Nf) if in_domain == "wdm" else (self.N,)
-        for name, array in (("h_plus", h_plus), ("h_cross", h_cross)):
-            assert array.shape[-len(expected):] == expected, \
-                        f"With {in_domain=}, {name} must end in axes " \
-                        f"{expected}, got {array.shape=}."
-
-        # The response model is a time-domain one, so wavelet input is
-        # inverted here and everything downstream sees a series on the sample
-        # grid.
-        if in_domain == "wdm":
-            h_plus = self.wdm_class.idwt(h_plus)
-            h_cross = self.wdm_class.idwt(h_cross)
-
-        # Leading axes broadcast together; the batch is then flattened to one
-        # axis so the jitted kernel sees a fixed rank.
-        theta = jnp.asarray(theta, dtype=float)
-        phi = jnp.asarray(phi, dtype=float)
-
-        batch_shape = jnp.broadcast_shapes(
-            theta.shape, phi.shape, h_plus.shape[:-1], h_cross.shape[:-1],
+        h_plus, h_cross, theta, phi, batch_shape = broadcast_sources(
+            self.wdm_class, theta, phi, h_plus, h_cross, in_domain,
+            target_domain="time",
         )
-        batch_size = int(np.prod(batch_shape, dtype=int))
-
-        u, v, n = build_sky_basis(
-            jnp.broadcast_to(theta, batch_shape).reshape(batch_size),
-            jnp.broadcast_to(phi, batch_shape).reshape(batch_size),
-        )
-
-        h_plus = jnp.broadcast_to(
-            h_plus, batch_shape + (self.N,)).reshape(batch_size, self.N)
-        h_cross = jnp.broadcast_to(
-            h_cross, batch_shape + (self.N,)).reshape(batch_size, self.N)
 
         if time_chunk_size is None:
             time_chunk_size = resolve_time_chunk_size(
                 self.N,
-                batch_size,
-                num_selected,
+                h_plus.shape[0],
+                len(links),
                 memory_budget_bytes=memory_budget_bytes,
             )
-        else:
-            time_chunk_size = min(int(time_chunk_size), self.N)
+        time_chunk_size = min(int(time_chunk_size), self.N)
 
-            assert time_chunk_size > 0, \
-                        f"time_chunk_size must be positive, got " \
-                        f"{time_chunk_size=}."
+        assert time_chunk_size > 0, \
+                    f"time_chunk_size must be positive, got " \
+                    f"{time_chunk_size=}."
 
-        blocks = []
-        for start in range(0, self.N, time_chunk_size):
-            stop = min(start + time_chunk_size, self.N)
+        response = one_arm_time_domain_blocked(
+            self.orbits_class,
+            links,
+            self.t0,
+            self.dt,
+            self.N,
+            time_chunk_size,
+            h_plus,
+            h_cross,
+            theta,
+            phi,
+            num_integral_points=int(num_integral_points),
+            num_taps=num_taps,
+        )
 
-            # Held on the host: the geometry solve calls the orbit provider,
-            # and the block is padded to a fixed length by repeating its last
-            # reception time so the jitted kernel compiles once.
-            chunk_times = self.t0 + np.arange(start, stop) * self.dt
-            padding = time_chunk_size - chunk_times.size
-            if padding:
-                chunk_times = np.pad(chunk_times, (0, padding), mode="edge")
-
-            light_travel_time, link_direction, receiver_position, \
-                sender_position = build_link_geometry(
-                    chunk_times,
-                    self.orbits_class,
-                    links,
-                    return_sender_position=True,
-                )
-
-            block = one_arm_time_domain_chunk(
-                h_plus,
-                h_cross,
-                u,
-                v,
-                n,
-                jnp.asarray(light_travel_time),
-                jnp.asarray(link_direction),
-                jnp.asarray(receiver_position),
-                jnp.asarray(sender_position),
-                jnp.asarray(chunk_times),
-                self.t0,
-                self.dt,
-                num_integral_points=num_integral_points,
-                num_taps=num_taps,
-            )
-
-            blocks.append(block[..., :stop - start] if padding else block)
-
-        response = jnp.concatenate(blocks, axis=-1)
-
-        if out_domain == "wdm":
-            # One link at a time: the transform's complex intermediate is the
-            # size of its input, so driving all links through it at once would
-            # multiply the peak by the number of links for no gain.
-            response = jnp.stack(
-                [self.wdm_class.dwt(response[:, index])
-                 for index in range(num_selected)],
-                axis=1,
-            )
-            response = response.reshape(
-                batch_shape + (num_selected, self.Nt, self.Nf))
-        else:
-            response = response.reshape(batch_shape + (num_selected, self.N))
-
-        # The link axis sits just after the batch axes in either domain.
-        if drop_link_axis:
-            response = jnp.squeeze(response, axis=len(batch_shape))
-
-        return response
+        return finalise_response(
+            self.wdm_class, response, "time", out_domain,
+            batch_shape, len(links), drop_link_axis,
+        )
 
     def one_arm_response(self,
-                        theta,
-                        phi,
-                        h_plus,
-                        h_cross,
-                        in_domain,
-                        out_domain,
-                        link,):
+                         theta,
+                         phi,
+                         h_plus,
+                         h_cross,
+                         in_domain : str = "wdm",
+                         out_domain : str = "wdm",
+                         link = None,
+                         lag_block : int = None):
         r"""
-        Compute the one-arm response in the time-freuquency domain.
-        """
+        Compute the one-arm response in the time-frequency domain.
 
-    def __call__(self, x : jnp.ndarray) -> jnp.ndarray:
-        r"""
-        Compute the time-frequency to time-frequency lisa respone for all six links.
+        The production path. For each directed link the retarded-phase integral
+        is evaluated in closed form per wavelet pixel and the result is carried
+        to the retarded phase by the WDM time-shift operator, never returning
+        to the time series:
+
+        .. math::
+
+            w^{sr}_{nm} = \mathcal{S}[\delta_n] \left\{
+                \tfrac{1}{2} \ell_{sr} \,
+                \mathrm{sinc}\!\left( 2 f_m \tau_n \right)
+                \left( F^+ w^{h_+}_{nm}
+                     + F^\times w^{h_\times}_{nm} \right) \right\} ,
+
+        with :math:`\tau_n` the half-window, :math:`\delta_n` the delay to the
+        window centre, and :math:`\mathcal{S}` the variable time shift. The
+        model is stated in full in ``response_sub.one_arm_response_wdm``. The
+        result is a *time*, in seconds, not the optical path length.
+
+        Evaluating the sinc at the pixel's own centre frequency is the
+        local-delay approximation, which costs an L2 of order
+        :math:`10^{-4}` - the dominant error in this pipeline, and what
+        ``one_arm_response_time_domain`` exists to measure.
+
+        Batching follows the WDM transform: leading axes are free and
+        broadcast, with the array's own axes last. ``theta`` and ``phi``
+        broadcast against the leading axes of the waveforms, so one sky
+        position with a stack of waveforms, a stack of sky positions with one
+        waveform, and matched stacks all work.
+
+        Parameters
+        ----------
+        theta : jnp.ndarray or float
+            Polar angle of the source direction, in radians. Array
+            shape=(...,), broadcast against ``phi`` and the waveforms.
+        phi : jnp.ndarray or float
+            Azimuthal angle of the source direction, in radians. Array
+            shape=(...,), broadcast against ``theta`` and the waveforms.
+        h_plus : jnp.ndarray
+            Plus polarisation, in the domain named by ``in_domain``.
+        h_cross : jnp.ndarray
+            Cross polarisation, in the domain named by ``in_domain``.
+        in_domain : str
+            Domain in which the waveforms are supplied. ``"wdm"`` is wavelet
+            coefficients, shape (..., Nt, Nf); ``"time"`` is a real series on
+            the ``times`` grid, shape (..., N), transformed here with
+            ``wdm_class.dwt``. Optional.
+        out_domain : str
+            Domain the coefficients are returned in, ``"wdm"`` or ``"time"``,
+            the latter via ``wdm_class.idwt``. Optional.
+        link : None or int or tuple or list
+            Which directed links to evaluate. ``None`` gives all of
+            ``link_convention``. A single index or ``(sender, receiver)`` pair
+            drops the link axis from the result; a list keeps it. Optional.
+        lag_block : int
+            Lags handled per iteration of the shift's inner sum. ``None``
+            unrolls it, which is fastest while :math:`L` is small; past
+            :math:`L \sim 30` the unrolled graph costs more in scheduling and
+            compile time than it saves, and a small block such as 8 wins.
+            Optional.
+
+        Returns
+        -------
+        response : jnp.ndarray
+            Link delay fluctuations :math:`\delta \ell_{sr}`, in seconds.
+            Array shape=(..., num_selected_links, Nt, Nf), or
+            (..., num_selected_links, N) in the ``"time"`` domain, with the
+            link axis absent when ``link`` selects a single link with a scalar
+            specifier.
+
+        Notes
+        -----
+        The time shift wraps periodically at the ends of the record rather than
+        running off it, so power leaving one end reappears at the other. Zero
+        padding the waveform is the caller's responsibility, as it is for
+        ``wdm_class.apply_variable_time_shift`` itself. This is the wavelet
+        path's counterpart to the edge behaviour noted on
+        ``one_arm_response_time_domain``, and the two differ, so compare the
+        paths on the interior of the record.
         """
+        assert out_domain in ("time", "wdm"), \
+                    f"out_domain must be 'time' or 'wdm', got {out_domain!r}."
+
+        link_indices, drop_link_axis = resolve_link_selection(
+            link, self.link_convention,
+        )
+        indices = jnp.asarray(link_indices)
+
+        wavelet_plus, wavelet_cross, theta, phi, batch_shape = (
+            broadcast_sources(
+                self.wdm_class, theta, phi, h_plus, h_cross, in_domain,
+                target_domain="wdm",
+            )
+        )
+
+        response = one_arm_response_wdm(
+            self.wdm_class,
+            self.filter_tables,
+            wavelet_plus,
+            wavelet_cross,
+            theta,
+            phi,
+            self.light_travel_time[indices],
+            self.link_direction[indices],
+            self.receiver_position[indices],
+            self.wavelet_freqs,
+            lag_block=lag_block,
+        )
+
+        return finalise_response(
+            self.wdm_class, response, "wdm", out_domain,
+            batch_shape, len(link_indices), drop_link_axis,
+        )
+
+    def __call__(self,
+                 theta,
+                 phi,
+                 h_plus,
+                 h_cross,
+                 lag_block : int = None) -> jnp.ndarray:
+        r"""
+        Compute the wavelet-domain response for all links.
+
+        The shortest path through the class, and the one a likelihood should
+        use: wavelet coefficients in, wavelet coefficients out, every link in
+        ``link_convention``, no domain conversion at either end. It is
+        ``one_arm_response`` at its defaults, which is to say the whole
+        calculation is one jitted call per link with nothing on the host.
+
+        Parameters
+        ----------
+        theta : jnp.ndarray or float
+            Polar angle of the source direction, in radians.
+            Array shape=(...,).
+        phi : jnp.ndarray or float
+            Azimuthal angle of the source direction, in radians.
+            Array shape=(...,).
+        h_plus : jnp.ndarray
+            Wavelet coefficients of :math:`h_+`. Array shape=(..., Nt, Nf).
+        h_cross : jnp.ndarray
+            Wavelet coefficients of :math:`h_\times`.
+            Array shape=(..., Nt, Nf).
+        lag_block : int
+            Lags per iteration of the shift's inner sum. Optional.
+
+        Returns
+        -------
+        response : jnp.ndarray
+            Link delay fluctuations, in seconds, as wavelet coefficients.
+            Array shape=(..., num_links, Nt, Nf).
+        """
+        return self.one_arm_response(
+            theta, phi, h_plus, h_cross, lag_block=lag_block,
+        )

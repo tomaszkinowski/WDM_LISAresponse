@@ -14,16 +14,21 @@ host in ``numpy``: orbit providers evaluate SciPy splines
 ``jit``. The results are converted to ``jnp`` at the boundary by the caller, so
 the apply stage receives device arrays.
 
-The *apply* half - the sky basis, the antenna-pattern factors and the
-time-domain one-arm kernel - depends on the source parameters and the
-waveform, and runs in ``jnp`` under ``jit``. Following the rule documented on
-:class:`LISAresponse`, every one of these is a module-level function taking its
-arrays as explicit arguments rather than a method reading them off ``self``.
+The *apply* half is pure ``jnp`` and traces cleanly. It is written as small
+named steps - the source basis, the antenna-pattern factors, the angular
+geometry of each path, the detector amplitudes, the batched shift, the domain
+conversion - composed by two jitted entry points, ``one_arm_time_domain_chunk``
+and ``one_arm_response_wdm``. Only those two carry ``@jax.jit``: the steps are
+plain functions, so XLA inlines them into the caller and fuses across the
+boundaries. Splitting the work this way is therefore free, and it is what lets
+``response.py`` read as a sequence of named physical operations while the
+detail stays findable here.
 
-Both halves are physics. The machinery that surrounds them but describes no
-part of the response - resolving the ``link`` selector, interpolating a
-uniformly sampled series, and budgeting the memory that decides the block
-length - lives in ``utils.utils`` instead.
+Following the rule documented on :class:`LISAresponse`, every one of these
+takes its arrays as explicit arguments rather than reading them off ``self``.
+Machinery that describes no part of the response - resolving the ``link``
+selector, interpolating a uniformly sampled series and budgeting memory -
+lives in ``utils.utils`` instead.
 """
 
 from functools import partial
@@ -384,12 +389,528 @@ def antenna_pattern_factors(link_direction, u, v):
     return r_dot_u ** 2 - r_dot_v ** 2, 2.0 * r_dot_u * r_dot_v
 
 
+def resolve_domain(wdm_class, array, from_domain : str, to_domain : str):
+    r"""
+    Move an array between the time and wavelet representations.
+
+    A single place for the ``dwt``/``idwt`` decision, used on the way in by
+    ``prepare_sources`` and on the way out by ``finalise_response``, so neither
+    has to know which transform is needed.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``dwt`` and ``idwt``.
+    array : jnp.ndarray
+        Array in the ``from_domain`` representation, shape (..., N) for
+        ``"time"`` or (..., Nt, Nf) for ``"wdm"``.
+    from_domain : str
+        Representation ``array`` is in, ``"time"`` or ``"wdm"``.
+    to_domain : str
+        Representation wanted, ``"time"`` or ``"wdm"``.
+
+    Returns
+    -------
+    array : jnp.ndarray
+        The same data in ``to_domain``; the input unchanged when the two agree.
+    """
+    if from_domain == to_domain:
+        return array
+
+    return (wdm_class.dwt(array) if to_domain == "wdm"
+            else wdm_class.idwt(array))
+
+
+def compute_angular_geometry_td(theta,
+                                phi,
+                                light_travel_time,
+                                link_direction,
+                                receiver_position,
+                                sender_position,
+                                reception_times):
+    r"""
+    Sky-dependent quantities for the time-domain response.
+
+    Everything the quadrature needs from the source direction: the antenna
+    response, the two ends of the retarded-phase window, and the projection of
+    the propagation direction on the link.
+
+    The window runs between the retarded wave phase at emission and at
+    reception,
+
+    .. math::
+
+        \xi_r = t - \hat{\Omega}\cdot x_r(t)/c , \qquad
+        \xi_s = t - \ell_{sr}(t)
+                  - \hat{\Omega}\cdot x_s(t-\ell_{sr})/c ,
+
+    both formed from the positions the geometry solve produced rather than
+    from the identity :math:`\xi_r - \xi_s = \ell_{sr}(1 -
+    \hat{\Omega}\cdot\hat{r}_{sr})`. The two agree to :math:`10^{-12}` s, so
+    this is not an accuracy choice: the definition is used because this is the
+    path whose job is to be checkable, and because it survives a geometry term
+    that breaks that relation.
+
+    Parameters
+    ----------
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,). The sky
+        basis is built here rather than passed in: it is angular geometry, and
+        nothing outside this function needs it.
+    light_travel_time : jnp.ndarray
+        :math:`\ell_{sr}`, in seconds. Array shape=(num_links, chunk).
+    link_direction : jnp.ndarray
+        :math:`\hat{r}_{sr}`. Array shape=(num_links, chunk, 3).
+    receiver_position : jnp.ndarray
+        :math:`x_r`, in metres. Array shape=(num_links, chunk, 3).
+    sender_position : jnp.ndarray
+        :math:`x_s` at emission, in metres. Array shape=(num_links, chunk, 3).
+    reception_times : jnp.ndarray
+        Reception times, in seconds. Array shape=(chunk,).
+
+    Returns
+    -------
+    projection_plus, projection_cross : jnp.ndarray
+        Antenna-pattern factors. Array shape=(batch, num_links, chunk).
+    xi_receive : jnp.ndarray
+        Retarded phase at reception, :math:`\xi_r`, in seconds. Same shape.
+    tau : jnp.ndarray
+        Effective light travel time :math:`\tau_{sr} = \xi_r - \xi_s`, in
+        seconds - the same quantity ``compute_angular_geometry_wdm`` reaches
+        through the identity. Same shape.
+    omega_dot_direction : jnp.ndarray
+        :math:`\hat{\Omega}\cdot\hat{r}_{sr}`, which sets the response
+        prefactor. Same shape.
+    """
+    u, v, n = build_sky_basis(theta, phi)
+    propagation_direction = -n
+
+    projection_plus, projection_cross = antenna_pattern_factors(
+        link_direction, u, v,
+    )
+
+    # (batch, num_links, chunk) from (batch, 3) against (num_links, chunk, 3).
+    omega_dot_direction = jnp.tensordot(
+        propagation_direction, link_direction, axes=([-1], [-1]),
+    )
+    omega_dot_receiver = jnp.tensordot(
+        propagation_direction, receiver_position / c, axes=([-1], [-1]),
+    )
+    omega_dot_sender = jnp.tensordot(
+        propagation_direction, sender_position / c, axes=([-1], [-1]),
+    )
+
+    xi_receive = reception_times - omega_dot_receiver
+    xi_emit = reception_times - light_travel_time - omega_dot_sender
+
+    return (projection_plus, projection_cross, xi_receive,
+            xi_receive - xi_emit, omega_dot_direction)
+
+
+def compute_angular_geometry_wdm(theta,
+                                 phi,
+                                 light_travel_time,
+                                 link_direction):
+    r"""
+    Sky-dependent quantities for the wavelet response.
+
+    The antenna response and :math:`\tau_{sr}`, the effective light travel
+    time of the link measured along the gravitational-wave propagation
+    direction,
+
+    .. math::
+
+        \tau_{sr}(t_n) = \ell_{sr}(t_n)
+            \left( 1 + \hat{n}\cdot\hat{r}_{sr}(t_n) \right) .
+
+    This is the width of the retarded-phase window the wave is averaged over,
+    :math:`\tau_{sr} = \xi_r - \xi_s`, so it is the same quantity
+    ``compute_angular_geometry_td`` returns the ends of - reached here through
+    the identity, since the wavelet path stores no sender position.
+
+    The factor :math:`(1 + \hat{n}\cdot\hat{r}_{sr})` is the closing rate
+    between photon and wavefront. It vanishes when the wave travels along the
+    arm with the photon, which surfs the wavefront and accumulates no phase;
+    it is :math:`\ell_{sr}` for a wave crossing the arm, and :math:`2\ell_{sr}`
+    for one travelling against the photon.
+
+    Nothing here carries a frequency axis, so these stay
+    :math:`(\ldots, N_t)` and only ``compute_detector_amplitudes`` builds the
+    large arrays.
+
+    Parameters
+    ----------
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,). The sky
+        basis is built here rather than passed in: it is angular geometry.
+    light_travel_time : jnp.ndarray
+        :math:`\ell_{sr}(t_n)`, in seconds. Array shape=(num_links, Nt).
+    link_direction : jnp.ndarray
+        :math:`\hat{r}_{sr}(t_n)`. Array shape=(num_links, Nt, 3).
+
+    Returns
+    -------
+    projection_plus, projection_cross : jnp.ndarray
+        Antenna-pattern factors. Array shape=(batch, num_links, Nt).
+    tau : jnp.ndarray
+        Effective light travel time :math:`\tau_{sr}`, in seconds. Same shape.
+    source_direction : jnp.ndarray
+        :math:`\hat{n}`, returned because ``compute_time_shifts`` needs it to
+        form :math:`\hat{n}\cdot x_r/c`. Array shape=(batch, 3).
+    """
+    u, v, n = build_sky_basis(theta, phi)
+
+    projection_plus, projection_cross = antenna_pattern_factors(
+        link_direction, u, v,
+    )
+
+    direction_dot_source = jnp.tensordot(
+        n, link_direction, axes=([-1], [-1]),
+    )
+    tau = light_travel_time * (1.0 + direction_dot_source)
+
+    return projection_plus, projection_cross, tau, n
+
+
+def compute_time_shifts(source_direction, receiver_position, tau):
+    r"""
+    Delay carrying each pixel to the centre of its retarded-phase window.
+
+    .. math::
+
+        \delta_n = \hat{n}\cdot x_r(t_n)/c - \tfrac{1}{2}\tau_{sr}(t_n)
+
+    The wave reaching the receiver at :math:`t_n` was sampled, on average, at
+    :math:`t_n + \delta_n`: the first term is the plane-wave phase at the
+    receiver, the second steps back by half the effective light travel time,
+    to the middle of the window.
+
+    Parameters
+    ----------
+    source_direction : jnp.ndarray
+        :math:`\hat{n}`, from ``compute_angular_geometry_wdm``.
+        Array shape=(batch, 3).
+    receiver_position : jnp.ndarray
+        :math:`x_r(t_n)`, in metres. Array shape=(num_links, Nt, 3).
+    tau : jnp.ndarray
+        Effective light travel time, in seconds.
+        Array shape=(batch, num_links, Nt).
+
+    Returns
+    -------
+    time_shift : jnp.ndarray
+        :math:`\delta_n`, in seconds. Array shape=(batch, num_links, Nt).
+    """
+    return jnp.tensordot(
+        source_direction / c, receiver_position, axes=([-1], [-1]),
+    ) - 0.5 * tau
+
+
+def compute_detector_amplitudes(light_travel_time,
+                                projection_plus,
+                                projection_cross,
+                                tau,
+                                wavelet_freqs):
+    r"""
+    Per-pixel amplitudes of the one-arm transfer function.
+
+    .. math::
+
+        A^{+,\times}_{nm} = \tfrac{1}{2} \ell_{sr}(t_n) F^{+,\times}(t_n)
+            \, \mathrm{sinc}\!\left( f_m \tau_{sr}(t_n) \right)
+
+    The sinc is the window average of a wave at the pixel's centre frequency:
+    averaging :math:`e^{2\pi i f \xi}` over a window of width
+    :math:`\tau_{sr}` gives exactly :math:`\mathrm{sinc}(f \tau_{sr})`, the
+    closed form the time-domain path reaches by quadrature instead.
+
+    Evaluating it at :math:`f_m` rather than at the wave's true frequency is
+    the *local-delay approximation*, the dominant error in this pipeline: L2
+    of order :math:`10^{-4}`, mismatch :math:`10^{-8}`, for a source on a band
+    centre, rising to :math:`5\times10^{-3}` for one halfway between two.
+
+    This is where the frequency axis enters, so these are the first arrays of
+    size :math:`(\ldots, N_t, N_f)`.
+
+    Parameters
+    ----------
+    light_travel_time : jnp.ndarray
+        :math:`\ell_{sr}(t_n)`, in seconds. Array shape=(num_links, Nt).
+    projection_plus, projection_cross : jnp.ndarray
+        Antenna-pattern factors. Array shape=(batch, num_links, Nt).
+    tau : jnp.ndarray
+        Effective light travel time :math:`\tau_{sr}`, in seconds. Same shape.
+    wavelet_freqs : jnp.ndarray
+        Pixel centre frequencies :math:`f_m`, in hertz. Array shape=(Nf,).
+
+    Returns
+    -------
+    amplitude_plus, amplitude_cross : jnp.ndarray
+        :math:`A^{+}` and :math:`A^{\times}`.
+        Array shape=(batch, num_links, Nt, Nf).
+    """
+    transfer = jnp.sinc(tau[..., jnp.newaxis] * wavelet_freqs)
+    scale = 0.5 * light_travel_time[..., jnp.newaxis]
+
+    return (scale * projection_plus[..., jnp.newaxis] * transfer,
+            scale * projection_cross[..., jnp.newaxis] * transfer)
+
+
+def apply_batch_shift(wdm_class,
+                      filter_tables,
+                      wavelet_coefficients,
+                      time_shift,
+                      lag_block : int = None):
+    r"""
+    Apply a per-link variable time shift to a batch of coefficient grids.
+
+    ``wdm_class.apply_variable_time_shift`` takes one :math:`(N_t, N_f)` grid
+    and one :math:`(N_t,)` delay, so the source and link axes are flattened
+    together and swept in a ``lax.scan``. Sequential is deliberate: vmapping
+    the six links measured 18.5% *slower* on CPU, because XLA already threads
+    within each operation.
+
+    The delay is passed with its own sign, not negated. Shifting the
+    *coefficients* is the active transformation and carries the opposite sign
+    to shifting the basis functions, since
+    :math:`\langle f(t-\delta), g_{nm}(t)\rangle = \langle f(t),
+    g_{nm}(t+\delta)\rangle`, so passing :math:`\delta_n` samples the wave at
+    :math:`t + \delta_n` - the window centre. The shift itself is good to
+    :math:`6\times10^{-7}` at :math:`L=25`, far below the local-delay term.
+
+    The shift wraps periodically at the ends of the record rather than running
+    off it, so roughly :math:`L` pixel rows at each end are contaminated; drop
+    :math:`L/2` per side before comparing against anything. Zero padding the
+    input remains the caller's responsibility.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``apply_variable_time_shift``.
+    filter_tables : jnp.ndarray
+        Time-delay filter tables, shape=(2, 2L+1, num_interp_points).
+    wavelet_coefficients : jnp.ndarray
+        Unshifted coefficients. Array shape=(batch, num_links, Nt, Nf).
+    time_shift : jnp.ndarray
+        Delay per pixel row, in seconds. Array shape=(batch, num_links, Nt).
+    lag_block : int
+        Lags per iteration of the inner sum; ``None`` unrolls. Optional.
+
+    Returns
+    -------
+    shifted : jnp.ndarray
+        Array shape=(batch, num_links, Nt, Nf).
+    """
+    batch_size, num_links, num_times, num_freqs = wavelet_coefficients.shape
+    flat = (batch_size * num_links,)
+
+    def shift_one_link(carry, inputs):
+        r"""Delay one link's coefficient grid."""
+        coefficients, delta = inputs
+
+        return carry, wdm_class.apply_variable_time_shift(
+            filter_tables, coefficients, delta, lag_block=lag_block,
+        )
+
+    _, shifted = jax.lax.scan(
+        shift_one_link,
+        None,
+        (wavelet_coefficients.reshape(flat + (num_times, num_freqs)),
+         time_shift.reshape(flat + (num_times,))),
+    )
+
+    return shifted.reshape(batch_size, num_links, num_times, num_freqs)
+
+
+@partial(jax.jit, static_argnames=("wdm_class", "lag_block"))
+def one_arm_response_wdm(wdm_class,
+                         filter_tables,
+                         wavelet_plus,
+                         wavelet_cross,
+                         theta,
+                         phi,
+                         light_travel_time,
+                         link_direction,
+                         receiver_position,
+                         wavelet_freqs,
+                         lag_block : int = None):
+    r"""
+    One-arm response in the wavelet domain, for every link and source.
+
+    This is the production path. Where ``one_arm_time_domain_chunk`` evaluates
+    the retarded-phase integral node by node, this evaluates it once per pixel
+    in closed form and then moves the result to the retarded phase with the
+    WDM time-shift operator, which is what makes it fast enough for a
+    likelihood.
+
+    The closed form is exact for a monochromatic wave. Averaging
+    :math:`e^{2\pi i f \xi}` over the window of width :math:`2\tau_n` gives
+    :math:`\mathrm{sinc}(2 f \tau_n)`, so the pixel amplitude is
+
+    .. math::
+
+        A^{+,\times}_{nm} = \tfrac{1}{2} \ell_{sr}(t_n) F^{+,\times}(t_n)
+            \, \mathrm{sinc}\!\left( 2 f_m \tau_n \right) ,
+
+    and the unshifted coefficients are
+    :math:`w^\xi = A^+ w^{h_+} + A^\times w^{h_\times}`. Evaluating the sinc at
+    the pixel's own centre frequency :math:`f_m` is the *local-delay
+    approximation*, and it is the dominant error in this pipeline at an L2 of
+    order :math:`10^{-4}` - far above the light-travel-time solve, the filter
+    tables, or anything the time-domain path contributes. That is why the
+    time-domain path exists to check it.
+
+    The shift then carries each pixel to :math:`t_n + \delta_n` through
+    ``wdm_class.apply_variable_time_shift``, which applies a time-varying delay
+    directly in the wavelet domain rather than returning to the time series.
+
+    Links are swept in a ``lax.scan``, not vmapped: vmapping the six links
+    measured 18.5% slower on CPU. The scan also keeps the :math:`(N_t, N_f)`
+    amplitudes from existing for every link at once.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``apply_variable_time_shift``. Static under
+        ``jit``.
+    filter_tables : jnp.ndarray
+        Time-delay filter tables, shape=(2, 2L+1, num_interp_points).
+    wavelet_plus : jnp.ndarray
+        Wavelet coefficients of :math:`h_+`. Array shape=(batch, Nt, Nf).
+    wavelet_cross : jnp.ndarray
+        Wavelet coefficients of :math:`h_\times`. Array shape=(batch, Nt, Nf).
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,).
+    light_travel_time : jnp.ndarray
+        :math:`\ell_{sr}(t_n)`, in seconds. Array shape=(num_links, Nt).
+    link_direction : jnp.ndarray
+        :math:`\hat{r}_{sr}(t_n)`. Array shape=(num_links, Nt, 3).
+    receiver_position : jnp.ndarray
+        :math:`x_r(t_n)`, in metres. Array shape=(num_links, Nt, 3).
+    wavelet_freqs : jnp.ndarray
+        Pixel centre frequencies :math:`f_m`, in hertz. Array shape=(Nf,).
+    lag_block : int
+        Lags handled per iteration of the shift's inner sum. ``None`` unrolls
+        it, fastest for small :math:`L`; for :math:`L \gtrsim 30` a small block
+        such as 8 avoids an unwieldy graph. Static under ``jit``. Optional.
+
+    Returns
+    -------
+    response : jnp.ndarray
+        Link delay fluctuations :math:`\delta \ell_{sr}`, in seconds, as
+        wavelet coefficients. Array shape=(batch, num_links, Nt, Nf).
+    """
+    projection_plus, projection_cross, tau, source_direction = (
+        compute_angular_geometry_wdm(
+            theta, phi, light_travel_time, link_direction,
+        )
+    )
+
+    time_shift = compute_time_shifts(source_direction, receiver_position, tau)
+
+    amplitude_plus, amplitude_cross = compute_detector_amplitudes(
+        light_travel_time, projection_plus, projection_cross, tau,
+        wavelet_freqs,
+    )
+
+    unshifted = (amplitude_plus * wavelet_plus[:, jnp.newaxis]
+                 + amplitude_cross * wavelet_cross[:, jnp.newaxis])
+
+    return apply_batch_shift(
+        wdm_class, filter_tables, unshifted, time_shift, lag_block=lag_block,
+    )
+
+
+def broadcast_sources(wdm_class,
+                      theta,
+                      phi,
+                      h_plus,
+                      h_cross,
+                      in_domain : str,
+                      target_domain : str):
+    r"""
+    Validate a batch of sources, put it in one domain and give it one axis.
+
+    Plumbing shared by both response methods, which differ only in the domain
+    their kernel wants the waveform in. The leading axes of ``theta``, ``phi``
+    and the two waveforms are broadcast against each other and then flattened
+    to a single batch axis, so the jitted kernels see a fixed rank whatever the
+    caller passed. ``batch_shape`` comes back so ``finalise_response`` can
+    restore the caller's axes at the end.
+
+    The sky basis is deliberately *not* built here: it is a physical quantity
+    with its own name, so the caller does ``build_sky_basis(theta, phi)`` on
+    the broadcast angles returned below, and it stays visible alongside the
+    other named steps.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``dwt``/``idwt`` and the grid sizes.
+    theta, phi : jnp.ndarray or float
+        Source direction angles, in radians. Array shape=(...,).
+    h_plus, h_cross : jnp.ndarray
+        Polarisations in the ``in_domain`` representation.
+    in_domain : str
+        Domain the waveforms arrive in, ``"time"`` or ``"wdm"``.
+    target_domain : str
+        Domain the kernel needs, ``"time"`` or ``"wdm"``.
+
+    Returns
+    -------
+    h_plus, h_cross : jnp.ndarray
+        Waveforms in ``target_domain``, with one leading batch axis.
+    theta, phi : jnp.ndarray
+        Angles broadcast to the batch and flattened. Array shape=(batch,).
+    batch_shape : tuple
+        The broadcast leading shape, for restoring the output's axes.
+    """
+    assert in_domain in ("time", "wdm"), \
+                f"in_domain must be 'time' or 'wdm', got {in_domain!r}."
+
+    h_plus = jnp.asarray(h_plus)
+    h_cross = jnp.asarray(h_cross)
+
+    given = ((wdm_class.Nt, wdm_class.Nf) if in_domain == "wdm"
+             else (wdm_class.N,))
+    for name, array in (("h_plus", h_plus), ("h_cross", h_cross)):
+        assert array.shape[-len(given):] == given, \
+                    f"With {in_domain=}, {name} must end in axes " \
+                    f"{given}, got {array.shape=}."
+
+    h_plus = resolve_domain(wdm_class, h_plus, in_domain, target_domain)
+    h_cross = resolve_domain(wdm_class, h_cross, in_domain, target_domain)
+
+    wanted = ((wdm_class.Nt, wdm_class.Nf) if target_domain == "wdm"
+              else (wdm_class.N,))
+
+    theta = jnp.asarray(theta, dtype=float)
+    phi = jnp.asarray(phi, dtype=float)
+
+    batch_shape = jnp.broadcast_shapes(
+        theta.shape,
+        phi.shape,
+        h_plus.shape[:-len(wanted)],
+        h_cross.shape[:-len(wanted)],
+    )
+    batch_size = int(np.prod(batch_shape, dtype=int))
+
+    return (
+        jnp.broadcast_to(
+            h_plus, batch_shape + wanted).reshape((batch_size,) + wanted),
+        jnp.broadcast_to(
+            h_cross, batch_shape + wanted).reshape((batch_size,) + wanted),
+        jnp.broadcast_to(theta, batch_shape).reshape(batch_size),
+        jnp.broadcast_to(phi, batch_shape).reshape(batch_size),
+        batch_shape,
+    )
+
+
 @partial(jax.jit, static_argnames=("num_integral_points", "num_taps"))
 def one_arm_time_domain_chunk(h_plus,
                               h_cross,
-                              u,
-                              v,
-                              n,
+                              theta,
+                              phi,
                               light_travel_time,
                               link_direction,
                               receiver_position,
@@ -466,12 +987,8 @@ def one_arm_time_domain_chunk(h_plus,
     h_cross : jnp.ndarray
         Cross polarisation sampled on the waveform grid.
         Array shape=(batch, num_samples).
-    u : jnp.ndarray
-        Sky-frame basis vector :math:`\hat{u}`. Array shape=(batch, 3).
-    v : jnp.ndarray
-        Sky-frame basis vector :math:`\hat{v}`. Array shape=(batch, 3).
-    n : jnp.ndarray
-        Source direction :math:`\hat{n}`. Array shape=(batch, 3).
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,).
     light_travel_time : jnp.ndarray
         Light-travel time :math:`\ell_{sr}`, in seconds, on this block of
         reception times. Array shape=(num_links, chunk).
@@ -502,28 +1019,13 @@ def one_arm_time_domain_chunk(h_plus,
         Link delay fluctuation :math:`\delta \ell_{sr}`, in seconds.
         Array shape=(batch, num_links, chunk).
     """
-    propagation_direction = -n
+    projection_plus, projection_cross, xi_receive, tau, \
+        omega_dot_direction = compute_angular_geometry_td(
+            theta, phi, light_travel_time, link_direction, receiver_position,
+            sender_position, chunk_times,
+        )
 
-    projection_plus, projection_cross = antenna_pattern_factors(
-        link_direction, u, v,
-    )
-
-    # (batch, num_links, chunk) from (batch, 3) against (num_links, chunk, 3).
-    omega_dot_direction = jnp.tensordot(
-        propagation_direction, link_direction, axes=([-1], [-1]),
-    )
-    omega_dot_receiver = jnp.tensordot(
-        propagation_direction, receiver_position / c, axes=([-1], [-1]),
-    )
-    omega_dot_sender = jnp.tensordot(
-        propagation_direction, sender_position / c, axes=([-1], [-1]),
-    )
-
-    xi_receive = chunk_times - omega_dot_receiver
-    xi_emit = chunk_times - light_travel_time - omega_dot_sender
-    window = xi_receive - xi_emit
-
-    batch_size, num_links, chunk_size = window.shape
+    batch_size, num_links, chunk_size = tau.shape
     flat_shape = (batch_size, num_links * chunk_size)
 
     node_spacing = 1.0 / (num_integral_points - 1)
@@ -533,7 +1035,7 @@ def one_arm_time_domain_chunk(h_plus,
         total_plus, total_cross = carry
 
         # xi runs from the emission endpoint up to the reception endpoint.
-        offset = window * (1.0 - node * node_spacing)
+        offset = tau * (1.0 - node * node_spacing)
         query = (xi_receive - offset).reshape(flat_shape)
 
         weight = jnp.where(
@@ -550,17 +1052,178 @@ def one_arm_time_domain_chunk(h_plus,
         )
 
         return (
-            total_plus + weight * sampled_plus.reshape(window.shape),
-            total_cross + weight * sampled_cross.reshape(window.shape),
+            total_plus + weight * sampled_plus.reshape(tau.shape),
+            total_cross + weight * sampled_cross.reshape(tau.shape),
         )
 
     mean_plus, mean_cross = jax.lax.fori_loop(
         0,
         num_integral_points,
         accumulate,
-        (jnp.zeros_like(window), jnp.zeros_like(window)),
+        (jnp.zeros_like(tau), jnp.zeros_like(tau)),
     )
 
-    return 0.5 * window / (1.0 - omega_dot_direction) * (
+    return 0.5 * tau / (1.0 - omega_dot_direction) * (
         projection_plus * mean_plus + projection_cross * mean_cross
     )
+
+
+def one_arm_time_domain_blocked(orbits,
+                                links,
+                                t0 : float,
+                                dt : float,
+                                num_samples : int,
+                                chunk_size : int,
+                                h_plus,
+                                h_cross,
+                                theta,
+                                phi,
+                                num_integral_points : int = 10,
+                                num_taps : int = 12):
+    r"""
+    Drive ``one_arm_time_domain_chunk`` over the reception grid in blocks.
+
+    The kernel is jitted and the geometry solve is not, so the two meet here:
+    each block has its geometry built on the host and is then handed to the
+    device in one call. Blocking is what makes the path runnable at all - see
+    ``utils.resolve_time_chunk_size`` for the arithmetic - and the result does
+    not depend on the block length.
+
+    Blocks are padded to a fixed length by repeating the last reception time,
+    so the kernel sees one shape and compiles once. The padded tail is
+    discarded on the way out.
+
+    Parameters
+    ----------
+    orbits : lisaorbits.Orbits
+        Orbit provider exposing ``compute_position(t, sc=[...])``.
+    links : tuple
+        Directed links as ``(sender, receiver)`` pairs, in output order.
+    t0 : float
+        Time of sample zero, in seconds.
+    dt : float
+        Sample cadence, in seconds.
+    num_samples : int
+        Length of the reception grid, :math:`N`.
+    chunk_size : int
+        Block length in samples.
+    h_plus, h_cross : jnp.ndarray
+        Polarisations on the sample grid. Array shape=(batch, N).
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,).
+    num_integral_points : int
+        Trapezoidal nodes per link integral. Optional.
+    num_taps : int
+        Waveform interpolation stencil width. Optional.
+
+    Returns
+    -------
+    response : jnp.ndarray
+        Link delay fluctuations, in seconds. Array shape=(batch, num_links, N).
+    """
+    blocks = []
+
+    for start in range(0, num_samples, chunk_size):
+        stop = min(start + chunk_size, num_samples)
+
+        reception_times = t0 + np.arange(start, stop) * dt
+        padding = chunk_size - reception_times.size
+        if padding:
+            reception_times = np.pad(
+                reception_times, (0, padding), mode="edge")
+
+        light_travel_time, direction, receiver, sender = build_link_geometry(
+            reception_times, orbits, links, return_sender_position=True,
+        )
+
+        block = one_arm_time_domain_chunk(
+            h_plus,
+            h_cross,
+            theta,
+            phi,
+            jnp.asarray(light_travel_time),
+            jnp.asarray(direction),
+            jnp.asarray(receiver),
+            jnp.asarray(sender),
+            jnp.asarray(reception_times),
+            t0,
+            dt,
+            num_integral_points=num_integral_points,
+            num_taps=num_taps,
+        )
+
+        blocks.append(block[..., :stop - start] if padding else block)
+
+    return jnp.concatenate(blocks, axis=-1)
+
+
+def finalise_response(wdm_class,
+                      response,
+                      from_domain : str,
+                      out_domain : str,
+                      batch_shape : tuple,
+                      num_links : int,
+                      drop_link_axis : bool):
+    r"""
+    Convert a response to the requested domain and restore its axes.
+
+    The two response methods differ in the domain their kernel produces but
+    agree on everything after it, so the conversion, the unflattening of the
+    batch axis and the link-axis squeeze are done once here.
+
+    A ``"time"`` to ``"wdm"`` conversion is driven one link at a time. The
+    transform builds a complex intermediate the size of its input, so
+    transforming every link together would multiply the peak allocation by the
+    number of links for no gain; the reverse direction has no such intermediate
+    and goes in one call.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``dwt``/``idwt``.
+    response : jnp.ndarray
+        Response with a single leading batch axis, shape=(batch, num_links, N)
+        or (batch, num_links, Nt, Nf).
+    from_domain : str
+        Domain the kernel produced, ``"time"`` or ``"wdm"``.
+    out_domain : str
+        Domain requested by the caller, ``"time"`` or ``"wdm"``.
+    batch_shape : tuple
+        Leading shape to restore, from ``prepare_sources``.
+    num_links : int
+        Number of links on axis 1.
+    drop_link_axis : bool
+        Whether the caller asked for a single link by a scalar specifier.
+
+    Returns
+    -------
+    response : jnp.ndarray
+        Array shape=batch_shape + (num_links, N), or
+        batch_shape + (num_links, Nt, Nf), with the link axis dropped when
+        ``drop_link_axis``.
+    """
+    if from_domain != out_domain:
+        # One link at a time when transforming forward: the transform builds a
+        # complex intermediate the size of its input, so doing every link at
+        # once would multiply the peak by the link count for no gain. The
+        # inverse has no such intermediate and goes in one call.
+        if out_domain == "wdm":
+            response = jnp.stack(
+                [resolve_domain(wdm_class, response[:, index],
+                                from_domain, out_domain)
+                 for index in range(num_links)],
+                axis=1,
+            )
+        else:
+            response = resolve_domain(
+                wdm_class, response, from_domain, out_domain)
+
+    tail = ((wdm_class.Nt, wdm_class.Nf) if out_domain == "wdm"
+            else (wdm_class.N,))
+    response = response.reshape(batch_shape + (num_links,) + tail)
+
+    # The link axis sits just after the batch axes in either domain.
+    if drop_link_axis:
+        response = jnp.squeeze(response, axis=len(batch_shape))
+
+    return response
