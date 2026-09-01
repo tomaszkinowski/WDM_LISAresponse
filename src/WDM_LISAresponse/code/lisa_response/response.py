@@ -13,19 +13,21 @@ from .response_sub import (
     one_arm_time_domain_blocked,
 )
 from ..utils.utils import (
+    Link,
     resolve_link_selection,
     resolve_time_chunk_size,
 )
 
 
-#: Directed links as ``(sender, receiver)`` spacecraft index pairs.
+#: Directed links as ``Link(sender, receiver)`` spacecraft index pairs.
 #:
-#: This is ``lisaorbits.LINKS`` written in sender-first tuple form. lisaorbits
-#: labels links by the integer code ``AB`` meaning *receiver* ``A`` and
-#: *emitter* ``B``, so its ``[12, 23, 31, 13, 32, 21]`` decodes element for
-#: element to the pairs below. Keeping the same order means axis 0 of every
-#: geometry array lines up with the orbit file's own link ordering.
-DEFAULT_DIRECTED_LINKS = ((2, 1), (3, 2), (1, 3), (3, 1), (2, 3), (1, 2))
+#: This is ``lisaorbits.LINKS`` written in sender-first form. lisaorbits labels
+#: links by the integer code ``AB`` meaning *receiver* ``A`` and *emitter*
+#: ``B``, so its ``[12, 23, 31, 13, 32, 21]`` decodes element for element to
+#: the links below. Keeping the same order means axis 0 of every geometry array
+#: lines up with the orbit file's own link ordering.
+DEFAULT_DIRECTED_LINKS = (Link(2, 1), Link(3, 2), Link(1, 3),
+                          Link(3, 1), Link(2, 3), Link(1, 2))
 
 
 class LISAresponse:
@@ -45,9 +47,9 @@ class LISAresponse:
         WDM grid on the provider's timeline; the transform itself knows only
         relative times.
     link_convention : tuple
-        Directed links as ``(sender, receiver)`` pairs. The given order indexes
-        axis 0 of every geometry array, so it is part of the class contract:
-        downstream code reads link ``i`` as ``link_convention[i]``.
+        Directed links as ``Link`` pairs. The given order indexes axis 0 of
+        every geometry array, so it is part of the class contract: downstream
+        code reads link ``i`` as ``link_convention[i]``.
     num_links : int
         ``len(link_convention)``; six for the full constellation.
     dt, N, Nf, Nt, dT, dF : float or int
@@ -136,11 +138,13 @@ class LISAresponse:
             Number of interpolation points across
             :math:`-\Delta T/2 \leq \delta \leq \Delta T/2`. Optional.
         link_convention : tuple
-            Directed links as ``(sender, receiver)`` spacecraft index pairs,
-            each drawn from :math:`\{1,2,3\}` with :math:`s \neq r`. The given
-            order is preserved and indexes axis 0 of every geometry array.
-            Pass a subset to build geometry for fewer links, for example
-            ``((2, 1),)`` when debugging a single arm. Optional.
+            Directed links as ``Link(sender, receiver)`` pairs, each drawn
+            from :math:`\{1,2,3\}` with :math:`s \neq r`. Plain
+            ``(sender, receiver)`` tuples are accepted too, since a ``Link``
+            compares equal to one. The given order is preserved and indexes
+            axis 0 of every geometry array. Pass a subset to build geometry for
+            fewer links, for example ``(Link(2, 1),)`` when debugging a single
+            arm. Optional.
 
         Returns
         -------
@@ -151,7 +155,7 @@ class LISAresponse:
         self.t0 = float(t0)
         self.max_lag_L = int(max_lag_L)
         self.num_interp_points = int(num_interp_points)
-        self.link_convention = tuple((int(s), int(r)) for s, r in link_convention)
+        self.link_convention = tuple(Link(int(s), int(r)) for s, r in link_convention)
         self.num_links = len(self.link_convention)
 
         self.validate_parameters()
@@ -386,11 +390,11 @@ class LISAresponse:
             Domain the coefficients are returned in, ``"time"`` or ``"wdm"``,
             with the same conventions. ``"wdm"`` applies ``wdm_class.dwt`` to
             the time-domain result, one link at a time. Optional.
-        link : None or int or tuple or list
+        link : None or int or Link or sequence
             Which directed links to evaluate. ``None`` gives all of
-            ``link_convention``. A single index or ``(sender, receiver)`` pair
-            drops the link axis from the result; a list keeps it. See
-            ``utils.utils.resolve_link_selection``. Optional.
+            ``link_convention``. A single ``Link(sender, receiver)`` or index
+            drops the link axis from the result; a sequence of either keeps it.
+            See ``utils.utils.resolve_link_selection``. Optional.
         num_integral_points : int
             Number of trapezoidal nodes per link integral, :math:`P`, at least
             two. Convergence is :math:`(2\pi f \ell_{sr})^2/12(P-1)^2`, so
@@ -551,10 +555,11 @@ class LISAresponse:
         out_domain : str
             Domain the coefficients are returned in, ``"wdm"`` or ``"time"``,
             the latter via ``wdm_class.idwt``. Optional.
-        link : None or int or tuple or list
+        link : None or int or Link or sequence
             Which directed links to evaluate. ``None`` gives all of
-            ``link_convention``. A single index or ``(sender, receiver)`` pair
-            drops the link axis from the result; a list keeps it. Optional.
+            ``link_convention``. A single ``Link(sender, receiver)`` or index
+            drops the link axis from the result; a sequence of either keeps it.
+            Optional.
         lag_block : int
             Lags handled per iteration of the shift's inner sum. ``None``
             unrolls it, which is fastest while :math:`L` is small; past
@@ -568,18 +573,21 @@ class LISAresponse:
             Link delay fluctuations :math:`\delta \ell_{sr}`, in seconds.
             Array shape=(..., num_selected_links, Nt, Nf), or
             (..., num_selected_links, N) in the ``"time"`` domain, with the
-            link axis absent when ``link`` selects a single link with a scalar
-            specifier.
+            link axis absent when ``link`` selects a single link with a
+            scalar specifier.
 
         Notes
         -----
         The time shift wraps periodically at the ends of the record rather than
         running off it, so power leaving one end reappears at the other. Zero
         padding the waveform is the caller's responsibility, as it is for
-        ``wdm_class.apply_variable_time_shift`` itself. This is the wavelet
-        path's counterpart to the edge behaviour noted on
-        ``one_arm_response_time_domain``, and the two differ, so compare the
-        paths on the interior of the record.
+        ``wdm_class.apply_variable_time_shift`` itself, and the amount that
+        buys a clean record is :math:`\lceil L/2 \rceil` wavelet rows at
+        *each* end - :math:`\lceil L/2 \rceil N_f` samples per side, with the
+        leading count even. See ``response_sub.apply_batch_shift`` for why both
+        ends and why half of :math:`L`. This is the wavelet path's counterpart
+        to the edge behaviour noted on ``one_arm_response_time_domain``, and
+        the two differ, so compare the paths on the interior of the record.
         """
         assert out_domain in ("time", "wdm"), \
                     f"out_domain must be 'time' or 'wdm', got {out_domain!r}."

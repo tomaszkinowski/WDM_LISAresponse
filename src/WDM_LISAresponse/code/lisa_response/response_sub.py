@@ -213,10 +213,8 @@ def build_link_geometry(times,
         Also return the sender position at emission time. The solve computes
         it either way, so this only decides whether it is kept; it costs
         :math:`24 \, n_{\mathrm{links}} N_t` bytes and no extra orbit
-        evaluations. The wavelet path does not need it - see
-        ``one_arm_time_domain_chunk`` for the identity that removes it - but
-        the time-domain path uses it to form the retarded phase at emission
-        directly. Optional.
+        evaluations. The wavelet path does not need it; the time-domain path
+        uses it to form the retarded phase at emission directly. Optional.
 
     Returns
     -------
@@ -444,12 +442,8 @@ def compute_angular_geometry_td(theta,
         \xi_s = t - \ell_{sr}(t)
                   - \hat{\Omega}\cdot x_s(t-\ell_{sr})/c ,
 
-    both formed from the positions the geometry solve produced rather than
-    from the identity :math:`\xi_r - \xi_s = \ell_{sr}(1 -
-    \hat{\Omega}\cdot\hat{r}_{sr})`. The two agree to :math:`10^{-12}` s, so
-    this is not an accuracy choice: the definition is used because this is the
-    path whose job is to be checkable, and because it survives a geometry term
-    that breaks that relation.
+    both formed from the positions the geometry solve produced. A test comparing the two routes must scale its tolerance with
+    :math:`t_0` rather than fix it.
 
     Parameters
     ----------
@@ -476,8 +470,7 @@ def compute_angular_geometry_td(theta,
         Retarded phase at reception, :math:`\xi_r`, in seconds. Same shape.
     tau : jnp.ndarray
         Effective light travel time :math:`\tau_{sr} = \xi_r - \xi_s`, in
-        seconds - the same quantity ``compute_angular_geometry_wdm`` reaches
-        through the identity. Same shape.
+        seconds. Same shape.
     omega_dot_direction : jnp.ndarray
         :math:`\hat{\Omega}\cdot\hat{r}_{sr}`, which sets the response
         prefactor. Same shape.
@@ -524,9 +517,8 @@ def compute_angular_geometry_wdm(theta,
             \left( 1 + \hat{n}\cdot\hat{r}_{sr}(t_n) \right) .
 
     This is the width of the retarded-phase window the wave is averaged over,
-    :math:`\tau_{sr} = \xi_r - \xi_s`, so it is the same quantity
-    ``compute_angular_geometry_td`` returns the ends of - reached here through
-    the identity, since the wavelet path stores no sender position.
+    :math:`\tau_{sr} = \xi_r - \xi_s`, formed here without a sender position,
+    which the wavelet path does not store.
 
     The factor :math:`(1 + \hat{n}\cdot\hat{r}_{sr})` is the closing rate
     between photon and wavefront. It vanishes when the wave travels along the
@@ -679,9 +671,22 @@ def apply_batch_shift(wdm_class,
     :math:`6\times10^{-7}` at :math:`L=25`, far below the local-delay term.
 
     The shift wraps periodically at the ends of the record rather than running
-    off it, so roughly :math:`L` pixel rows at each end are contaminated; drop
-    :math:`L/2` per side before comparing against anything. Zero padding the
-    input remains the caller's responsibility.
+    off it. Pixel row :math:`n` reads rows :math:`n-L \ldots n+L`, the kernel
+    having hard support at :math:`\pm L` and nothing beyond, so on an unpadded
+    record exactly :math:`L` rows at each end are contaminated.
+
+    Zero padding the input remains the caller's responsibility, and
+    :math:`\lceil L/2 \rceil` rows *at each end* suffices - not :math:`L`.
+    Padding both ends is what halves it: the first physical row reads down to
+    :math:`P-L`, which wraps to :math:`N_t+P-L`, and that lands inside the
+    *trailing* pad whenever :math:`2P \geq L`, so the wrapped read returns
+    zeros rather than signal. In samples that is
+    :math:`\lceil L/2 \rceil N_f` per side.
+
+    Pad the leading side by an *even* number of rows. The basis carries the
+    parity factor :math:`i^{n+m}`, so an odd row offset re-assigns which pixels
+    are real and which imaginary and the coefficients are no longer comparable
+    with those of the unpadded signal.
 
     Parameters
     ----------
@@ -944,16 +949,9 @@ def one_arm_time_domain_chunk(h_plus,
         \xi_s = t - \ell_{sr}(t) - \hat{\Omega}\cdot x_s(t-\ell_{sr})/c .
 
     Both endpoints come from their definitions, using the sender and receiver
-    positions the geometry solve produced. They could instead be reached
-    through :math:`\xi_r - \xi_s = \ell_{sr}(1 -
-    \hat{\Omega}\cdot\hat{r}_{sr})`, which follows from
-    :math:`x_r - x_s = c\,\ell_{sr}\hat{r}_{sr}` and needs no sender position
-    - that is why the wavelet path stores receiver positions only. Both routes
-    are exact, agreeing to :math:`10^{-12}` s, so this is not an accuracy
-    choice: the definition is used because this is the path whose job is to be
-    checkable, and because it survives a geometry term that breaks that
-    relation, as a Shapiro delay on :math:`\ell_{sr}` alone did before it was
-    removed; see ``solve_light_travel_time``.
+    positions the geometry solve produced. The wavelet path stores receiver
+    positions only, and reaches the same window width through
+    :math:`\tau_{sr} = \ell_{sr}(1 + \hat{n}\cdot\hat{r}_{sr})`.
 
     The prefactor stays an explicit ratio rather than folding into
     :math:`\ell_{sr}/2` by the same identity. It is regular as written, the
