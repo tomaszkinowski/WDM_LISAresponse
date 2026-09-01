@@ -1,10 +1,15 @@
-"""Waveform generation, windowing and padding helpers."""
+"""Waveform generation and windowing.
+
+Padding lives in ``utils.utils`` and is applied by the caller: it is a
+property of the grid the record will be analysed on, not of the waveform, and
+the two response paths need different amounts of it. Use ``utils.pad_for_wdm``
+for the wavelet path and ``utils.apply_zero_padding`` for the time-domain one.
+"""
 
 import numpy as np
 from scipy.signal.windows import tukey
 from lisaconstants import SIDEREALYEAR_J2000DAY
 from typing import Dict, Optional, Any
-from ..utils.utils import wdm_tail_padding_info
 
 # Sidereal year in seconds. Matches ``few.utils.constants.YRSID_SI`` to within
 # one ULP, so FEW stays an optional (dev-only) dependency: EMRI generators are
@@ -18,8 +23,8 @@ def _get_waveform_models():
     Returns
     -------
     dict[str, callable]
-        Mapping used by ``generate_windowed_padded_waveform`` to dispatch to
-        the selected waveform generator.
+        Mapping used by ``generate_windowed_waveform`` to dispatch to the
+        selected waveform generator.
     """
     return {
         "monochromatic": generate_waveform_monochromatic,
@@ -30,6 +35,9 @@ def _get_waveform_models():
 
 def _get_window_functions():
     """Return the registry mapping window names to windowing functions.
+
+    Windows taper; they do not pad. Padding is a separate, explicit step in
+    ``utils.utils``, so nothing here implies any.
 
     Returns
     -------
@@ -42,7 +50,7 @@ def _get_window_functions():
     }
 
 
-def generate_windowed_padded_waveform(
+def generate_windowed_waveform(
     waveform_model: str,
     t0: float,
     dt: float,
@@ -52,45 +60,46 @@ def generate_windowed_padded_waveform(
     model_kwargs: Optional[Dict[str, Any]] = None,
     window_function: Optional[str] = None,
     window_kwargs: Optional[Dict[str, Any]] = None,
-    wdm_Nf: Optional[int] = None,
-    return_padding_info: bool = False,
 ):
-    """
-    Master function for generating various waveform models. 
-    The function also pads each signal by a multiple of the data affected by the window.
+    r"""
+    Generate a waveform on a uniform grid and optionally taper it.
+
+    Dispatches to one of the registered models, evaluates it on
+    :math:`t_k = t_0 + k \delta t`, and applies a window if asked. Nothing
+    here pads: padding belongs to the grid the record will be analysed on
+    rather than to the waveform, and the two response paths need different
+    amounts of it. Follow this with ``utils.pad_for_wdm`` for the wavelet
+    path, or ``utils.apply_zero_padding`` for the time-domain one.
 
     Parameters
     ----------
     waveform_model : string
-        Name of the waveform model to generate 
+        Name of the waveform model to generate: ``"monochromatic"``,
+        ``"linear_freq"`` or ``"emri"``.
     t0 : float [seconds]
-        starting time for the signal 
+        starting time for the signal
     dt : float [sec]
         time step for the generated waveform
     T_obs : float [years]
-        observational time in years 
+        observational time in years. Give this or ``N``, not both.
     N : int
-        number of data samples 
+        number of data samples. Give this or ``T_obs``, not both.
     model_kwargs : dict
         parameters of the particular model
-    window function : string 
-        parameter determining the type of window function
+    window_function : string
+        parameter determining the type of window function, or ``None``
     window_kwargs : dict
-        parameters of the window function application 
-    wdm_Nf : int or None
-        If provided, add right-tail zero padding so total length becomes a
-        multiple of ``2*Nf`` so ``Nt`` is always even for WDM.
-    return_padding_info : bool
-        If true, returns an extra dictionary containing padding metadata.
-    
+        parameters of the window function application, for example ``alpha``
+        for the Tukey taper
+
     Returns
     -------
     times : ndarray
         time series generated using dt and either N, or T_obs in seconds
-    h_plus_window_pad : ndarray
-        windowed and padded plus polarised signal, shaped like time.
-    h_cross_window_pad : ndarray
-        windowed and padded cross polarised signal, shaped like time.
+    h_plus : ndarray
+        windowed plus polarised signal, shaped like times.
+    h_cross : ndarray
+        windowed cross polarised signal, shaped like times.
     """
 
     #generate the time series for intial input 
@@ -138,69 +147,9 @@ def generate_windowed_padded_waveform(
         except KeyError:
             raise ValueError(f"Window function '{window_function}' is not available.")
 
-        h_plus_window, h_cross_window = window_fn(h_plus, h_cross, **window_kwargs)
-    else:
-        h_plus_window, h_cross_window = h_plus, h_cross
-    
-    pad_left, pad_right = get_window_padding(window_function, len(times), window_kwargs)
+        h_plus, h_cross = window_fn(h_plus, h_cross, **window_kwargs)
 
-    times_pad, h_plus_window_pad, h_cross_window_pad = apply_zero_padding(
-        times,
-        h_plus_window,
-        h_cross_window,
-        pad_left,
-        pad_right,
-    )
-
-    pad_info = None
-    if return_padding_info:
-        pad_info = {
-            "original_length": int(len(times)),
-            "window_pad_left": int(pad_left),
-            "window_pad_right": int(pad_right),
-            "window_function": window_function,
-        }
-
-    if wdm_Nf is not None:
-        tail_info = wdm_tail_padding_info(
-            len(times_pad),
-            int(wdm_Nf),
-        )
-        tail_right = int(tail_info["pad_right"])
-
-        if tail_right > 0:
-            times_pad, h_plus_window_pad, h_cross_window_pad = apply_zero_padding(
-                times_pad,
-                h_plus_window_pad,
-                h_cross_window_pad,
-                0,
-                tail_right,
-            )
-
-        if return_padding_info:
-            pad_info.update(
-                {
-                    "wdm_Nf": int(wdm_Nf),
-                    "wdm_tail_pad_right": tail_right,
-                    "wdm_target_length": int(tail_info["target_length"]),
-                    "wdm_Nt": int(tail_info["Nt"]),
-                }
-            )
-    else:
-        if return_padding_info:
-            pad_info.update(
-                {
-                    "wdm_Nf": None,
-                    "wdm_tail_pad_right": 0,
-                    "wdm_target_length": int(len(times_pad)),
-                    "wdm_Nt": None,
-                }
-            )
-
-    if return_padding_info:
-        return times_pad, h_plus_window_pad, h_cross_window_pad, pad_info
-
-    return times_pad, h_plus_window_pad, h_cross_window_pad
+    return times, h_plus, h_cross
 
 def waveform_polarisations(A_plus, A_cross, phase):
     """
@@ -229,7 +178,7 @@ def waveform_polarisations(A_plus, A_cross, phase):
 
 def generate_waveform_monochromatic(times, A_plus, A_cross, f, phi_0):
     """
-    Generates an monochromatic input waveform with tukey window and padding.
+    Generates a monochromatic input waveform.
 
     Parameters
     ----------
@@ -259,7 +208,10 @@ def generate_waveform_monochromatic(times, A_plus, A_cross, f, phi_0):
 
 def generate_waveform_linear_freq(times, A_plus, A_cross, f_start, f_end, phi_0):
     """
-    Generates an input sine waveform with changing frequency from f_start to f_end and adds tukey window and padding.
+    Generates an input sine waveform sweeping linearly from f_start to f_end.
+
+    The chirp rate is fixed so the instantaneous frequency reaches ``f_end`` at
+    the *last sample*, not at any nominal observation time.
 
     Parameters
     ----------
@@ -321,6 +273,13 @@ def generate_waveform_emri(
 ):
     """
     Generate a FEW EMRI waveform on the sampling implied by `times`.
+
+    The result is forced to ``len(times)``, and both directions of that are
+    expected rather than exceptional. FEW returns a *longer* series when its
+    ``pad_output``/``odd_len`` settings overshoot the requested duration, and a
+    *shorter* one when the inspiral plunges before ``T_obs`` is up - a physical
+    outcome, not an error. Long output is truncated, short output is zero
+    filled, which is the correct continuation in both cases.
 
     Parameters
     ----------
@@ -402,204 +361,3 @@ def apply_tukey_window(h_plus, h_cross, alpha, **_):
     """
     w = tukey(len(h_plus), alpha=alpha)
     return w * h_plus, w * h_cross
-
-def get_window_padding(window_function: Optional[str], n_samples: int, window_kwargs: Dict[str, Any]) -> tuple[int, int]:
-    """
-    Return left/right padding widths implied by the chosen window.
-
-    For Tukey, the physical taper affects alpha/2 of the data on each side,
-    and tukey_factor scales how much zero padding to add relative to that.
-    """
-    if n_samples < 1:
-        raise ValueError("n_samples must be >= 1.")
-
-    if window_function is None:
-        return 0, 0
-
-    if window_function == "tukey":
-        alpha = float(window_kwargs.get("alpha", 0.0))
-        tukey_factor = float(window_kwargs.get("tukey_factor", 1.0))
-
-        if not (0.0 <= alpha <= 1.0):
-            raise ValueError(f"Tukey alpha must lie in [0, 1], got {alpha}.")
-
-        if tukey_factor < 0:
-            raise ValueError(f"tukey_factor must be non-negative, got {tukey_factor}.")
-
-        # Number of samples in one taper half, scaled by tukey_factor
-        pad_half = int(np.ceil(tukey_factor * alpha * 0.5 * n_samples))
-        return pad_half, pad_half
-
-    return 0, 0
-
-
-def apply_zero_padding(times, h_plus, h_cross, pad_left: int, pad_right: int):
-    """
-    Apply zero padding to waveform polarizations and extend the time array consistently.
-    """
-    times = np.asarray(times)
-    h_plus = np.asarray(h_plus)
-    h_cross = np.asarray(h_cross)
-
-    if times.ndim != 1 or h_plus.ndim != 1 or h_cross.ndim != 1:
-        raise ValueError("times, h_plus, and h_cross must all be 1D arrays.")
-
-    if not (len(times) == len(h_plus) == len(h_cross)):
-        raise ValueError("times, h_plus, and h_cross must have the same length.")
-
-    if len(times) < 2:
-        raise ValueError("Need at least two time samples to infer dt for padding.")
-
-    if pad_left < 0 or pad_right < 0:
-        raise ValueError("pad_left and pad_right must be non-negative.")
-
-    dt = times[1] - times[0]
-    if not np.allclose(np.diff(times), dt):
-        raise ValueError("times must be uniformly sampled to apply zero padding.")
-
-    h_plus_pad = np.pad(h_plus, (pad_left, pad_right), mode="constant", constant_values=0.0)
-    h_cross_pad = np.pad(h_cross, (pad_left, pad_right), mode="constant", constant_values=0.0)
-
-    if pad_left == 0 and pad_right == 0:
-        return times.copy(), h_plus_pad, h_cross_pad
-
-    times_left = times[0] - dt * np.arange(pad_left, 0, -1)
-    times_right = times[-1] + dt * np.arange(1, pad_right + 1)
-    times_pad = np.concatenate((times_left, times, times_right))
-
-    return times_pad, h_plus_pad, h_cross_pad
-
-
-def generate_windowed_padded_waveform_monochromatic(
-    A_plus,
-    A_cross,
-    f,
-    phi_0,
-    dt,
-    t0,
-    N,
-    alpha,
-    tukey_factor=1.0,
-    wdm_Nf=None,
-    return_padding_info=False,
-):
-    """Compatibility wrapper for legacy monochromatic notebook workflows."""
-    return generate_windowed_padded_waveform(
-        waveform_model="monochromatic",
-        t0=t0,
-        dt=dt,
-        N=N,
-        model_kwargs={
-            "A_plus": A_plus,
-            "A_cross": A_cross,
-            "f": f,
-            "phi_0": phi_0,
-        },
-        window_function="tukey",
-        window_kwargs={
-            "alpha": alpha,
-            "tukey_factor": tukey_factor,
-        },
-        wdm_Nf=wdm_Nf,
-        return_padding_info=return_padding_info,
-    )
-
-
-def generate_windowed_padded_waveform_linear_freq(
-    A_plus,
-    A_cross,
-    f_start,
-    f_end,
-    phi_0,
-    dt,
-    t0,
-    N,
-    alpha,
-    tukey_factor=1.0,
-    wdm_Nf=None,
-    return_padding_info=False,
-):
-    """Compatibility wrapper for legacy linear-frequency notebook workflows."""
-    return generate_windowed_padded_waveform(
-        waveform_model="linear_freq",
-        t0=t0,
-        dt=dt,
-        N=N,
-        model_kwargs={
-            "A_plus": A_plus,
-            "A_cross": A_cross,
-            "f_start": f_start,
-            "f_end": f_end,
-            "phi_0": phi_0,
-        },
-        window_function="tukey",
-        window_kwargs={
-            "alpha": alpha,
-            "tukey_factor": tukey_factor,
-        },
-        wdm_Nf=wdm_Nf,
-        return_padding_info=return_padding_info,
-    )
-
-
-def generate_windowed_padded_waveform_emri(
-    td_gen,
-    m1,
-    m2,
-    a,
-    p0,
-    e0,
-    x0,
-    dist,
-    qK,
-    phiK,
-    Phi_phi0,
-    Phi_theta0,
-    Phi_r0,
-    eps,
-    dt,
-    t0,
-    N,
-    alpha,
-    tukey_factor=1.0,
-    qS=None,
-    phiS=None,
-    theta=None,
-    phi=None,
-    wdm_Nf=None,
-    return_padding_info=False,
-):
-    """Compatibility wrapper for legacy EMRI notebook workflows."""
-    return generate_windowed_padded_waveform(
-        waveform_model="emri",
-        t0=t0,
-        dt=dt,
-        N=N,
-        model_kwargs={
-            "td_gen": td_gen,
-            "m1": m1,
-            "m2": m2,
-            "a": a,
-            "p0": p0,
-            "e0": e0,
-            "x0": x0,
-            "dist": dist,
-            "qK": qK,
-            "phiK": phiK,
-            "Phi_phi0": Phi_phi0,
-            "Phi_theta0": Phi_theta0,
-            "Phi_r0": Phi_r0,
-            "eps": eps,
-            "qS": qS,
-            "phiS": phiS,
-            "theta": theta,
-            "phi": phi,
-        },
-        window_function="tukey",
-        window_kwargs={
-            "alpha": alpha,
-            "tukey_factor": tukey_factor,
-        },
-        wdm_Nf=wdm_Nf,
-        return_padding_info=return_padding_info,
-    )
