@@ -460,7 +460,8 @@ def compute_angular_geometry_td(theta,
     sender_position : jnp.ndarray
         :math:`x_s` at emission, in metres. Array shape=(num_links, chunk, 3).
     reception_times : jnp.ndarray
-        Reception times, in seconds. Array shape=(chunk,).
+        Reception times, as offsets from waveform sample zero, in seconds.
+        Array shape=(chunk,).
 
     Returns
     -------
@@ -494,10 +495,13 @@ def compute_angular_geometry_td(theta,
     )
 
     xi_receive = reception_times - omega_dot_receiver
-    xi_emit = reception_times - light_travel_time - omega_dot_sender
+
+    # tau = xi_receive - xi_emit, with the reception time cancelled
+    # analytically rather than in floating point.
+    tau = light_travel_time + omega_dot_sender - omega_dot_receiver
 
     return (projection_plus, projection_cross, xi_receive,
-            xi_receive - xi_emit, omega_dot_direction)
+            tau, omega_dot_direction)
 
 
 def compute_angular_geometry_wdm(theta,
@@ -920,7 +924,6 @@ def one_arm_time_domain_chunk(h_plus,
                               receiver_position,
                               sender_position,
                               chunk_times,
-                              waveform_start : float,
                               waveform_step : float,
                               num_integral_points : int = 10,
                               num_taps : int = 12):
@@ -999,9 +1002,8 @@ def one_arm_time_domain_chunk(h_plus,
         Sender positions :math:`x_s` at emission time, in metres, on this
         block. Array shape=(num_links, chunk, 3).
     chunk_times : jnp.ndarray
-        Reception times of this block, in seconds. Array shape=(chunk,).
-    waveform_start : float
-        Time of waveform sample zero, in seconds.
+        Reception times of this block, as offsets from waveform sample zero,
+        in seconds. Array shape=(chunk,).
     waveform_step : float
         Waveform sample spacing, in seconds.
     num_integral_points : int
@@ -1041,11 +1043,13 @@ def one_arm_time_domain_chunk(h_plus,
             node_spacing,
         )
 
+        # The waveform grid starts at zero because the caller hands this
+        # kernel offsets from sample zero, never absolute times.
         sampled_plus = interpolate_uniform_grid(
-            h_plus, waveform_start, waveform_step, query, num_taps,
+            h_plus, 0.0, waveform_step, query, num_taps,
         )
         sampled_cross = interpolate_uniform_grid(
-            h_cross, waveform_start, waveform_step, query, num_taps,
+            h_cross, 0.0, waveform_step, query, num_taps,
         )
 
         return (
@@ -1123,11 +1127,17 @@ def one_arm_time_domain_blocked(orbits,
     for start in range(0, num_samples, chunk_size):
         stop = min(start + chunk_size, num_samples)
 
-        reception_times = t0 + np.arange(start, stop) * dt
+        # The orbits need absolute time; the kernel works in offsets from the
+        # waveform's first sample, so its grid starts at zero.
+        sample_offsets = np.arange(start, stop) * dt
+        reception_times = t0 + sample_offsets
+
         padding = chunk_size - reception_times.size
         if padding:
             reception_times = np.pad(
                 reception_times, (0, padding), mode="edge")
+            sample_offsets = np.pad(
+                sample_offsets, (0, padding), mode="edge")
 
         light_travel_time, direction, receiver, sender = build_link_geometry(
             reception_times, orbits, links, return_sender_position=True,
@@ -1142,8 +1152,7 @@ def one_arm_time_domain_blocked(orbits,
             jnp.asarray(direction),
             jnp.asarray(receiver),
             jnp.asarray(sender),
-            jnp.asarray(reception_times),
-            t0,
+            jnp.asarray(sample_offsets),
             dt,
             num_integral_points=num_integral_points,
             num_taps=num_taps,
