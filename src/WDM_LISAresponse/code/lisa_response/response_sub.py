@@ -683,10 +683,9 @@ def apply_batch_shift(wdm_class,
     zeros rather than signal. In samples that is
     :math:`\lceil L/2 \rceil N_f` per side.
 
-    Pad the leading side by an *even* number of rows. The basis carries the
-    parity factor :math:`i^{n+m}`, so an odd row offset re-assigns which pixels
-    are real and which imaginary and the coefficients are no longer comparable
-    with those of the unpadded signal.
+    ``utils.wdm_padding_info`` also rounds the leading pad up to an even number
+    of rows. That is bookkeeping, not correctness - it keeps differently padded
+    grids comparable - and affects no response calculation.
 
     Parameters
     ----------

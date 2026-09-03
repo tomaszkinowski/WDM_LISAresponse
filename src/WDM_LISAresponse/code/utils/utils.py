@@ -154,10 +154,12 @@ def wdm_padding_info(n_samples : int,
     trailing pad whenever :math:`2P \geq L`. Padding one end only would cost
     the full :math:`L`.
 
-    *The parity.* The basis carries the factor :math:`i^{n+m}`, so an odd row
-    offset re-assigns which pixels are real and which imaginary and the
-    coefficients stop being comparable with the unpadded signal's. The leading
-    pad is therefore rounded up to an even number of rows.
+    *The parity.* The leading pad is rounded up to an even number of rows, so
+    that grids padded differently stay comparable coefficient by coefficient.
+    Bookkeeping rather than correctness: the basis alternates cosine-like and
+    sine-like packets along :math:`n`, so an odd offset measures the signal
+    against the other kind - exactly, and reversibly, but as different numbers.
+    It costs at most one row and no response calculation is affected.
 
     Padding is quantised to whole wavelet rows so the signal starts on a row
     boundary, which is what lets ``wdm_cut_info`` recover the original span by
