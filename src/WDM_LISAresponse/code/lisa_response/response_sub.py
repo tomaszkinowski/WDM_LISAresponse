@@ -655,16 +655,23 @@ def compute_detector_amplitudes(light_travel_time,
 def apply_batch_shift(wdm_class,
                       filter_tables,
                       wavelet_coefficients,
-                      time_shift,
-                      lag_block : int = None):
+                      time_shift):
     r"""
     Apply a per-link variable time shift to a batch of coefficient grids.
 
     ``wdm_class.apply_variable_time_shift`` takes one :math:`(N_t, N_f)` grid
     and one :math:`(N_t,)` delay, so the source and link axes are flattened
-    together and swept in a ``lax.scan``. Sequential is deliberate: vmapping
-    the six links measured 18.5% *slower* on CPU, because XLA already threads
-    within each operation.
+    together and the grids are swept one at a time.
+
+    The sweep is a python loop, which unrolls into the graph. That is worth
+    2.7x over the ``lax.scan`` this used to be, for a bit-identical result:
+    the shift is a chain of :math:`2L+1` accumulations over
+    :math:`(N_t, N_f)` arrays, and XLA:CPU fuses that chain into one pass only
+    when it is not inside a loop body. Vmapping instead is worse still,
+    measured 18.5% slower than the scan.
+
+    The graph therefore grows with the number of grids, so a large source
+    batch is better looped over on the host than passed in as a leading axis.
 
     The delay is passed with its own sign, not negated. Shifting the
     *coefficients* is the active transformation and carries the opposite sign
@@ -701,8 +708,6 @@ def apply_batch_shift(wdm_class,
         Unshifted coefficients. Array shape=(batch, num_links, Nt, Nf).
     time_shift : jnp.ndarray
         Delay per pixel row, in seconds. Array shape=(batch, num_links, Nt).
-    lag_block : int
-        Lags per iteration of the inner sum; ``None`` unrolls. Optional.
 
     Returns
     -------
@@ -710,27 +715,23 @@ def apply_batch_shift(wdm_class,
         Array shape=(batch, num_links, Nt, Nf).
     """
     batch_size, num_links, num_times, num_freqs = wavelet_coefficients.shape
-    flat = (batch_size * num_links,)
+    num_grids = batch_size * num_links
 
-    def shift_one_link(carry, inputs):
-        r"""Delay one link's coefficient grid."""
-        coefficients, delta = inputs
+    coefficients = wavelet_coefficients.reshape(
+        num_grids, num_times, num_freqs)
+    delta = time_shift.reshape(num_grids, num_times)
 
-        return carry, wdm_class.apply_variable_time_shift(
-            filter_tables, coefficients, delta, lag_block=lag_block,
+    shifted = jnp.stack([
+        wdm_class.apply_variable_time_shift(
+            filter_tables, coefficients[grid], delta[grid],
         )
-
-    _, shifted = jax.lax.scan(
-        shift_one_link,
-        None,
-        (wavelet_coefficients.reshape(flat + (num_times, num_freqs)),
-         time_shift.reshape(flat + (num_times,))),
-    )
+        for grid in range(num_grids)
+    ])
 
     return shifted.reshape(batch_size, num_links, num_times, num_freqs)
 
 
-@partial(jax.jit, static_argnames=("wdm_class", "lag_block"))
+@partial(jax.jit, static_argnames=("wdm_class",))
 def one_arm_response_wdm(wdm_class,
                          filter_tables,
                          wavelet_plus,
@@ -740,8 +741,7 @@ def one_arm_response_wdm(wdm_class,
                          light_travel_time,
                          link_direction,
                          receiver_position,
-                         wavelet_freqs,
-                         lag_block : int = None):
+                         wavelet_freqs):
     r"""
     One-arm response in the wavelet domain, for every link and source.
 
@@ -772,9 +772,8 @@ def one_arm_response_wdm(wdm_class,
     ``wdm_class.apply_variable_time_shift``, which applies a time-varying delay
     directly in the wavelet domain rather than returning to the time series.
 
-    Links are swept in a ``lax.scan``, not vmapped: vmapping the six links
-    measured 18.5% slower on CPU. The scan also keeps the :math:`(N_t, N_f)`
-    amplitudes from existing for every link at once.
+    Links are swept one at a time in ``apply_batch_shift``, which is where the
+    runtime of this path very nearly all sits - 98% of it at a year.
 
     Parameters
     ----------
@@ -797,10 +796,6 @@ def one_arm_response_wdm(wdm_class,
         :math:`x_r(t_n)`, in metres. Array shape=(num_links, Nt, 3).
     wavelet_freqs : jnp.ndarray
         Pixel centre frequencies :math:`f_m`, in hertz. Array shape=(Nf,).
-    lag_block : int
-        Lags handled per iteration of the shift's inner sum. ``None`` unrolls
-        it, fastest for small :math:`L`; for :math:`L \gtrsim 30` a small block
-        such as 8 avoids an unwieldy graph. Static under ``jit``. Optional.
 
     Returns
     -------
@@ -825,7 +820,7 @@ def one_arm_response_wdm(wdm_class,
                  + amplitude_cross * wavelet_cross[:, jnp.newaxis])
 
     return apply_batch_shift(
-        wdm_class, filter_tables, unshifted, time_shift, lag_block=lag_block,
+        wdm_class, filter_tables, unshifted, time_shift,
     )
 
 

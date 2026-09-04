@@ -501,8 +501,7 @@ class LISAresponse:
                          h_cross,
                          in_domain : str = "wdm",
                          out_domain : str = "wdm",
-                         link = None,
-                         lag_block : int = None):
+                         link = None):
         r"""
         Compute the one-arm response in the time-frequency domain.
 
@@ -560,12 +559,6 @@ class LISAresponse:
             ``link_convention``. A single ``Link(sender, receiver)`` or index
             drops the link axis from the result; a sequence of either keeps it.
             Optional.
-        lag_block : int
-            Lags handled per iteration of the shift's inner sum. ``None``
-            unrolls it, which is fastest while :math:`L` is small; past
-            :math:`L \sim 30` the unrolled graph costs more in scheduling and
-            compile time than it saves, and a small block such as 8 wins.
-            Optional.
 
         Returns
         -------
@@ -615,7 +608,6 @@ class LISAresponse:
             self.link_direction[indices],
             self.receiver_position[indices],
             self.wavelet_freqs,
-            lag_block=lag_block,
         )
 
         return finalise_response(
@@ -627,8 +619,7 @@ class LISAresponse:
                  theta,
                  phi,
                  h_plus,
-                 h_cross,
-                 lag_block : int = None) -> jnp.ndarray:
+                 h_cross) -> jnp.ndarray:
         r"""
         Compute the wavelet-domain response for all links.
 
@@ -651,8 +642,6 @@ class LISAresponse:
         h_cross : jnp.ndarray
             Wavelet coefficients of :math:`h_\times`.
             Array shape=(..., Nt, Nf).
-        lag_block : int
-            Lags per iteration of the shift's inner sum. Optional.
 
         Returns
         -------
@@ -660,6 +649,4 @@ class LISAresponse:
             Link delay fluctuations, in seconds, as wavelet coefficients.
             Array shape=(..., num_links, Nt, Nf).
         """
-        return self.one_arm_response(
-            theta, phi, h_plus, h_cross, lag_block=lag_block,
-        )
+        return self.one_arm_response(theta, phi, h_plus, h_cross)

@@ -359,5 +359,10 @@ def apply_tukey_window(h_plus, h_cross, alpha, **_):
     tuple[ndarray, ndarray]
         Windowed ``(h_plus, h_cross)`` arrays.
     """
+    # scipy clips alpha silently, turning a typo into a rectangular or Hann
+    # window rather than an error.
+    if not (0.0 <= float(alpha) <= 1.0):
+        raise ValueError(f"Tukey alpha must lie in [0, 1], got {alpha}.")
+
     w = tukey(len(h_plus), alpha=alpha)
     return w * h_plus, w * h_cross
