@@ -1,0 +1,86 @@
+# One known-good environment for WDM_LISAresponse, including the optional
+# fastlisaresponse comparison.
+#
+#     conda env create -f environment.yml
+#     conda activate wdm-lisa
+#
+# This file and pyproject.toml answer different questions. pyproject says what
+# the *package* needs, abstractly - "numpy", "jax" - and travels with the
+# package. This says what one working *machine* looks like: which Python, from
+# which channel, alongside which compiled libraries. Neither replaces the
+# other, and the last pip entry installs the package described by the first.
+#
+# --------------------------------------------------------------------------
+# macOS: one step remains after this file, and it is not optional
+# --------------------------------------------------------------------------
+# lisaanalysistools and fastlisaresponse are pip-only - neither is on
+# conda-forge - and each wheel vendors its own copy of libstdc++.6.dylib. Two
+# images of the GNU C++ runtime in one process abort the interpreter with
+# `Abort trap: 6`, on import or later inside pyResponseTDI. No channel choice
+# avoids it, because there is no channel to choose.
+#
+# The fix is to stop one of them vendoring, by building it here rather than
+# taking the wheel:
+#
+#     pip install --no-binary fastlisaresponse --force-reinstall fastlisaresponse
+#
+# A source build links the system libc++ and bundles nothing, so the clash
+# cannot recur. It needs the Xcode command line tools.
+#
+# If that is not possible, point one copy at the other instead:
+#
+#     cd $CONDA_PREFIX/lib/python3.13/site-packages/fastlisaresponse/.dylibs
+#     mv libstdc++.6.dylib libstdc++.6.dylib.bak
+#     ln -s ../../lisatools/.dylibs/libstdc++.6.dylib libstdc++.6.dylib
+#
+# That works but is a patch on someone else's packaging, and it disappears the
+# next time either package is reinstalled.
+#
+# Either way, confirm it before running anything:
+#
+#     python -c "from WDM_LISAresponse.code.fastlisaresponse_comparison \
+#         import conventions; print(conventions.check_environment())"
+#
+# The comparison notebook runs that in its first cell, because the failure it
+# guards against is a SIGABRT - uncatchable, and silent about its cause.
+
+name: wdm-lisa
+
+channels:
+  - conda-forge
+
+dependencies:
+  # Interpreter and the compiled core. Taken from conda-forge so they share
+  # one runtime and one BLAS rather than each wheel bringing its own.
+  - python=3.13
+  - numpy=2.3
+  - scipy=1.17
+  - jax=0.7
+  - h5py=3.14
+  - matplotlib=3.10
+  - lisaconstants=2.0          # the only LISA package that is on conda-forge
+
+  # Tests, and executing the example notebooks.
+  - pytest
+  - ipykernel
+  - nbformat
+  - nbclient
+
+  - pip
+  - pip:
+    # Orbit provider. pip only.
+    - lisaorbits==3.1.0
+
+    # The comparison. Both pip only; see the macOS note above before use.
+    - lisaanalysistools==1.2.8
+    - fastlisaresponse==1.1.17
+
+    # The wavelet transform, and this package. Both editable, assuming the
+    # two repositories sit side by side - which is the working layout, and
+    # what you want if either is being developed.
+    #
+    # To install the published wavelet package instead of a checkout, drop
+    # the first line and add WDM-GW-wavelets to the dependencies above. Note
+    # the name: the distribution is WDM-GW-wavelets, the import is WDM.
+    - -e ../WDM_GW_wavelets
+    - -e .
