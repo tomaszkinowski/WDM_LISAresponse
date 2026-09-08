@@ -1,18 +1,24 @@
-r"""The galactic binary, as a single implementation shared by both pipelines.
+r"""The galactic binary, defined once for both pipelines.
 
-``fastlisaresponse``'s ``ResponseWrapper`` calls a waveform generator itself
-rather than taking an array, so handing it ``GBWave`` from this module puts the
-*same* code in both paths. Waveform conventions - the overall sign, the
-amplitude factor, the polarisation rotation - then cannot differ between the
-two, because there is only one of each. That leaves the sky angles as the only
-convention the comparison can get wrong, which is ``conventions``' job.
+There is one waveform implementation in this study, and both codes are fed the
+*same array* built from it - ``conventions.PaddedReplay`` hands
+``fastlisaresponse`` the tapered, zero-padded record our own response receives,
+rather than letting it generate its own. So the waveform conventions here - the
+overall sign, the amplitude factor, the polarisation rotation - cannot differ
+between the two, because neither code ever sees a second version.
+
+That matters more than it first appears. Our response is not fed a raw binary
+but a *windowed and padded* one, and a generator handed to ``ResponseWrapper``
+would produce full-amplitude signal exactly where our record holds zeros. An
+earlier version of this module exported such a generator; replaying the array
+is what actually closes the gap.
 
 Nothing here imports ``fastlisaresponse``.
 """
 
 import numpy as np
 
-from ..waveforms.waveforms import YRSID_SI, apply_tukey_window
+from ..waveforms.waveforms import apply_tukey_window
 
 
 #: Tukey fraction applied by default. Measured on the default tiling: an
@@ -168,72 +174,3 @@ def from_config(cfg, **overrides):
     kwargs.update(overrides)
 
     return galactic_binary(times, **kwargs)
-
-
-class GBWave:
-    """A ``fastlisaresponse``-compatible generator for the same binary.
-
-    ``ResponseWrapper`` calls its waveform generator as
-    ``gen(*params, T=..., dt=...)`` and expects a complex series
-    :math:`h_+ + i h_\\times` on a grid of its own choosing. This adapts
-    ``galactic_binary`` to that contract, so a single implementation feeds both
-    pipelines and the waveform cannot be a source of disagreement.
-
-    The absolute timeline is the reason this is a class rather than a
-    function. ``ResponseWrapper`` passes only a duration and a cadence, so the
-    epoch has to be carried on the object.
-
-    Parameters
-    ----------
-    t_start : float
-        Absolute time of the generated record's first sample, in seconds.
-        Set this to the first sample ``fastlisaresponse`` will treat the
-        series as beginning at, so its grid and ``cfg.signal_times`` describe
-        the same instants. Optional.
-    t_ref : float
-        Phase origin, in seconds. Defaults to ``t_start``. Optional.
-    tukey_alpha : float
-        Tukey fraction. Optional.
-
-    Examples
-    --------
-    >>> gen = GBWave(t_start=cfg.signal_times[0])           # doctest: +SKIP
-    >>> wrapper = ResponseWrapper(gen, ...)                 # doctest: +SKIP
-    """
-
-    def __init__(self,
-                 t_start: float = 0.0,
-                 t_ref: float = None,
-                 tukey_alpha: float = DEFAULT_TUKEY_ALPHA):
-        self.t_start = float(t_start)
-        self.t_ref = self.t_start if t_ref is None else float(t_ref)
-        self.tukey_alpha = float(tukey_alpha)
-
-    def __call__(self, A, f, fdot, iota, phi0, psi, T=1.0, dt=10.0):
-        """Return :math:`h_+ + i h_\\times` over ``T`` years at cadence ``dt``.
-
-        Parameters
-        ----------
-        A, f, fdot, iota, phi0, psi : float
-            Source parameters, as for ``galactic_binary``.
-        T : float
-            Duration, in *years*, following ``fastlisaresponse``'s
-            convention. Optional.
-        dt : float
-            Cadence, in seconds. Optional.
-
-        Returns
-        -------
-        h : np.ndarray
-            Complex strain, dtype=complex128, shape=(int(T * YRSID_SI / dt),).
-        """
-        n = int(T * YRSID_SI / dt)
-        t = self.t_start + np.arange(n, dtype=float) * dt
-
-        h_plus, h_cross = galactic_binary(
-            t, A, f, fdot, iota, phi0, psi,
-            tukey_alpha=self.tukey_alpha,
-            t_ref=self.t_ref,
-        )
-
-        return h_plus + 1j * h_cross

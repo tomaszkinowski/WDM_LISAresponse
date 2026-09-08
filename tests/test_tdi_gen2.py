@@ -329,3 +329,113 @@ def test_wavelet_and_time_domain_tdi_agree_on_the_same_links():
 
     assert result["rel_L2"] < 1e-6
     assert result["mismatch"] < 1e-12
+
+
+# -- the reference path against a closed form ----------------------------
+
+
+def test_time_domain_response_matches_the_monochromatic_closed_form():
+    r"""``one_arm_response_time_domain`` reproduces the analytic one-arm response.
+
+    For a monochromatic plane wave the integral along the null geodesic has a
+    closed form. Averaging :math:`h` over the retarded-phase window of width
+    :math:`\tau = \ell_{sr}(1 - \hat\Omega\cdot\hat r)` gives the value at the
+    window's centre times a sinc, so
+
+    .. math::
+
+        \delta\ell_{sr}(t) = \frac{\tau}{2(1 - \hat\Omega\cdot\hat r)}
+            \,\mathrm{sinc}(f\tau)
+            \left[F^+ h_+(\xi_{\mathrm{mid}})
+                + F^\times h_\times(\xi_{\mathrm{mid}})\right] ,
+
+    with no quadrature and no interpolation anywhere: :math:`h` is evaluated
+    from its own formula at :math:`\xi_{\mathrm{mid}}`.
+
+    The two computations share only the geometry. One integrates numerically
+    with an interpolated waveform, the other evaluates a closed form, so
+    agreement is a genuine check rather than a restatement - and measured, it
+    is four to nine orders below the response itself.
+
+    This is the strongest validation the reference path has. It matters
+    because that path is what the wavelet response is judged against: an error
+    here would be invisible to every comparison that only puts implementations
+    beside each other.
+    """
+    import jax.numpy as jnp
+    from scipy.signal.windows import tukey
+
+    from WDM_LISAresponse.code.fastlisaresponse_comparison import (
+        config, gb_waveform,
+    )
+    from WDM_LISAresponse.code.lisa_response.response_sub import (
+        build_link_geometry, compute_angular_geometry_td,
+    )
+    from WDM_LISAresponse.code.utils.utils import (
+        apply_zero_padding, wdm_mismatch,
+    )
+
+    # Nf is left at the study default: m = 13 is then 5.078 mHz, 19.7 samples
+    # per cycle. Halving Nf doubles dF and puts the same bin at 10.2 mHz,
+    # where the quadrature and the interpolation are both an order worse and
+    # this margin closes.
+    cfg = config.ANALYTIC.variant(N=2 ** 17)
+    wdm, response = cfg.build()
+
+    h_plus, h_cross = gb_waveform.from_config(cfg)
+    _, h_plus, h_cross = apply_zero_padding(
+        cfg.signal_times, h_plus, h_cross,
+        cfg.padding["pad_left"], cfg.padding["pad_right"],
+    )
+
+    times = np.asarray(response.times)
+    ltt, direction, receiver, sender = build_link_geometry(
+        times, response.orbits_class, response.link_convention,
+        return_sender_position=True,
+    )
+
+    offsets = np.arange(cfg.N) * cfg.dt
+    plus, cross, xi_receive, tau, omega_dot = compute_angular_geometry_td(
+        jnp.array([cfg.theta]), jnp.array([cfg.phi]),
+        jnp.asarray(ltt), jnp.asarray(direction),
+        jnp.asarray(receiver), jnp.asarray(sender), jnp.asarray(offsets),
+    )
+    plus, cross, xi_receive, tau, omega_dot = (
+        np.asarray(a)[0] for a in (plus, cross, xi_receive, tau, omega_dot)
+    )
+
+    midpoint = xi_receive - 0.5 * tau
+
+    window = np.interp(
+        midpoint, offsets,
+        np.concatenate([
+            np.zeros(cfg.padding["pad_left"]),
+            tukey(cfg.n_signal, gb_waveform.DEFAULT_TUKEY_ALPHA),
+            np.zeros(cfg.padding["pad_right"]),
+        ]),
+    )
+
+    mid_plus, mid_cross = gb_waveform.galactic_binary(
+        (cfg.t0 + midpoint).ravel(), cfg.amp, cfg.f_gb, cfg.fdot, cfg.iota,
+        cfg.phi0, cfg.psi, tukey_alpha=0.0, t_ref=float(cfg.signal_times[0]),
+    )
+    mid_plus = mid_plus.reshape(midpoint.shape) * window
+    mid_cross = mid_cross.reshape(midpoint.shape) * window
+
+    exact = (tau / (2.0 * (1.0 - omega_dot))
+             * np.sinc(cfg.f_gb * tau)
+             * (plus * mid_plus + cross * mid_cross))
+    exact = np.stack([np.asarray(wdm.dwt(row)) for row in exact])
+
+    got = np.asarray(response.one_arm_response_time_domain(
+        cfg.theta, cfg.phi, h_plus, h_cross,
+        num_taps=20, num_integral_points=80,
+    ))
+    got = np.stack([np.asarray(wdm.dwt(row)) for row in got])
+
+    # Away from the taper, where the closed form is exactly monochromatic.
+    interior = slice(int(0.15 * cfg.Nt), int(0.85 * cfg.Nt))
+
+    for link in range(len(response.link_convention)):
+        result = wdm_mismatch(exact[link][interior], got[link][interior])
+        assert result["rel_L2"] < 1e-5

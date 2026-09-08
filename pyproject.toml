@@ -9,7 +9,11 @@ readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
-    "WDM",
+    # Distribution name, not the import name: this installs as
+    # WDM-GW-wavelets and imports as WDM. Naming it "WDM" here resolves only
+    # on a machine where it already happens to be installed, and fails on a
+    # clean one - there is no distribution by that name.
+    "WDM_GW_wavelets",
     "numpy",
     "scipy",
     "jax",
@@ -37,6 +41,22 @@ docs = [
     "sphinx-autobuild",
     "myst-parser",
     "sphinx-autodoc-typehints",
+]
+
+# Everything examples/fastlisaresponse_comparison.ipynb needs, on top of dev.
+# Nothing in the package imports these: the comparison module takes the orbit
+# provider and the response wrapper from its caller, so the package stays
+# installable and importable without them.
+#
+# On macOS this install is not sufficient on its own. lisaanalysistools and
+# fastlisaresponse each vendor libstdc++.6.dylib, and loading both aborts the
+# interpreter. Run conventions.check_environment() for the diagnosis and fix.
+comparison = [
+    "fastlisaresponse",
+    "lisaanalysistools",
+    "matplotlib",
+    "nbformat",
+    "nbclient",
 ]
 
 [tool.setuptools.packages.find]

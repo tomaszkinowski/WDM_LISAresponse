@@ -149,10 +149,38 @@ class ComparisonConfig:
     :math:`2\lceil L/2 \rceil` is always even and the parity rounding inside
     ``wdm_padding_info`` never fires. Checked in ``__post_init__``.
 
-    Orbits default to the closed-form provider because it is analytic:
-    ``fastlisaresponse`` can be handed the same model exactly, so
-    orbit-provider disagreement - otherwise a strong candidate for the noise
-    floor of the comparison - is zero rather than something to subtract.
+    **The comparison runs on the ESA file.** Not for precision - both routes
+    are far inside the budget - but because second-generation TDI exists to
+    handle flexing arms, and the analytic model flexes 120 times less.
+    Comparing gen-2 on it would test the least interesting part of the
+    calculation.
+
+    The two codes' *analytic* equal-armlength models are also not the same
+    orbit as each other. ``lisaorbits`` works in equatorial coordinates and
+    ``lisatools.detector`` in ecliptic, so their positions differ by a
+    rotation about the vernal equinox through the obliquity,
+    :math:`23.4393^\circ` - :math:`6\times10^{10}` m, or 90 s of light. That
+    is a difference of description, not of physics: :math:`\hat{n}\cdot x_r`
+    is a dot product and survives the rotation, so mapping the sky angles
+    between frames would recover the comparison, to a residual of
+    :math:`3\times10^4` m or :math:`10^{-4}` s. In mismatch that is
+    :math:`5\times10^{-12}`, negligible. The route is sound; it is simply the
+    less interesting orbit, and it costs a rotation matrix to get right.
+
+    Reading the *same file* avoids the rotation entirely - neither package
+    converts on load, so both end up in the file's own frame and the sky
+    mapping reduces to latitude against polar angle. Positions then agree to
+    304 m, :math:`10^{-6}` s of light.
+
+    Mind the epoch when doing it: ``lisatools`` rebases the file's time axis
+    to zero and keeps the true start in a separate ``t0_base`` attribute,
+    where ``lisaorbits`` returns absolute times. The same file therefore
+    carries two time conventions two billion seconds apart. That offset is
+    exactly ``t0_base``, and reconciling it belongs to ``conventions``.
+
+    ``"equal_armlength"`` remains for the tests and for quick work where no
+    file and no epoch is a convenience. It is closed form and unbounded in
+    time.
 
     Equal armlengths do not imply constant light-travel times. The geometry is
     rigid, all three instantaneous separations holding 8.339102380 s to
@@ -548,13 +576,27 @@ class ComparisonConfig:
             f"for a 1e-6 mismatch",
         ]
         if self.orbits_model == "esa":
-            lines.insert(-1, f"orbit file       = {self.orbit_file}")
+            # Basename only. The full path is an absolute one on whoever ran
+            # this, and a summary that ends up in a committed notebook output
+            # should not carry someone's home directory. ``orbit_file`` still
+            # holds it for anything that needs to open the file.
+            lines.insert(-1, f"orbit file       = {Path(self.orbit_file).name}")
         return "\n".join(lines)
 
 
-#: The real run: 485 days at 10 s, one binary at 5.078 mHz in 128 bands.
-DEFAULT = ComparisonConfig()
+#: The real run: 485 days at 10 s, one binary at 5.078 mHz in 128 bands, on
+#: the ESA trailing orbits. Built at import, so importing this module reads
+#: ``EXAMPLES_ORBIT_FILE`` - which is the right failure if it is missing,
+#: since the comparison this subpackage exists for cannot run without it.
+DEFAULT = ComparisonConfig.for_esa()
 
 #: Thirty days, same cadence and bands and so the same source frequency and
 #: conventions. Fix every convention here before running the full record.
-SMOKE = ComparisonConfig(N=2 ** 18)
+SMOKE = ComparisonConfig.for_esa(N=2 ** 18)
+
+#: Closed-form equal-armlength orbits, thirty days. No file, no epoch to get
+#: right, unbounded in time - which makes it the convenient one for tests and
+#: for poking at the machinery. Its arms flex 120 times less than the real
+#: ones, and its frame is not ``lisatools``', so it is not what the
+#: comparison should be run on. See ``ComparisonConfig`` Notes.
+ANALYTIC = ComparisonConfig(N=2 ** 18)

@@ -18,6 +18,6 @@ dependency is constructed by the caller and passed in, so the package stays
 installable and importable without it. Only the notebook touches it.
 """
 
-from . import config, gb_waveform, tdi, tdi_reference
+from . import config, conventions, gb_waveform, tdi, tdi_reference
 
-__all__ = ["config", "gb_waveform", "tdi", "tdi_reference"]
+__all__ = ["config", "conventions", "gb_waveform", "tdi", "tdi_reference"]

@@ -660,6 +660,13 @@ def resolve_link_selection(link, link_convention : tuple):
     return indices, False
 
 
+#: Widest Lagrange stencil ``interpolate_uniform_grid`` will accept. The
+#: outermost weight divides by :math:`(n-1)!`, held as a Python int, and
+#: :math:`21! = 5\times10^{19}` exceeds int64 - so twenty-two taps fails
+#: inside jax rather than here. Twenty is the last even width that fits.
+MAX_INTERP_TAPS = 20
+
+
 def interpolate_uniform_grid(samples,
                              grid_start : float,
                              grid_step : float,
@@ -715,8 +722,9 @@ def interpolate_uniform_grid(samples,
         Times at which to evaluate, in seconds. Array shape=(batch, num_query),
         sharing the leading axis with ``samples``.
     num_taps : int
-        Stencil width. Must be even and at least two, and is a compile-time
-        constant since it sets the loop structure. Optional.
+        Stencil width. Must be even, at least two, and at most
+        ``MAX_INTERP_TAPS``; it is a compile-time constant since it sets the
+        loop structure. Optional.
 
     Returns
     -------
@@ -725,6 +733,20 @@ def interpolate_uniform_grid(samples,
     """
     assert num_taps >= 2 and num_taps % 2 == 0, \
                 f"num_taps must be even and at least two, got {num_taps=}."
+
+    # The outermost node's weight divides by (num_taps - 1)!, accumulated as a
+    # Python int. At twenty-two taps that is 21! = 5e19, past int64, and jax
+    # rejects it while tracing with an OverflowError that names neither this
+    # function nor the tap count. Refuse it here instead. Raising rather than
+    # promoting to float is deliberate: nothing wants a stencil this wide.
+    # Lagrange interpolation is ill-conditioned at high order, and twelve taps
+    # already saturate against float64 by 33 samples per cycle - sixteen costs
+    # 1.6 times as much and buys nothing measurable.
+    assert num_taps <= MAX_INTERP_TAPS, \
+                f"num_taps must be at most {MAX_INTERP_TAPS}, got " \
+                f"{num_taps=}: the Lagrange denominator overflows int64 " \
+                f"beyond that. Twelve is the documented default and wider " \
+                f"stencils are not better conditioned."
 
     num_samples = samples.shape[-1]
 
