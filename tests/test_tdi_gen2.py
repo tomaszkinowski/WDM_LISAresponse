@@ -6,14 +6,14 @@ The tests are staged so a failure says *which* layer broke.
 all. The next two evaluate the whole combination in the time domain from
 closed-form laser noises and a closed-form linear delay law - no transform, no
 shift operator, no interpolation, so the only error is float64 and any
-residual is the algebra's own. Only the last test brings in the wavelet
-machinery, against the time-domain result those tests have just validated.
+residual is the algebra's own. The last two bring in the wavelet machinery,
+against the time-domain result those tests have just validated.
 
-That staging is not decoration. An earlier version of ``gen2_terms`` had the
-wrong operator ordering, and an orbit-based laser-noise test could not see it:
-that test built its own link measurements with the shift operator, so it was
-limited by errors TDI cannot cancel and read the same either way. The
-time-domain test below separates gen-1 from gen-2 by five orders of magnitude.
+Nothing here touches the response's own physics: the link measurements are
+either closed-form laser noise, or the same wavelet link responses fed to both
+routes so that any response error is common and cancels. What validates the
+links themselves is
+``test_time_domain_path.test_time_domain_response_matches_the_monochromatic_closed_form``.
 """
 
 import numpy as np
@@ -23,7 +23,6 @@ from WDM_LISAresponse.code.fastlisaresponse_comparison.tdi import gen2_terms
 from WDM_LISAresponse.code.utils.utils import Link
 
 #: One arm per spacecraft pair. Channel X uses P and Q; Y and Z bring in R,
-#: so all three are defined even though the gen-1 contrast case only needs two.
 ARM_P = frozenset({Link(3, 1), Link(1, 3)})
 ARM_Q = frozenset({Link(2, 1), Link(1, 2)})
 ARM_R = frozenset({Link(3, 2), Link(2, 3)})
@@ -328,117 +327,3 @@ def test_wavelet_and_time_domain_tdi_agree_on_the_same_links():
 
     assert result["rel_L2"] < 1e-6
     assert result["mismatch"] < 1e-12
-
-
-# -- the reference path against a closed form ----------------------------
-
-
-def test_time_domain_response_matches_the_monochromatic_closed_form():
-    r"""``one_arm_response_time_domain`` reproduces the analytic one-arm response.
-
-    For a monochromatic plane wave the integral along the null geodesic has a
-    closed form. Averaging :math:`h` over the retarded-phase window of width
-    :math:`\tau = \ell_{sr}(1 - \hat\Omega\cdot\hat r)` gives the value at the
-    window's centre times a sinc, so
-
-    .. math::
-
-        \delta\ell_{sr}(t) = \frac{\tau}{2(1 - \hat\Omega\cdot\hat r)}
-            \,\mathrm{sinc}(f\tau)
-            \left[F^+ h_+(\xi_{\mathrm{mid}})
-                + F^\times h_\times(\xi_{\mathrm{mid}})\right] ,
-
-    with no quadrature and no interpolation anywhere: :math:`h` is evaluated
-    from its own formula at :math:`\xi_{\mathrm{mid}}`.
-
-    The two computations share only the geometry. One integrates numerically
-    with an interpolated waveform, the other evaluates a closed form, so
-    agreement is a genuine check rather than a restatement - and measured, it
-    is four to nine orders below the response itself.
-
-    This is the strongest validation the reference path has. It matters
-    because that path is what the wavelet response is judged against: an error
-    here would be invisible to every comparison that only puts implementations
-    beside each other.
-    """
-    import jax.numpy as jnp
-    from scipy.signal.windows import tukey
-
-    from WDM_LISAresponse.code.fastlisaresponse_comparison import config
-    from WDM_LISAresponse.code.lisa_response.response_sub import (
-        build_link_geometry, compute_angular_geometry_td,
-    )
-    from WDM_LISAresponse.code.waveforms.waveforms import (
-        generate_waveform_galactic_binary,
-    )
-    from WDM_LISAresponse.code.utils.utils import (
-        apply_zero_padding, wdm_mismatch,
-    )
-
-    # Nf is left at the study default: m = 13 is then 5.078 mHz, 19.7 samples
-    # per cycle. Halving Nf doubles dF and puts the same bin at 10.2 mHz,
-    # where the quadrature and the interpolation are both an order worse and
-    # this margin closes.
-    cfg = config.ANALYTIC
-    wdm, response = cfg.build()
-
-    h_plus, h_cross = cfg.waveform()
-    _, h_plus, h_cross = apply_zero_padding(
-        cfg.signal_times, h_plus, h_cross,
-        cfg.padding["pad_left"], cfg.padding["pad_right"],
-    )
-
-    times = np.asarray(response.times)
-    ltt, direction, receiver, sender = build_link_geometry(
-        times, response.orbits_class, response.link_convention,
-        return_sender_position=True,
-    )
-
-    offsets = np.arange(cfg.N) * cfg.dt
-    plus, cross, xi_receive, tau, omega_dot = compute_angular_geometry_td(
-        jnp.array([cfg.theta]), jnp.array([cfg.phi]),
-        jnp.asarray(ltt), jnp.asarray(direction),
-        jnp.asarray(receiver), jnp.asarray(sender), jnp.asarray(offsets),
-    )
-    plus, cross, xi_receive, tau, omega_dot = (
-        np.asarray(a)[0] for a in (plus, cross, xi_receive, tau, omega_dot)
-    )
-
-    midpoint = xi_receive - 0.5 * tau
-
-    window = np.interp(
-        midpoint, offsets,
-        np.concatenate([
-            np.zeros(cfg.padding["pad_left"]),
-            tukey(cfg.n_signal, cfg.tukey_alpha),
-            np.zeros(cfg.padding["pad_right"]),
-        ]),
-    )
-
-    # The generator, not cfg.waveform(): this needs the untapered binary at
-    # the retarded midpoints, which are neither uniformly spaced nor on the
-    # signal grid. The taper is put back above, by interpolation.
-    mid_plus, mid_cross = generate_waveform_galactic_binary(
-        (cfg.t0 + midpoint).ravel(), cfg.amp, cfg.f_gb, cfg.fdot, cfg.iota,
-        cfg.phi0, cfg.psi, t_ref=float(cfg.signal_times[0]),
-    )
-    mid_plus = mid_plus.reshape(midpoint.shape) * window
-    mid_cross = mid_cross.reshape(midpoint.shape) * window
-
-    exact = (tau / (2.0 * (1.0 - omega_dot))
-             * np.sinc(cfg.f_gb * tau)
-             * (plus * mid_plus + cross * mid_cross))
-    exact = np.stack([np.asarray(wdm.dwt(row)) for row in exact])
-
-    got = np.asarray(response.one_arm_response_time_domain(
-        cfg.theta, cfg.phi, h_plus, h_cross,
-        num_taps=20, num_integral_points=80,
-    ))
-    got = np.stack([np.asarray(wdm.dwt(row)) for row in got])
-
-    # Away from the taper, where the closed form is exactly monochromatic.
-    interior = slice(int(0.15 * cfg.Nt), int(0.85 * cfg.Nt))
-
-    for link in range(len(response.link_convention)):
-        result = wdm_mismatch(exact[link][interior], got[link][interior])
-        assert result["rel_L2"] < 1e-5
