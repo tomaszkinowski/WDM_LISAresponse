@@ -14,9 +14,12 @@ TDI stage alone.
 import numpy as np
 
 from ..lisa_response.response_sub import LTT_NUM_ITERATIONS
-from ..utils.utils import interpolate_uniform_grid, resolve_time_chunk_size
-from .tdi import DEFAULT_CHANNELS, CHANNEL_SPACECRAFT, composed_delay, gen2_terms
-from ..utils.utils import resolve_link_index
+from ..utils.utils import (
+    interpolate_uniform_grid, resolve_link_index, resolve_time_chunk_size,
+)
+from .tdi import (
+    DEFAULT_CHANNELS, composed_delay, gen2_terms, validate_channels,
+)
 
 
 def gen2_xyz_time_domain(response,
@@ -87,12 +90,7 @@ def gen2_xyz_time_domain(response,
             f"{times.size}."
         )
 
-    for channel in channels:
-        if channel not in CHANNEL_SPACECRAFT:
-            raise ValueError(
-                f"channel must be one of {tuple(CHANNEL_SPACECRAFT)}, got "
-                f"{channel!r}."
-            )
+    channels = validate_channels(channels)
 
     grid_start = float(times[0])
     grid_step = float(times[1] - times[0])

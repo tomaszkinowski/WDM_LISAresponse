@@ -58,6 +58,42 @@ CHANNEL_SPACECRAFT = {
 DEFAULT_CHANNELS = ("X", "Y", "Z")
 
 
+def validate_channels(channels) -> tuple:
+    """Check channel names and return them as a tuple.
+
+    Called by ``gen2_terms``, and again by both entry points before they start
+    solving geometry - the duplication is deliberate, so a typo in one of three
+    channels fails at once rather than after the first channel's solve.
+
+    Parameters
+    ----------
+    channels : str or sequence of str
+        A single channel name, or several.
+
+    Returns
+    -------
+    channels : tuple of str
+        The names, validated.
+
+    Raises
+    ------
+    ValueError
+        A name is not one of ``CHANNEL_SPACECRAFT``.
+    """
+    if isinstance(channels, str):
+        channels = (channels,)
+    channels = tuple(channels)
+
+    unknown = [c for c in channels if c not in CHANNEL_SPACECRAFT]
+    if unknown:
+        raise ValueError(
+            f"channel must be one of {tuple(CHANNEL_SPACECRAFT)}, got "
+            f"{unknown[0]!r}."
+        )
+
+    return channels
+
+
 def gen2_terms(channel: str):
     r"""Expand a second-generation channel into signed, delayed link terms.
 
@@ -77,11 +113,7 @@ def gen2_terms(channel: str):
         naming the delays to apply, **outermost first**, empty for the two
         undelayed terms; ``sign`` is :math:`\pm1`.
     """
-    if channel not in CHANNEL_SPACECRAFT:
-        raise ValueError(
-            f"channel must be one of {tuple(CHANNEL_SPACECRAFT)}, got "
-            f"{channel!r}."
-        )
+    validate_channels(channel)
 
     home, j, k = CHANNEL_SPACECRAFT[channel]
 
@@ -210,14 +242,7 @@ class TDIgen2:
                  channels=DEFAULT_CHANNELS,
                  num_iterations: int = LTT_NUM_ITERATIONS):
         self.response = response
-        self.channels = tuple(channels)
-
-        for channel in self.channels:
-            if channel not in CHANNEL_SPACECRAFT:
-                raise ValueError(
-                    f"channel must be one of {tuple(CHANNEL_SPACECRAFT)}, "
-                    f"got {channel!r}."
-                )
+        self.channels = validate_channels(channels)
 
         times = np.asarray(response.wavelet_times)
 
@@ -303,7 +328,7 @@ class TDIgen2:
         """
         lines = [f"{len(self._delays)} distinct chains, "
                  f"{self.num_shifts} shifts per call"]
-        for chain, delay in sorted(self._delays.items(), key=len):
+        for chain, delay in sorted(self._delays.items(), key=lambda kv: len(kv[0])):
             arms = " ".join(f"{c.sender}>{c.receiver}" for c in chain)
             lines.append(
                 f"  [{arms}]  {float(jnp.min(delay)):8.3f} .. "
