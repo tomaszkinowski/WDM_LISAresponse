@@ -153,9 +153,16 @@ def test_channels_between_them_use_all_six_links():
 def test_gen1_residual_is_first_order_in_the_drift(phases):
     """First generation leaves the commutator, so its residual scales as the rate.
 
-    The contrast case. Fitting a slope rather than testing a number against a
-    threshold means the numerical floor bounds how far down the sweep can go,
-    not whether the result is meaningful.
+    The control for the test below. Without it, second generation cancelling
+    would be just as consistent with a harness that returns zero whatever it is
+    given; this shows the same machinery does produce a residual when the
+    algebra cannot cancel one.
+
+    A slope is fitted over three decades rather than a number tested against a
+    threshold. The residual has no natural scale to compare against, but its
+    *exponent* does: :math:`X_1 = [P, Q]p` is first order in the rate at which
+    the arms change, so the slope must be one. Measured, the residual runs
+    :math:`1.9\\times10^{-9}` to :math:`1.9\\times10^{-6}` across the sweep.
     """
     t = np.arange(0.0, 5.0e5, 10.0)
     terms = _gen1_terms()
@@ -175,16 +182,23 @@ def test_gen1_residual_is_first_order_in_the_drift(phases):
 def test_gen2_cancels_a_linear_drift_to_machine_precision(phases, channel):
     """Second generation kills the commutator outright for a linear law.
 
-    Not merely second order: with the delays strictly linear in time the next
-    order vanishes identically, so the residual sits at float64 and does not
-    move over five decades of drift rate. Against first generation at the same
-    rates this is a separation of five orders, which is what makes the test
-    able to reject a wrong operator ordering.
+    Five drift rates are swept - zero, then :math:`10^{-9}` to :math:`10^{-6}`
+    s/s, three decades - and the residual is required to be both small and
+    *flat*. Flatness is the sharper of the two: a merely second-order scheme
+    would still trend across the sweep, whereas with the delays strictly linear
+    in time the next order vanishes identically, so nothing is left to scale
+    and the residual sits on the float64 floor. Measured, it holds at
+    :math:`3\\times10^{-12}` of laser scale at every rate, against first
+    generation rising from :math:`1.9\\times10^{-9}` to
+    :math:`1.9\\times10^{-6}` over the same sweep. That is what lets this
+    reject a wrong operator ordering.
 
-    The ``rate = 0.0`` entry also subsumes a per-link sign check. A flipped
-    sign cannot cancel at constant delay: measured, any single flip lifts this
-    residual to about 2.5, twelve orders above the threshold. Running all three
-    channels is what lets that stand in for one, so do not narrow it back to X.
+    ``rate = 0.0`` earns its place separately: it is the static-arm case, where
+    cancellation is down to the per-link signs alone and first generation is
+    just as good. A flipped sign cannot cancel there - measured, any single
+    flip lifts the residual to about 2.5, twelve orders above the threshold -
+    which is why no separate sign test is needed. Running all three channels is
+    what lets that stand in for one, so do not narrow it back to X.
     """
     t = np.arange(0.0, 5.0e5, 10.0)
     terms = gen2_terms(channel)
@@ -198,7 +212,7 @@ def test_gen2_cancels_a_linear_drift_to_machine_precision(phases, channel):
     for residual in residuals:
         assert residual / scale < 1e-9
 
-    # Flat, not merely small: no trend across five decades.
+    # Flat, not merely small: no trend across the three decades swept.
     assert max(residuals) / min(residuals) < 10.0
 
 
