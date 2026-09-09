@@ -2,32 +2,13 @@ r"""Second-generation TDI in the time domain: the yardstick.
 
 Forms the same combination as ``tdi``, from the same term expansion and the
 same composed delays, but applies each delay by interpolating a sampled series
-instead of shifting a coefficient grid. That is the *only* difference between
-the two, and it is deliberate: the algebra and the geometry are shared so that
-an error in either shows up identically in both and cancels from the
-comparison, leaving the wavelet time-shift operator as the one thing being
-measured.
+instead of shifting a coefficient grid. 
 
 Fed the output of ``LISAresponse.one_arm_response_time_domain`` this is the
 full reference path - trapezoidal link integrals, then interpolated delays -
 against which the wavelet pipeline's local-delay approximation can be priced.
 Fed link series that came from the wavelet response instead, it isolates the
 TDI stage alone.
-
-It is slow, and meant to be. The delays are solved afresh on all :math:`N`
-sample times rather than the :math:`N_t` wavelet centres, which is
-:math:`N_f` times the density, and every term interpolates the full record.
-Measured, it is about twelve times the wavelet path and some seven eighths of
-the whole comparison - more than the time-domain *response* by an order, which
-is not the obvious way round.
-
-Most of that is the geometry, and it could be cut two- or threefold: the
-chains share prefixes, :math:`Q` sitting inside :math:`QP` and so on, so a
-trie walk would solve each distinct prefix once instead of the 168 arm-solves
-XYZ currently costs. That is deliberately not done. This module exists to be
-read and believed rather than to be fast, and a shared prefix cache is exactly
-the kind of machinery whose correctness one then has to argue about. If the
-runtime ever matters, the answer is a coarser grid, not a cleverer reference.
 """
 
 import numpy as np
@@ -80,21 +61,6 @@ def gen2_xyz_time_domain(response,
         Second-generation channels, in seconds, in the order given.
         Array shape=(len(channels), N).
 
-    Notes
-    -----
-    The delays are evaluated on ``response.times``, which are *absolute* -
-    the same timeline the orbit provider is queried on and the same one
-    ``t0`` anchors. Nothing here works in samples or in time relative to the
-    signal, because a delay law evaluated on a grid that starts at zero when
-    the record starts at :math:`t_0` is offset by the whole leading guard
-    band, and that mistake is close to invisible: it saturates the residual at
-    a value that responds to neither the tap count nor the lag count.
-
-    The interpolation stencil reaches ``num_taps/2`` samples beyond each query
-    and the delays reach 58 s, about six samples at this cadence, so the
-    outermost dozen or so samples of the record are not meaningful. They sit
-    inside the guard band that ``config`` already provides, so no separate
-    allowance is needed - but compare on the interior, as everywhere else.
     """
     link_series = np.asarray(link_series, dtype=float)
 

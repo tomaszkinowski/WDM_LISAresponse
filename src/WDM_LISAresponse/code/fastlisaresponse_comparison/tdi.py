@@ -198,7 +198,7 @@ class TDIgen2:
     The sign passed to the shift operator is negative. Its convention is that
     :math:`\delta` samples the wave at :math:`t + \delta`, whereas a TDI
     :math:`D` is a retardation, so a delay :math:`\Delta` is applied as
-    :math:`-\Delta`. Checked by ``tests``, not reasoned about twice.
+    :math:`-\Delta`. Checked by ``tests``.
 
     Terms accumulate in place. Six link grids, three accumulators and one grid
     in flight is around 350 MiB at the default tiling; stacking all

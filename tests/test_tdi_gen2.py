@@ -22,15 +22,19 @@ import pytest
 from WDM_LISAresponse.code.fastlisaresponse_comparison.tdi import gen2_terms
 from WDM_LISAresponse.code.utils.utils import Link
 
-#: Arm P is the 1<->3 pair, arm Q the 1<->2 pair. Channel X uses only these.
+#: One arm per spacecraft pair. Channel X uses P and Q; Y and Z bring in R,
+#: so all three are defined even though the gen-1 contrast case only needs two.
 ARM_P = frozenset({Link(3, 1), Link(1, 3)})
 ARM_Q = frozenset({Link(2, 1), Link(1, 2)})
+ARM_R = frozenset({Link(3, 2), Link(2, 3)})
 
-#: Distinct arm lengths, so P and Q have no reason to commute.
-L_P, L_Q = 8.339, 8.351
+#: Distinct arm lengths, so no two arms have any reason to commute.
+L_P, L_Q, L_R = 8.339, 8.351, 8.347
 
-#: Opposite breathing, so a single rate parameter drives both arms.
+#: Breathing rates relative to P, so one parameter drives the constellation.
+#: Distinct and of mixed sign, so it is not a uniform scaling.
 RATE_Q_OVER_P = -0.7
+RATE_R_OVER_P = 0.4
 
 TONES = np.linspace(2e-3, 8e-3, 9)
 
@@ -47,12 +51,16 @@ def _laser(phases, i, t):
 
 
 def _laws(rate):
-    """link -> l(t), a linear delay law per arm."""
-    def one(link):
-        base, drift = ((L_P, rate) if link in ARM_P
-                       else (L_Q, rate * RATE_Q_OVER_P))
+    """link -> l(t), a linear delay law per arm, over all six directed links."""
+    arms = {ARM_P: (L_P, rate),
+            ARM_Q: (L_Q, rate * RATE_Q_OVER_P),
+            ARM_R: (L_R, rate * RATE_R_OVER_P)}
+
+    def one(base, drift):
         return lambda t: base + drift * t
-    return {lk: one(lk) for lk in (ARM_P | ARM_Q)}
+
+    return {lk: one(base, drift)
+            for arm, (base, drift) in arms.items() for lk in arm}
 
 
 def _measurement(phases, link, t, laws):
@@ -122,33 +130,20 @@ def test_term_structure(channel):
     A form that tops out at five arms is first generation wearing a hat, which
     is exactly the bug this catches.
     """
-    terms = gen2_terms(channel)
+    lengths = sorted(len(chain) for _, chain, _ in gen2_terms(channel))
 
-    assert len(terms) == 16
-
-    lengths = sorted(len(chain) for _, chain, _ in terms)
+    # One assertion, not three: this multiset has sixteen entries of which
+    # exactly two are empty, so a term count and a "fourteen have chains"
+    # check would both be consequences of it and could never fail alone.
     assert lengths == sorted(list(range(8)) * 2)
 
-    assert sum(1 for _, chain, _ in terms if chain) == 14
 
+def test_channels_between_them_use_all_six_links():
+    """No channel is a copy of another: the union covers every directed link.
 
-@pytest.mark.parametrize("channel", ["X", "Y", "Z"])
-def test_signs_cancel_per_link(channel):
-    """With the delays removed, every link's net coefficient is zero.
-
-    Necessary, not sufficient: it is what makes the combination vanish when
-    the arms are static, and it fails loudly on a sign typo. Exact integer
-    arithmetic, so there is no tolerance to choose.
+    Each channel draws on four of the six directed links, over its sixteen
+    terms. Nothing else here would notice if Z came back as a duplicate of Y.
     """
-    net = {}
-    for link, _, sign in gen2_terms(channel):
-        net[link] = net.get(link, 0) + sign
-
-    assert set(net.values()) == {0}
-
-
-def test_channels_use_all_six_links():
-    """X, Y and Z between them draw on every directed link exactly once each."""
     used = {link for channel in "XYZ" for link, _, _ in gen2_terms(channel)}
     assert len(used) == 6
 
@@ -177,7 +172,8 @@ def test_gen1_residual_is_first_order_in_the_drift(phases):
     assert slope == pytest.approx(1.0, abs=0.02)
 
 
-def test_gen2_cancels_a_linear_drift_to_machine_precision(phases):
+@pytest.mark.parametrize("channel", ["X", "Y", "Z"])
+def test_gen2_cancels_a_linear_drift_to_machine_precision(phases, channel):
     """Second generation kills the commutator outright for a linear law.
 
     Not merely second order: with the delays strictly linear in time the next
@@ -185,9 +181,14 @@ def test_gen2_cancels_a_linear_drift_to_machine_precision(phases):
     move over five decades of drift rate. Against first generation at the same
     rates this is a separation of five orders, which is what makes the test
     able to reject a wrong operator ordering.
+
+    The ``rate = 0.0`` entry also subsumes a per-link sign check. A flipped
+    sign cannot cancel at constant delay: measured, any single flip lifts this
+    residual to about 2.5, twelve orders above the threshold. Running all three
+    channels is what lets that stand in for one, so do not narrow it back to X.
     """
     t = np.arange(0.0, 5.0e5, 10.0)
-    terms = gen2_terms("X")
+    terms = gen2_terms(channel)
     scale = np.sqrt(np.mean(_laser(phases, 0, t) ** 2))
 
     residuals = [
@@ -294,9 +295,7 @@ def test_wavelet_and_time_domain_tdi_agree_on_the_same_links():
     An upper bound rather than a clean isolation: the time-domain route also
     carries an ``idwt``/``dwt`` round trip that the wavelet route does not.
     """
-    from WDM_LISAresponse.code.fastlisaresponse_comparison import (
-        config, gb_waveform,
-    )
+    from WDM_LISAresponse.code.fastlisaresponse_comparison import config
     from WDM_LISAresponse.code.fastlisaresponse_comparison.tdi import TDIgen2
     from WDM_LISAresponse.code.fastlisaresponse_comparison.tdi_reference import (
         gen2_xyz_time_domain,
@@ -308,7 +307,7 @@ def test_wavelet_and_time_domain_tdi_agree_on_the_same_links():
     cfg = config.ComparisonConfig(N=2 ** 15, Nf=64)
     wdm, response = cfg.build()
 
-    h_plus, h_cross = gb_waveform.from_config(cfg)
+    h_plus, h_cross = cfg.waveform()
     _, h_plus, h_cross = apply_zero_padding(
         cfg.signal_times, h_plus, h_cross,
         cfg.padding["pad_left"], cfg.padding["pad_right"],
@@ -365,11 +364,12 @@ def test_time_domain_response_matches_the_monochromatic_closed_form():
     import jax.numpy as jnp
     from scipy.signal.windows import tukey
 
-    from WDM_LISAresponse.code.fastlisaresponse_comparison import (
-        config, gb_waveform,
-    )
+    from WDM_LISAresponse.code.fastlisaresponse_comparison import config
     from WDM_LISAresponse.code.lisa_response.response_sub import (
         build_link_geometry, compute_angular_geometry_td,
+    )
+    from WDM_LISAresponse.code.waveforms.waveforms import (
+        generate_waveform_galactic_binary,
     )
     from WDM_LISAresponse.code.utils.utils import (
         apply_zero_padding, wdm_mismatch,
@@ -379,10 +379,10 @@ def test_time_domain_response_matches_the_monochromatic_closed_form():
     # per cycle. Halving Nf doubles dF and puts the same bin at 10.2 mHz,
     # where the quadrature and the interpolation are both an order worse and
     # this margin closes.
-    cfg = config.ANALYTIC.variant(N=2 ** 17)
+    cfg = config.ANALYTIC
     wdm, response = cfg.build()
 
-    h_plus, h_cross = gb_waveform.from_config(cfg)
+    h_plus, h_cross = cfg.waveform()
     _, h_plus, h_cross = apply_zero_padding(
         cfg.signal_times, h_plus, h_cross,
         cfg.padding["pad_left"], cfg.padding["pad_right"],
@@ -410,14 +410,17 @@ def test_time_domain_response_matches_the_monochromatic_closed_form():
         midpoint, offsets,
         np.concatenate([
             np.zeros(cfg.padding["pad_left"]),
-            tukey(cfg.n_signal, gb_waveform.DEFAULT_TUKEY_ALPHA),
+            tukey(cfg.n_signal, cfg.tukey_alpha),
             np.zeros(cfg.padding["pad_right"]),
         ]),
     )
 
-    mid_plus, mid_cross = gb_waveform.galactic_binary(
+    # The generator, not cfg.waveform(): this needs the untapered binary at
+    # the retarded midpoints, which are neither uniformly spaced nor on the
+    # signal grid. The taper is put back above, by interpolation.
+    mid_plus, mid_cross = generate_waveform_galactic_binary(
         (cfg.t0 + midpoint).ravel(), cfg.amp, cfg.f_gb, cfg.fdot, cfg.iota,
-        cfg.phi0, cfg.psi, tukey_alpha=0.0, t_ref=float(cfg.signal_times[0]),
+        cfg.phi0, cfg.psi, t_ref=float(cfg.signal_times[0]),
     )
     mid_plus = mid_plus.reshape(midpoint.shape) * window
     mid_cross = mid_cross.reshape(midpoint.shape) * window

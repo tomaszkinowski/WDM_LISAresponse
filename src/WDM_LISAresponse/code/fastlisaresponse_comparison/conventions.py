@@ -1,10 +1,7 @@
 r"""Everything that differs between the two codes, measured rather than assumed.
 
 Each constant and conversion below was established by running both pipelines
-and looking at the result, and the evidence is recorded beside it. That is the
-point of collecting them here: when a residual comes back wrong months from
-now, this is the file to read, and a value with no provenance is worse than no
-value at all.
+and looking at the result, and the evidence is recorded beside it.
 
 The one that matters is the variable. ``fastlisaresponse`` returns a
 *fractional frequency*, this package returns a *delay in seconds*, and
@@ -13,9 +10,19 @@ The one that matters is the variable. ``fastlisaresponse`` returns a
 
     \mathrm{theirs} = -\frac{\mathrm{d}}{\mathrm{d}t}\,\mathrm{ours} .
 
-Nothing else needed correcting: the sky mapping is latitude against polar
-angle with no frame rotation, the two sample grids differ by a whole number of
-samples, and no scale or time offset has to be fitted.
+The sky mapping is latitude against polar angle with no frame rotation, the
+two sample grids differ by a whole number of samples, and no scale or time
+offset has to be fitted.
+
+**The polarisation bases are not the same triad, and the minus sign above is
+not only the derivative.** The two codes' :math:`\hat{u}`, :math:`\hat{v}`
+differ by a 90 degree rotation about the propagation direction - see
+``to_flr_angles``, which carries the mapping - and a rotation of a spin-2
+basis by 90 degrees sends both :math:`e^+` and :math:`e^\times` to minus
+themselves. Since the same :math:`(h_+, h_\times)` array is handed to both
+codes, our response computes the negative of what theirs does for the same
+source, and that :math:`-1` is folded into the sign applied by
+``to_wdm_units``.
 
 Nothing here imports ``fastlisaresponse`` or ``lisatools``. The orbit provider
 and the response wrapper are constructed by the caller and passed in, as
@@ -135,9 +142,7 @@ def check_environment(raise_on_problem: bool = True) -> str:
 
 #: ``ResponseWrapper`` multiplies the cross polarisation by -1 when set. Our
 #: waveform is handed over as :math:`h_+ + i h_\times`, which is what
-#: ``pyResponseTDI`` expects, so no flip. Verified: with it False the channel
-#: amplitudes agree to 1e-4 of unity and the mismatch is 1e-9, neither of
-#: which survives a sign error on the cross polarisation.
+#: ``pyResponseTDI`` expects, so no flip. 
 FLIP_HX = False
 
 #: Positions of the ecliptic longitude and latitude in the argument list
@@ -163,34 +168,58 @@ TDI_CHANNELS = "XYZ"
 
 
 def grid_offset(cfg) -> int:
-    r"""Samples between the start of their record and the start of ours.
+    r"""Translate their sample numbering into ours.
 
-    ``lisatools`` rebases an orbit file's time axis to zero, so
-    ``ResponseWrapper``'s first sample sits at the file's own epoch, while this
-    package anchors its padded record ``ORBIT_LEAD_IN`` later. The two grids
-    therefore differ by a fixed shift, and at the default tiling it is exactly
-    128 samples.
+    Both codes read the same orbit file at the same cadence, so they sample the
+    same instants - they only number them differently, because sample zero sits
+    in a different place::
 
-    Raises if that shift is not a whole number of samples. It would then take
-    an interpolation to bridge the two grids, and the systematic that
-    introduces goes straight into the timing budget - 44 ms at 5.078 mHz -
-    without anything failing.
+        file starts here
+        |
+        |<-- ORBIT_LEAD_IN -->|
+        |                     |
+        theirs: k = 0 ....... k = 128 ....................
+        ours:                 j = 0 ......................
+
+    Theirs is pinned to the file's first sample: ``pyResponseTDI`` builds its
+    axis as ``arange(len(input)) * dt`` and cannot start elsewhere. Ours starts
+    ``ORBIT_LEAD_IN`` later, because the light-travel-time solve reads the
+    sender backwards and ``InterpolatedOrbits`` will not extrapolate below the
+    file's first sample.
+
+    That is the whole role: their sample ``j + offset`` is our sample ``j``, to
+    the bit. Exact, lossless, and true of every sample - including ones neither
+    code can use. **Which samples to trust is a separate question**, answered by
+    ``common_interior``; this only lets it state one code's dead zone in the
+    other's frame. Computed from the configuration and never fitted to
+    either code's output, so the comparison has no free alignment parameter.
 
     Parameters
     ----------
     cfg : ComparisonConfig
-        Must be on the ESA orbits, since the analytic provider has no file
-        epoch to measure against.
+        Must be on the ESA orbits: the analytic provider has no file, so there
+        is no epoch to measure the gap against.
 
     Returns
     -------
     offset : int
-        Whole samples from their first sample to ours.
+        Whole samples from their first sample to ours. 128 at the default
+        tiling, which is also exactly one wavelet row.
+
+    Raises
+    ------
+    ValueError
+        The gap is not a whole number of samples. The two codes would then
+        sample *interleaved* instants rather than the same ones, and comparing
+        them would need an interpolation whose error is indistinguishable from
+        a real timing disagreement.
     """
     if cfg.orbits_model != "esa":
         raise ValueError(
             "grid_offset needs an orbit file to define the epoch; build the "
-            "configuration with ComparisonConfig.for_esa()."
+            "configuration with ComparisonConfig.for_esa(). Do not work "
+            "around it - see ComparisonConfig.build_orbits for why the "
+            "analytic orbits cannot be compared against fastlisaresponse."
         )
 
     exact = (cfg.t0 - cfg.orbit_span()[0]) / cfg.dt
@@ -231,6 +260,36 @@ def to_flr_angles(theta, phi):
     lam, beta : float
         Ecliptic longitude and latitude, in radians, for
         ``is_ecliptic_latitude=True``.
+
+    Notes
+    -----
+    That holds for the sky *direction*, not for the polarisation basis built on
+    it. With this mapping applied, ``fastlisaresponse``'s sky vectors (in the
+    ``get_projections`` block) relate to ours as
+
+    ================== ==================== ==========================
+    theirs             ours                 kind of difference
+    ================== ==================== ==========================
+    :math:`\hat{k}`    :math:`-\hat{n}`     naming only
+    :math:`\hat{u}`    :math:`\hat{v}`      real: 90 degree rotation
+    :math:`\hat{v}`    :math:`-\hat{u}`     real: 90 degree rotation
+    ================== ==================== ==========================
+
+    The minus in the first row is not a disagreement: their :math:`\hat{k}`
+    points *away* from the source and our :math:`\hat{n}` *towards* it, so
+    :math:`\hat{k} = -\hat{n}` is what the two names mean. Both codes put the
+    source in the same place, which is what the angle mapping achieves.
+
+    The transverse pair is a real difference - the same object, turned 90
+    degrees. Both triads are right-handed about the propagation direction
+    (checked: :math:`\hat{u}\times\hat{v}` equals it in each), so it is a
+    proper rotation: the sense of :math:`\psi` is shared, only its zero point
+    differs. On a spin-2 basis a 90 degree turn sends :math:`e^+` and
+    :math:`e^\times` to minus themselves *together* - verified as
+    :math:`F^{+,\times}` coming out at exactly :math:`-1` times theirs - so it
+    is a global sign with no :math:`+`/:math:`\times` mixing, invisible in the
+    residual. Nothing here corrects for it: ``to_wdm_units`` already carries
+    that :math:`-1`, and rotating the angles would double-count it.
     """
     return float(phi), float(np.pi / 2.0 - theta)
 
@@ -282,18 +341,15 @@ def to_wdm_units(series, cfg) -> np.ndarray:
     costs nothing since the source sits at :math:`m = 13` and the integration
     constant is unobservable anyway.
 
+    The minus is a *product* of two conventions, not the derivative relation
+    on its own. The two codes' polarisation bases differ by a 90 degree
+    rotation, worth a global :math:`-1` on both antenna-pattern factors - see
+    ``to_flr_angles`` Notes. What is measured below is the net sign; this
+    module does not separate the halves, and a comment claiming either one
+    alone would be unfounded.
+
     Applied to *their* output and never to ours, so the quantity under test is
     not touched by the thing that makes it comparable.
-
-    Established three ways rather than assumed. The raw amplitude ratio came
-    out at 0.0319 on all three channels against
-    :math:`2\pi f = 0.031906`. Correlating against a finite-difference
-    :math:`-\mathrm{d}/\mathrm{d}t` of our own channels gave
-    :math:`-0.999999998`. And the 1.7% residual scale in that check is
-    explained exactly by the central difference itself, which underestimates a
-    sinusoid's derivative by :math:`\sin(x)/x = 0.98311` at
-    :math:`x = 2\pi f \delta t`, predicting 1.01718 against 1.01714 measured -
-    so there is no leftover factor, only the derivative.
 
     Parameters
     ----------
@@ -353,20 +409,20 @@ def convert(series, cfg, wdm, offset: int = None) -> np.ndarray:
 
 
 class PaddedReplay:
-    r"""Hands ``ResponseWrapper`` the record this package's response received.
+    r"""A stand-in waveform generator that replays the array we already built.
 
-    ``ResponseWrapper`` calls a waveform generator rather than taking an
-    array, and would otherwise have one built on its own grid: untapered,
-    unpadded, and carrying full-amplitude signal exactly where our record
-    holds zeros. This replays our array instead, so both responses see
-    bit-identical input and the waveform cannot contribute to the residual.
+    An adapter, not a reformulation: the samples are untouched. It changes only
+    the interface (``ResponseWrapper`` insists on calling a generator rather
+    than taking an array), the format (one complex :math:`h_+ + i h_\times`
+    series instead of two real ones), and the placement (``offset`` zeros in
+    front, so both codes' records sit on the same instants).
 
-    Replaying rather than regenerating is deliberate. The taper is
-    ``scipy.signal.windows.tukey`` over the signal's *sample indices*;
-    re-deriving it as a function of absolute time risks disagreeing with
-    scipy at the window edges, at the level the comparison is trying to
-    measure. Because the two grids differ by a whole number of samples,
-    indexing one array is exact where re-evaluating a window is not.
+    Without it ``ResponseWrapper`` would build its own waveform: untapered,
+    unpadded, and at full amplitude exactly where our record holds zeros.
+    Replaying rather than regenerating also keeps the Tukey taper as the same
+    samples, not a re-evaluation that could differ from scipy's at the window
+    edges. Both codes then see bit-identical input, so the waveform cannot
+    contribute to the residual.
 
     Parameters
     ----------
@@ -428,11 +484,6 @@ class PaddedReplay:
 def flr_wrapper_kwargs(cfg, orbits, offset: int = None) -> dict:
     """Arguments for ``ResponseWrapper``, so both codes are set up alike.
 
-    ``orbits`` is a parameter rather than built here: constructing it needs
-    ``lisatools``, which this package does not depend on. Build it from
-    ``cfg.orbit_file`` - the same file the response uses - and configure it
-    before passing it in.
-
     ``Tobs`` is sized so their record spans our whole padded grid *plus* the
     offset, since theirs starts earlier.
 
@@ -449,6 +500,13 @@ def flr_wrapper_kwargs(cfg, orbits, offset: int = None) -> dict:
     -------
     kwargs : dict
         Pass as ``ResponseWrapper(generator, **kwargs)``.
+
+    Raises
+    ------
+    ValueError
+        Via ``grid_offset``, when ``cfg`` is not on the ESA orbits - the two
+        packages' analytic equal-armlength models are in different frames.
+        Passing ``offset`` explicitly skips that call, and so that check.
     """
     offset = grid_offset(cfg) if offset is None else int(offset)
 
@@ -466,78 +524,6 @@ def flr_wrapper_kwargs(cfg, orbits, offset: int = None) -> dict:
         "tdi": TDI_GENERATION,
         "tdi_chan": TDI_CHANNELS,
     }
-
-
-def measure_time_offset(reference, other, dt: float, frequency: float) -> float:
-    r"""Timing offset between two records of the same monochromatic source.
-
-    Two stages, because neither suffices alone. A cross-correlation locates
-    the offset to about a sample; the phase of a single Fourier bin then gives
-
-    .. math::
-
-        \Delta t = -\frac{\arg(B/A)}{2 \pi f}
-
-    which is exact for a monochromatic source and resolves the 44 ms that a
-    :math:`10^{-6}` mismatch allows - 0.4% of a sample, well beyond what
-    fitting a correlation peak could reach. That phase is unique only modulo
-    :math:`1/f`, here 197 s, which is what the first stage settles.
-
-    The *value* is the diagnostic. Convention errors are quantised and none of
-    them lands anywhere near 44 ms, so the number names the cause:
-
-    ========== =============================================
-    offset     cause
-    ========== =============================================
-    5 s        half-sample convention
-    10 s       off-by-one sample
-    8.34 s     reception against emission time
-    640 s      wavelet row centring
-    1280 s     ``ORBIT_LEAD_IN`` not applied
-    10000 s    their ``t0`` buffer
-    2.07e9 s   absolute against rebased file epoch
-    ========== =============================================
-
-    Parameters
-    ----------
-    reference, other : np.ndarray
-        Two records on the same uniform grid. Array shape=(n,).
-    dt : float
-        Cadence, in seconds.
-    frequency : float
-        Source frequency, in Hz.
-
-    Returns
-    -------
-    offset : float
-        Seconds by which ``other`` lags ``reference``.
-    """
-    reference = np.asarray(reference, dtype=float)
-    other = np.asarray(other, dtype=float)
-
-    if reference.shape != other.shape:
-        raise ValueError(
-            f"Shape mismatch: {reference.shape} against {other.shape}."
-        )
-
-    n = reference.size
-
-    # Coarse: correlation peak, to about a sample.
-    spectrum = np.fft.rfft(reference) * np.conj(np.fft.rfft(other))
-    lag = int(np.argmax(np.fft.irfft(spectrum, n=n)))
-    if lag > n // 2:
-        lag -= n
-    coarse = lag * dt
-
-    # Fine: phase of the source's own bin, unique modulo 1/f.
-    phase = np.exp(-2.0j * np.pi * frequency * np.arange(n) * dt)
-    fine = -np.angle(np.dot(other, phase) / np.dot(reference, phase))
-    fine /= 2.0 * np.pi * frequency
-
-    # Lift the fine estimate onto the cycle the coarse one picked out.
-    period = 1.0 / frequency
-
-    return float(fine + np.round((coarse - fine) / period) * period)
 
 
 def common_interior(cfg, offset: int = None) -> slice:

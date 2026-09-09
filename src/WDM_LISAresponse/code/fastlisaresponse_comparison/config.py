@@ -17,12 +17,8 @@ from pathlib import Path
 import numpy as np
 
 from ..utils.utils import wdm_padding_info
+from ..waveforms.waveforms import generate_windowed_waveform
 
-
-#: Default epoch, in seconds. Deliberately not zero, for the reason
-#: ``tests/conftest.py`` gives: a zero epoch hides floating-point cancellation
-#: that only appears at a realistic time.
-DEFAULT_T0 = 3.15e7
 
 #: Orbit models this study can build. ``"equal_armlength"`` is closed form;
 #: ``"esa"`` reads an orbit file into ``lisaorbits.InterpolatedOrbits``.
@@ -46,7 +42,9 @@ class ComparisonConfig:
     r"""The full parameter set for one comparison run.
 
     Frozen: derive variants with ``variant()``, which keeps ``__post_init__``
-    on the path of every object that exists.
+    on the path of every object that exists. ``build()`` turns one into a
+    transform and a response, and ``waveform()`` generates the source it
+    names, so a caller never assembles either by hand.
 
     Attributes
     ----------
@@ -61,28 +59,31 @@ class ComparisonConfig:
     q : int
         WDM truncation parameter.
     max_lag_L : int
-        Maximum retained wavelet time-pixel lag :math:`L`. Raised above the
-        usual 25 here; see ``Notes``.
+        Maximum retained wavelet time-pixel lag :math:`L`. 51 rather than the
+        usual 25; see ``Notes``. Sets the guard band - see ``padding``.
     num_interp_points : int
-        Interpolation points for the time-delay filter tables. Raised well
-        above the package default here; see ``Notes``.
+        Interpolation points for the time-delay filter tables. See ``Notes``.
     t0 : float
         Absolute time of the first *padded* sample, in seconds.
     m_bin : int
-        WDM frequency bin holding the binary. Bin-centred, so the source
-        occupies one row - which is what makes the residual map legible and
-        the time-offset measurement in ``conventions`` exact.
+        WDM frequency bin holding the binary, so :math:`f = m \Delta F`.
+        Bin-centred, so the source occupies one row - which is what makes the
+        residual map legible and the time-offset measurement in
+        ``conventions`` exact.
     amp, fdot, iota, psi, phi0 : float
-        Galactic binary parameters. Free: the study only requires both codes
-        receive the same values, and ``utils.wdm_mismatch`` normalises the
-        amplitude away entirely.
+        Galactic binary parameters, from the ``fastlisaresponse`` tutorial
+        binary. See ``waveform()``.
+    tukey_alpha : float
+        Tukey fraction applied by ``waveform()``, in :math:`[0, 1]`. Zero
+        leaves the record untapered.
     theta, phi : float
         Sky position in this package's convention - polar angle from
         :math:`+z`, azimuth in the SSB frame, :math:`\hat{n}` towards the
         source, as ``build_sky_basis`` defines them. ``fastlisaresponse`` uses
-        ecliptic longitude and *latitude* instead; ``conventions`` translates.
+        ecliptic longitude and *latitude* instead;
+        ``conventions.to_flr_angles`` translates.
     orbits_model : str
-        One of ``ORBIT_MODELS``. See ``Notes``.
+        One of ``ORBIT_MODELS``. See ``build_orbits()``.
     orbit_file : str or None
         Orbit file path, required when ``orbits_model == "esa"``. Build these
         with ``for_esa()``, which also sets a workable ``t0``.
@@ -103,96 +104,11 @@ class ComparisonConfig:
     101    8.2e-09
     ====== =========
 
-    Accumulated over the fourteen shifts of a TDI channel, :math:`L = 25`
-    gives :math:`10^{-4}` - level with the local-delay approximation this
-    comparison exists to measure - while :math:`L = 51` gives
-    :math:`1.5\times10^{-6}`, some seventy times below it. The shift costs
-    :math:`O(L)`, so this doubles the runtime, which is the price of keeping
-    the operator out of the measurement. Going further keeps paying, but 51
-    is already well clear.
-
-    ``num_interp_points`` does essentially nothing, and is 256 only because
-    the table costs 204 KiB and the lookup is :math:`O(1)`. At a realistic
-    delay the shift error is identical to four figures across 64, 256, 4096
-    and 16384 points, at every :math:`L`: lag truncation dominates completely
-    and the interpolation is invisible beneath it.
-
-    Beware the :math:`\delta = 0` case, which suggests otherwise. There the
-    kernel is exactly diagonal, so lag truncation vanishes and interpolation
-    is all that is left - it then converges as :math:`O(h^2)`, four-fold per
-    doubling, out to :math:`3\times10^{-11}`. That measurement is real and
-    entirely unrepresentative: zero delay is the one point where the dominant
-    error is absent. Nothing in this pipeline shifts by zero.
-
-    The guard band is doubled to :math:`P = 2\lceil L/2 \rceil` rows per side,
-    which is :math:`\geq L`. The signal passes through two variable time
-    shifts - once inside ``one_arm_response`` to reach the retarded phase,
-    once in the TDI combination - and :math:`P \geq L` is what makes both
-    clean: the first analysed row then reads down to :math:`P - L \geq 0`, so
-    no analysed row wraps at all, rather than relying on the wrap landing in
-    the opposite pad as ``wdm_padding_info`` alone does.
-
-    Two is the limit, and not because each stage needs its own guard. After
-    the second shift the *pad* rows are wrap-contaminated, since their wrapped
-    reads now reach a trailing pad that the first shift left non-zero, and a
-    third shift's analysed rows would read them. Widening :math:`P` does not
-    help: the count is a property of the wrap, not of the pad width. Hence no
-    knob - the depth is fixed at two by the pipeline, and the guard that
-    serves it is fixed too.
-
-    Nothing needs re-zeroing between the stages. After the first shift the pad
-    holds genuine leaked signal at :math:`1.3\times10^{-3}` of peak, and
-    clearing it perturbs the analysed region by :math:`3\times10^{-5}` in
-    relative L2 - introducing error rather than removing it.
-
-    The padding closes on ``N`` exactly rather than rounding past it, since
-    :math:`2\lceil L/2 \rceil` is always even and the parity rounding inside
-    ``wdm_padding_info`` never fires. Checked in ``__post_init__``.
-
-    **The comparison runs on the ESA file.** Not for precision - both routes
-    are far inside the budget - but because second-generation TDI exists to
-    handle flexing arms, and the analytic model flexes 120 times less.
-    Comparing gen-2 on it would test the least interesting part of the
-    calculation.
-
-    The two codes' *analytic* equal-armlength models are also not the same
-    orbit as each other. ``lisaorbits`` works in equatorial coordinates and
-    ``lisatools.detector`` in ecliptic, so their positions differ by a
-    rotation about the vernal equinox through the obliquity,
-    :math:`23.4393^\circ` - :math:`6\times10^{10}` m, or 90 s of light. That
-    is a difference of description, not of physics: :math:`\hat{n}\cdot x_r`
-    is a dot product and survives the rotation, so mapping the sky angles
-    between frames would recover the comparison, to a residual of
-    :math:`3\times10^4` m or :math:`10^{-4}` s. In mismatch that is
-    :math:`5\times10^{-12}`, negligible. The route is sound; it is simply the
-    less interesting orbit, and it costs a rotation matrix to get right.
-
-    Reading the *same file* avoids the rotation entirely - neither package
-    converts on load, so both end up in the file's own frame and the sky
-    mapping reduces to latitude against polar angle. Positions then agree to
-    304 m, :math:`10^{-6}` s of light.
-
-    Mind the epoch when doing it: ``lisatools`` rebases the file's time axis
-    to zero and keeps the true start in a separate ``t0_base`` attribute,
-    where ``lisaorbits`` returns absolute times. The same file therefore
-    carries two time conventions two billion seconds apart. That offset is
-    exactly ``t0_base``, and reconciling it belongs to ``conventions``.
-
-    ``"equal_armlength"`` remains for the tests and for quick work where no
-    file and no epoch is a convenience. It is closed form and unbounded in
-    time.
-
-    Equal armlengths do not imply constant light-travel times. The geometry is
-    rigid, all three instantaneous separations holding 8.339102380 s to
-    :math:`2\times10^{-13}` s, but the solve is retarded, giving
-    :math:`\ell_{sr} \approx L(1 + v_s\cdot\hat{r}_{sr}/c)`. At 29.9 km/s that
-    term is :math:`\pm5.7\times10^{-4}` s: it reverses under
-    :math:`s \leftrightarrow r`, splitting the directions by
-    :math:`1.1\times10^{-3}` s, and swings as the triangle revolves, drifting
-    each link by :math:`3\times10^{-4}` s over 30 days. So the delays do vary,
-    first-generation TDI does leave a laser-noise residual, and the
-    cancellation test discriminates here. The ESA orbits vary ~150 times
-    faster, which is the reason to move that test to them.
+    Over the fourteen shifts of a TDI channel, :math:`L = 25` reaches
+    :math:`10^{-4}` - level with the local-delay approximation this comparison
+    exists to measure - while :math:`L = 51` reaches
+    :math:`1.5\times10^{-6}`. The shift costs :math:`O(L)`, so 51 doubles the
+    runtime and keeps the operator out of the measurement.
     """
 
     # Grid
@@ -204,17 +120,21 @@ class ComparisonConfig:
     # Response
     max_lag_L: int = 51
     num_interp_points: int = 256
-    t0: float = DEFAULT_T0
+    # Only ever reached by an equal-armlength config; for_esa() overrides it
+    # from the file. Not zero, so phase accumulation is exercised at an epoch
+    # as realistic as the ESA one.
+    t0: float = 3.15e7
 
     # Source
     m_bin: int = 13
     amp: float = 1.084702251e-22
-    fdot: float = 1.0e-16
+    fdot: float = 2.446712e-16
     iota: float = 1.11820901
     psi: float = 2.3290324
     phi0: float = 4.91128699
     theta: float = 0.59022203
     phi: float = 5.22979888
+    tukey_alpha: float = 0.01
 
     # Orbits
     orbits_model: str = "equal_armlength"
@@ -245,7 +165,7 @@ class ComparisonConfig:
         if self.n_signal < 1:
             raise ValueError(
                 f"The guard band leaves no signal: N={self.N} against "
-                f"{2 * (self.guard_rows + self.extra_rows)} guard rows of "
+                f"{4 * (self.guard_rows)} guard rows of "
                 f"{self.Nf} samples. Raise N or lower max_lag_L."
             )
         if self.orbits_model not in ORBIT_MODELS:
@@ -300,39 +220,35 @@ class ComparisonConfig:
         return -(-self.max_lag_L // 2)
 
     @property
-    def extra_rows(self) -> int:
-        r"""Rows added on top of ``guard_rows``, doubling the pad.
-
-        Equal to ``guard_rows``, giving :math:`P = 2\lceil L/2 \rceil \geq L`
-        per side. Not a free parameter: the pipeline shifts twice, and
-        :math:`P \geq L` is exactly what keeps both stages' analysed rows from
-        wrapping. See the class ``Notes``.
-        """
-        return self.guard_rows
-
-    @property
     def n_signal(self) -> int:
         """Unpadded signal length, in samples.
 
         Both pads are exact multiples of ``Nf``, so this is a whole number of
         wavelet rows and the signal starts on a row boundary.
         """
-        rows = self.guard_rows + self.extra_rows
+        rows = 2 * self.guard_rows 
         return self.N - 2 * rows * self.Nf
 
     @property
     def padding(self) -> dict:
-        """Padding plan from ``utils.wdm_padding_info``.
+        r"""Padding plan from ``utils.wdm_padding_info``.
 
         Hand ``pad_left``/``pad_right`` to ``utils.apply_zero_padding``, and
         keep the dictionary for ``utils.wdm_cut_info`` afterwards.
+
+        Notes
+        -----
+        The guard is :math:`P = 2\lceil L/2 \rceil` rows per side, twice what
+        ``wdm_padding_info`` adds alone and so :math:`\geq L`. The signal
+        passes through two variable time shifts - one in ``one_arm_response``
+        to reach the retarded phase, one in the TDI combination.
         """
         return wdm_padding_info(
             self.n_signal,
             self.Nf,
             max_lag_L=self.max_lag_L,
-            extra_rows_left=self.extra_rows,
-            extra_rows_right=self.extra_rows,
+            extra_rows_left=self.guard_rows,
+            extra_rows_right=self.guard_rows,
         )
 
     # -- Times -------------------------------------------------------------
@@ -362,6 +278,65 @@ class ComparisonConfig:
         """Sample times of the padded record, shape=(N,)."""
         return self.t0 + np.arange(self.N, dtype=float) * self.dt
 
+    # -- Source ------------------------------------------------------------
+
+    def waveform(self, **overrides):
+        r"""Generate the binary these parameters describe, tapered, unpadded.
+
+        A thin call onto ``waveforms.generate_windowed_waveform`` with the
+        ``"galactic_binary"`` model. It lives here because the parameters do:
+        the point of this class is that the two pipelines cannot end up on
+        different sources, and a free function taking a config would let a
+        caller assemble the arguments itself.
+
+        Pad afterwards with ``utils.apply_zero_padding`` and
+        ``self.padding``. Both codes must then receive *this* array -
+        ``conventions.PaddedReplay`` hands ``fastlisaresponse`` the padded
+        record rather than letting it generate its own, so the waveform
+        conventions cannot differ between them because neither ever sees a
+        second version.
+
+        ``t_ref`` is left to the generator, which defaults it to the first
+        sample - already the right anchor here, since the grid starts at
+        ``signal_times[0]``. Override it only to move the phase origin
+        deliberately.
+
+        Parameters
+        ----------
+        **overrides
+            Any ``waveforms.generate_waveform_galactic_binary`` keyword, or
+            ``tukey_alpha``, to override for this call.
+
+        Returns
+        -------
+        h_plus, h_cross : np.ndarray
+            Polarisations on ``self.signal_times``. Array shape=(n_signal,).
+
+        """
+        alpha = overrides.pop("tukey_alpha", self.tukey_alpha)
+
+        model_kwargs = dict(
+            amp=self.amp,
+            f=self.f_gb,
+            fdot=self.fdot,
+            iota=self.iota,
+            phi0=self.phi0,
+            psi=self.psi,
+        )
+        model_kwargs.update(overrides)
+
+        _, h_plus, h_cross = generate_windowed_waveform(
+            "galactic_binary",
+            t0=float(self.signal_times[0]),
+            dt=self.dt,
+            N=self.n_signal,
+            model_kwargs=model_kwargs,
+            window_function="tukey" if alpha > 0.0 else None,
+            window_kwargs=dict(alpha=alpha),
+        )
+
+        return h_plus, h_cross
+
     # -- Diagnostics -------------------------------------------------------
 
     @property
@@ -372,38 +347,6 @@ class ComparisonConfig:
         combination must accumulate in place rather than stack all its terms.
         """
         return self.Nt * self.Nf * 8
-
-    def time_alignment_tolerance(self, target_mismatch: float = 1e-6) -> float:
-        r"""Timing agreement the two codes need for a given mismatch.
-
-        A constant offset is a pure phase error on a monochromatic source, so
-        :math:`\mathcal{M} \approx \tfrac{1}{2}(2\pi f \Delta t)^2` and
-
-        .. math::
-
-            |\Delta t| \lesssim \sqrt{2\mathcal{M}} \,/\, 2 \pi f .
-
-        At the default tiling and :math:`10^{-6}` that is 44 ms, or 0.4% of
-        one sample - by far the tightest requirement in the study, and why
-        ``conventions.measure_time_offset`` measures the offset rather than
-        assuming the epochs agree.
-
-        Parameters
-        ----------
-        target_mismatch : float
-            Mismatch to be reached. Optional.
-
-        Returns
-        -------
-        tolerance : float
-            Largest tolerable constant timing offset, in seconds.
-        """
-        if target_mismatch <= 0.0:
-            raise ValueError(
-                f"target_mismatch must be positive, got {target_mismatch}."
-            )
-        return float(np.sqrt(2.0 * target_mismatch)
-                     / (2.0 * np.pi * self.f_gb))
 
     # -- Construction ------------------------------------------------------
 
@@ -442,6 +385,31 @@ class ComparisonConfig:
         -------
         orbits : lisaorbits.Orbits
             A provider exposing ``compute_position(t, sc=[...])``.
+
+        Notes
+        -----
+        **The comparison runs on the ESA file.** Not for precision - both are
+        far inside the budget - but because second-generation TDI exists to
+        handle flexing arms, and the analytic model flexes 120 times less.
+
+        The two packages' analytic equal-armlength models are also not the
+        same orbit: ``lisaorbits`` works in equatorial coordinates and
+        ``lisatools.detector`` in ecliptic, so their positions differ by the
+        obliquity, :math:`23.4393^\\circ` or :math:`6\\times10^{10}` m. That is
+        description rather than physics - mapping the sky angles between
+        frames would recover it - but reading the *same file* avoids the
+        rotation entirely, since neither package converts on load. Positions
+        then agree to 304 m. ``conventions.flr_wrapper_kwargs`` refuses a
+        non-ESA configuration on these grounds.
+
+        ``"equal_armlength"`` stays for the tests: closed
+        form, no file, no epoch, unbounded in time. Its arms are rigid but its
+        light-travel times are not - the solve is retarded, giving
+        :math:`\\ell_{sr} \\approx L(1 + v_s\\cdot\\hat{r}_{sr}/c)`, which
+        splits the two directions of a link by :math:`1.1\\times10^{-3}` s and
+        drifts each by :math:`3\\times10^{-4}` s over 30 days. First-generation
+        TDI does leave a residual here; the ESA orbits vary ~150 times faster,
+        which is why the cancellation test belongs on them.
         """
         if self.orbits_model == "equal_armlength":
             from lisaorbits import EqualArmlengthOrbits
@@ -572,8 +540,6 @@ class ComparisonConfig:
             f"(Nt, Nf) grid",
             f"orbits           = {self.orbits_model}",
             f"epoch            t0 = {self.t0:.6g} s",
-            f"alignment      dt < {self.time_alignment_tolerance():.4f} s "
-            f"for a 1e-6 mismatch",
         ]
         if self.orbits_model == "esa":
             # Basename only. The full path is an absolute one on whoever ran
@@ -594,9 +560,9 @@ DEFAULT = ComparisonConfig.for_esa()
 #: conventions. Fix every convention here before running the full record.
 SMOKE = ComparisonConfig.for_esa(N=2 ** 18)
 
-#: Closed-form equal-armlength orbits, thirty days. No file, no epoch to get
+#: Closed-form equal-armlength orbits, fifteen days. No file, no epoch to get
 #: right, unbounded in time - which makes it the convenient one for tests and
 #: for poking at the machinery. Its arms flex 120 times less than the real
 #: ones, and its frame is not ``lisatools``', so it is not what the
-#: comparison should be run on. See ``ComparisonConfig`` Notes.
-ANALYTIC = ComparisonConfig(N=2 ** 18)
+#: comparison should be run on. See ``ComparisonConfig.build_orbits``.
+ANALYTIC = ComparisonConfig(N=2 ** 17)

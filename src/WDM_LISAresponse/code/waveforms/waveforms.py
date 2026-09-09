@@ -29,6 +29,7 @@ def _get_waveform_models():
     return {
         "monochromatic": generate_waveform_monochromatic,
         "linear_freq": generate_waveform_linear_freq,
+        "galactic_binary": generate_waveform_galactic_binary,
         "emri": generate_waveform_emri,
     }
 
@@ -249,6 +250,118 @@ def generate_waveform_linear_freq(times, A_plus, A_cross, f_start, f_end, phi_0)
     h_plus, h_cross = waveform_polarisations(A_plus, A_cross, phase)
 
     return h_plus, h_cross
+
+def generate_waveform_galactic_binary(times, amp, f, fdot, iota, phi0, psi,
+                                      t_ref=None):
+    r"""
+    Generates a galactic binary: a slowly chirping, inclined, polarised source.
+
+    .. math::
+
+        \Phi(t) = 2\pi \left[ f \tau
+            + \tfrac{1}{2} \dot{f} \tau^2 \right] + \phi_0 ,
+        \qquad \tau = t - t_{\mathrm{ref}} ,
+
+    with source-frame polarisations
+    :math:`h^S_+ = A(1 + \cos^2\iota)\cos\Phi` and
+    :math:`h^S_\times = 2 A \cos\iota \sin\Phi`, rotated into the SSB frame by
+    :math:`\psi`:
+
+    .. math::
+
+        h_+ = h^S_+ \cos 2\psi - h^S_\times \sin 2\psi , \qquad
+        h_\times = h^S_+ \sin 2\psi + h^S_\times \cos 2\psi .
+
+    This is ``monochromatic`` with a chirp and a source parametrisation: set
+    :math:`\dot{f} = 0` and the two agree, with
+    :math:`A_+ = A(1 + \cos^2\iota)` and :math:`A_\times = 2A\cos\iota` up to
+    the :math:`\psi` rotation. Both are kept because they are asked different
+    questions - one is a test tone with the amplitudes set directly, the other
+    a source with an inclination.
+
+    Parameters
+    ----------
+    times : ndarray [seconds]
+        numpy array of times for sampling. Absolute, on the same timeline as
+        the response's ``t0``. Need not be uniformly spaced.
+    amp : float
+        overall strain amplitude
+    f : float
+        GW frequency at ``t_ref`` [Hz]
+    fdot : float
+        frequency derivative [Hz/s]
+    iota : float
+        inclination [rad]
+    phi0 : float
+        phase at ``t_ref`` [rad]
+    psi : float
+        polarisation angle [rad]
+    t_ref : float [seconds]
+        phase origin: the absolute time at which the phase is ``phi0``.
+        Defaults to ``times[0]``. See ``Notes``.
+
+    Returns
+    -------
+    h_plus : ndarray
+        plus polarised signal, shaped like times
+    h_cross : ndarray
+        cross polarised signal, shaped like times
+
+    Notes
+    -----
+    ``t_ref`` is an argument rather than an implied zero because a source is
+    generated at a realistic epoch. At :math:`t_0 = 3.15\times10^7` s the first
+    sample already carries :math:`2\pi f t_0 \approx 10^6` rad, and a generator
+    that silently measured phase from zero would disagree with one that did not
+    by that much.
+
+    It cannot be left to a downstream alignment step to absorb. A phase
+    measurement recovers an offset only modulo :math:`1/f`, which for a
+    millihertz source is a few hundred seconds, whereas the antenna-pattern
+    envelope varies over a year. A gross origin error would wrap to a
+    harmless-looking sub-cycle offset in the carrier while leaving the
+    modulation misaligned, and nothing downstream would say so.
+
+    The :math:`\dot{f}` term is insensitive to the choice: at
+    :math:`\dot{f} = 10^{-16}` Hz/s, shifting the origin by
+    :math:`3\times10^{7}` s moves the frequency by :math:`3\times10^{-9}` Hz.
+    The sensitivity is all in the linear phase.
+
+    :math:`\psi` is applied here rather than by the response, so
+    :math:`\psi = 0` means :math:`h_+` aligned with :math:`\hat{u}` as
+    ``lisa_response.response_sub.build_sky_basis`` defines it - the rotation
+    above is the inverse of rotating that basis about the propagation
+    direction, and the triad is right-handed about it. The overall sign and
+    whether the :math:`(1 + \cos^2\iota)` carries a half multiply both
+    polarisations equally and normalise away; the :math:`\psi` rotation is the
+    one that mixes them, so a sign error there survives.
+    """
+    times = np.asarray(times, dtype=float)
+
+    if times.ndim != 1 or times.size < 2:
+        raise ValueError(
+            f"times must be a 1D array with at least two samples, got shape "
+            f"{times.shape}."
+        )
+
+    origin = float(times[0]) if t_ref is None else float(t_ref)
+    tau = times - origin
+
+    phase = 2.0 * np.pi * (f * tau + 0.5 * fdot * tau * tau) + phi0
+
+    cos_iota = np.cos(iota)
+    h_source_plus, h_source_cross = waveform_polarisations(
+        amp * (1.0 + cos_iota * cos_iota), 2.0 * amp * cos_iota, phase,
+    )
+
+    cos_2psi = np.cos(2.0 * psi)
+    sin_2psi = np.sin(2.0 * psi)
+
+    h_plus = h_source_plus * cos_2psi - h_source_cross * sin_2psi
+    h_cross = h_source_plus * sin_2psi + h_source_cross * cos_2psi
+
+    return h_plus, h_cross
+
 
 def generate_waveform_emri(
     times,
