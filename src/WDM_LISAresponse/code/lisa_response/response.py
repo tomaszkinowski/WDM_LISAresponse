@@ -632,7 +632,29 @@ class LISAresponse:
             self.wdm_class, response, "wdm", out_domain,
             batch_shape, len(link_indices), drop_link_axis,
         )
+    
+    def __repr__(self) -> str:
+        r"""
+        #String representation of the WDM_transform instance.
 
+        #Returns
+        #-------
+        #text : str
+        #    A string representation of WDM_transform instance.
+        """
+        lines = []
+        lines.append( (f"WDM_transform(Nf={self.Nf}, N={self.N}, q={self.q}, "
+                f"d={self.d}, A_frac={self.A_frac})") )
+        lines.append( f"{self.Nt = } time cells" )
+        lines.append( f"{self.Nf = } frequency cells" )
+        lines.append( f"{self.dT = } time resolution" )
+        lines.append( f"{self.dF = } frequency resolution" )
+        lines.append( f"{self.dt = } time series cadence" )
+        lines.append( f"{self.df = } time series fft frequency resolution" )
+        lines.append( f"{self.K = } window length" )
+        text = "\n".join(lines)
+        return text
+    
     def __call__(self,
                  theta,
                  phi,
@@ -668,3 +690,5 @@ class LISAresponse:
             Array shape=(..., num_links, Nt, Nf).
         """
         return self.one_arm_response(theta, phi, h_plus, h_cross)
+
+    
