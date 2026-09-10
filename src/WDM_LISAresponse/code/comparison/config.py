@@ -1,14 +1,14 @@
-r"""Locked parameters for the ``fastlisaresponse`` comparison.
+r"""Locked parameters for the external-code comparisons.
 
-Every number defining the study lives here once, so the two pipelines cannot
+Every number defining the study lives here once, so the pipelines cannot
 drift onto different grids, sources or orbits. ``DEFAULT`` is the real run;
 ``SMOKE`` is a thirty-day version for shaking out conventions before spending
 minutes on the time-domain reference path. Both share :math:`\Delta F`, and so
 the same source frequency, because :math:`\Delta F = 1/(2 \delta t N_f)` does
 not depend on the record length.
 
-Nothing here imports ``fastlisaresponse``. Angle and unit translation between
-the two codes belongs in ``conventions``.
+Nothing here imports an external code. Angle and unit translation belongs in
+``common``.
 """
 
 from dataclasses import dataclass, replace
@@ -63,13 +63,18 @@ class ComparisonConfig:
         usual 25; see ``Notes``. Sets the guard band - see ``padding``.
     num_interp_points : int
         Interpolation points for the time-delay filter tables. See ``Notes``.
+    num_integral_points : int
+        Trapezoidal nodes for the time-domain reference,
+        ``one_arm_response_time_domain``. The package default of 10 leaves up
+        to :math:`3\times10^{-4}` at 5 mHz; 80 leaves
+        :math:`3.4\times10^{-6}` on the worst link, below every other
+        difference between the codes.
     t0 : float
         Absolute time of the first *padded* sample, in seconds.
     m_bin : int
         WDM frequency bin holding the binary, so :math:`f = m \Delta F`.
-        Bin-centred, so the source occupies one row - which is what makes the
-        residual map legible and the time-offset measurement in
-        ``conventions`` exact.
+        Bin-centred, so the source occupies one row, which keeps the residual
+        map legible.
     amp, fdot, iota, psi, phi0 : float
         Galactic binary parameters, from the ``fastlisaresponse`` tutorial
         binary. See ``waveform()``.
@@ -79,9 +84,8 @@ class ComparisonConfig:
     theta, phi : float
         Sky position in this package's convention - polar angle from
         :math:`+z`, azimuth in the SSB frame, :math:`\hat{n}` towards the
-        source, as ``build_sky_basis`` defines them. ``fastlisaresponse`` uses
-        ecliptic longitude and *latitude* instead;
-        ``conventions.to_flr_angles`` translates.
+        source, as ``build_sky_basis`` defines them. The external codes take
+        longitude and *latitude* instead; ``common.sky_angles`` translates.
     orbits_model : str
         One of ``ORBIT_MODELS``. See ``build_orbits()``.
     orbit_file : str or None
@@ -120,6 +124,7 @@ class ComparisonConfig:
     # Response
     max_lag_L: int = 51
     num_interp_points: int = 256
+    num_integral_points: int = 80
     # Only ever reached by an equal-armlength config; for_esa() overrides it
     # from the file. Not zero, so phase accumulation is exercised at an epoch
     # as realistic as the ESA one.
@@ -290,11 +295,8 @@ class ComparisonConfig:
         caller assemble the arguments itself.
 
         Pad afterwards with ``utils.apply_zero_padding`` and
-        ``self.padding``. Both codes must then receive *this* array -
-        ``conventions.PaddedReplay`` hands ``fastlisaresponse`` the padded
-        record rather than letting it generate its own, so the waveform
-        conventions cannot differ between them because neither ever sees a
-        second version.
+        ``self.padding``. Every code must then receive *this* array, so the
+        waveform cannot differ between them.
 
         ``t_ref`` is left to the generator, which defaults it to the first
         sample - already the right anchor here, since the grid starts at
@@ -399,8 +401,8 @@ class ComparisonConfig:
         description rather than physics - mapping the sky angles between
         frames would recover it - but reading the *same file* avoids the
         rotation entirely, since neither package converts on load. Positions
-        then agree to 304 m. ``conventions.flr_wrapper_kwargs`` refuses a
-        non-ESA configuration on these grounds.
+        then agree to 304 m. ``conventions_flr.run`` refuses a non-ESA
+        configuration on these grounds.
 
         ``"equal_armlength"`` stays for the tests: closed
         form, no file, no epoch, unbounded in time. Its arms are rigid but its
@@ -536,6 +538,7 @@ class ComparisonConfig:
             f"source        m = {self.m_bin}, f = {self.f_gb * 1e3:.6f} mHz",
             f"guard         {pad['rows_left']} rows per side "
             f"(2x default; L = {self.max_lag_L})",
+            f"reference nodes   P = {self.num_integral_points}",
             f"grid memory      = {self.grid_bytes / 2**20:.1f} MiB per "
             f"(Nt, Nf) grid",
             f"orbits           = {self.orbits_model}",

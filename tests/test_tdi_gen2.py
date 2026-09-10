@@ -19,7 +19,7 @@ links themselves is
 import numpy as np
 import pytest
 
-from WDM_LISAresponse.code.fastlisaresponse_comparison.tdi import gen2_terms
+from WDM_LISAresponse.code.comparison.tdi import gen2_terms
 from WDM_LISAresponse.code.utils.utils import Link
 
 #: One arm per spacecraft pair. Channel X uses P and Q; Y and Z bring in R,
@@ -244,7 +244,7 @@ def test_wavelet_tdi_matches_the_analytic_combination(phases):
     """
     from scipy.signal.windows import tukey
 
-    from WDM_LISAresponse.code.fastlisaresponse_comparison import config
+    from WDM_LISAresponse.code.comparison import config
 
     cfg = config.ComparisonConfig(N=2 ** 17, Nf=64, max_lag_L=51)
     wdm, response = cfg.build()
@@ -308,9 +308,9 @@ def test_wavelet_and_time_domain_tdi_agree_on_the_same_links():
     An upper bound rather than a clean isolation: the time-domain route also
     carries an ``idwt``/``dwt`` round trip that the wavelet route does not.
     """
-    from WDM_LISAresponse.code.fastlisaresponse_comparison import config
-    from WDM_LISAresponse.code.fastlisaresponse_comparison.tdi import TDIgen2
-    from WDM_LISAresponse.code.fastlisaresponse_comparison.tdi_reference import (
+    from WDM_LISAresponse.code.comparison import config
+    from WDM_LISAresponse.code.comparison.tdi import TDIgen2
+    from WDM_LISAresponse.code.comparison.tdi_reference import (
         gen2_xyz_time_domain,
     )
     from WDM_LISAresponse.code.utils.utils import (

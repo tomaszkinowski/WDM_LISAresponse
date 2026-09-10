@@ -1,5 +1,5 @@
 # One known-good environment for WDM_LISAresponse, including the optional
-# fastlisaresponse comparison.
+# external-code comparisons.
 #
 #     conda env create -f environment.yml
 #     conda activate wdm-lisa
@@ -38,8 +38,8 @@
 #
 # Either way, confirm it before running anything:
 #
-#     python -c "from WDM_LISAresponse.code.fastlisaresponse_comparison \
-#         import conventions; print(conventions.check_environment())"
+#     python -c "from WDM_LISAresponse.code.comparison \
+#         import conventions_flr; print(conventions_flr.check_environment())"
 #
 # The comparison notebook runs that in its first cell, because the failure it
 # guards against is a SIGABRT - uncatchable, and silent about its cause.
@@ -71,9 +71,12 @@ dependencies:
     # Orbit provider. pip only.
     - lisaorbits==3.1.0
 
-    # The comparison. Both pip only; see the macOS note above before use.
+    # The comparisons. All pip only; see the macOS note above before using
+    # fastlisaresponse, whose link sign is wrong before 1.2.1a0.
     - lisaanalysistools==1.2.8
-    - fastlisaresponse==1.1.17
+    - fastlisaresponse==1.2.1a0
+    - lisagwresponse==3.0.2
+    - pytdi==2.2.1
 
     # The wavelet transform, and this package. Both editable, assuming the
     # two repositories sit side by side - which is the working layout, and

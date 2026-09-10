@@ -227,7 +227,7 @@ def test_time_domain_response_matches_the_monochromatic_closed_form():
     import jax.numpy as jnp
     from scipy.signal.windows import tukey
 
-    from WDM_LISAresponse.code.fastlisaresponse_comparison import config
+    from WDM_LISAresponse.code.comparison import config
     from WDM_LISAresponse.code.lisa_response.response_sub import (
         build_link_geometry, compute_angular_geometry_td,
     )
@@ -305,3 +305,82 @@ def test_time_domain_response_matches_the_monochromatic_closed_form():
     for link in range(len(response.link_convention)):
         result = wdm_mismatch(exact[link][interior], got[link][interior])
         assert result["rel_L2"] < 1e-5
+
+
+def test_time_domain_response_converges_to_the_definition_on_the_esa_orbits():
+    r"""On real orbits the only error left is the trapezoid's, as predicted.
+
+    The reference shares nothing with the code under test: its own
+    light-travel-time solve and link direction, the closed-form waveform at
+    times measured from the record start, and 32-point Gauss-Legendre along
+    the photon path, exact to rounding. Measured, the error then follows
+    :math:`(2\pi f\tau)^2/12(P-1)^2` to 1 % from :math:`2.6\times10^{-4}` at
+    :math:`P = 10` to :math:`3\times10^{-9}` at :math:`P = 2560`, with twelve
+    and sixteen taps indistinguishable. Asserting the prediction rather than a
+    bound means any other error above ~1e-7 fails it.
+    """
+    from lisaconstants import c
+
+    from WDM_LISAresponse.code.comparison import config
+    from WDM_LISAresponse.code.lisa_response.response_sub import build_sky_basis
+    from WDM_LISAresponse.code.waveforms.waveforms import (
+        generate_waveform_galactic_binary,
+    )
+    from WDM_LISAresponse.code.utils.utils import apply_zero_padding
+
+    cfg = config.ComparisonConfig.for_esa(N=2 ** 16)
+    wdm, response = cfg.build()
+    orbits = response.orbits_class
+
+    h_plus, h_cross = cfg.waveform()
+    _, h_plus, h_cross = apply_zero_padding(
+        cfg.signal_times, h_plus, h_cross,
+        cfg.padding["pad_left"], cfg.padding["pad_right"],
+    )
+
+    # Mid-record, away from the taper. Times are offsets from the record
+    # start, so float64 rounding at t ~ 2e9 s cannot enter the phase.
+    start, count = cfg.N // 2, 1000
+    offsets = (start + np.arange(count)) * cfg.dt
+    u, v, n = (np.asarray(a) for a in build_sky_basis(cfg.theta, cfg.phi))
+    nodes, weights = np.polynomial.legendre.leggauss(32)
+
+    want, tau = [], []
+    for sender, receiver in response.link_convention:
+        t = cfg.t0 + offsets
+        x_r = orbits.compute_position(t, sc=[receiver])[:, 0]
+        ell = np.zeros_like(t)
+        for _ in range(6):
+            x_s = orbits.compute_position(t - ell, sc=[sender])[:, 0]
+            ell = np.linalg.norm(x_r - x_s, axis=1) / c
+        r = (x_r - x_s) / (c * ell)[:, None]
+
+        # xi = t - Omega.x/c with Omega = -n.
+        xi_r = offsets + x_r @ n / c
+        xi_s = offsets - ell + x_s @ n / c
+        mid, half = (xi_r + xi_s) / 2, (xi_r - xi_s) / 2
+
+        hp, hc = generate_waveform_galactic_binary(
+            (mid[:, None] + half[:, None] * nodes).ravel(), cfg.amp, cfg.f_gb,
+            cfg.fdot, cfg.iota, cfg.phi0, cfg.psi,
+            t_ref=cfg.padding["pad_left"] * cfg.dt,
+        )
+        integral_p = half * (hp.reshape(count, -1) @ weights)
+        integral_c = half * (hc.reshape(count, -1) @ weights)
+
+        ru, rv = r @ u, r @ v
+        want.append(((ru ** 2 - rv ** 2) * integral_p
+                     + 2.0 * ru * rv * integral_c) / (2.0 * (1.0 + r @ n)))
+        tau.append((2 * half).max())
+
+    for P in (40, 160):
+        got = np.asarray(response.one_arm_response_time_domain(
+            cfg.theta, cfg.phi, h_plus, h_cross, num_integral_points=P,
+        ))[:, start:start + count]
+
+        error = max(np.linalg.norm(g - w) / np.linalg.norm(w)
+                    for g, w in zip(got, want))
+        predicted = ((2.0 * np.pi * cfg.f_gb * max(tau)) ** 2
+                     / 12.0 / (P - 1) ** 2)
+
+        assert 0.8 * predicted < error < 1.2 * predicted

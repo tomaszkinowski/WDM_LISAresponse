@@ -43,17 +43,24 @@ docs = [
     "sphinx-autodoc-typehints",
 ]
 
-# Everything examples/fastlisaresponse_comparison.ipynb needs, on top of dev.
-# Nothing in the package imports these: the comparison module takes the orbit
-# provider and the response wrapper from its caller, so the package stays
-# installable and importable without them.
+# The external codes examples/response_comparison.ipynb compares against, one
+# extra per code, and `comparison` for the whole notebook. Nothing in the
+# package imports them: the comparison module takes the classes from its caller.
 #
-# On macOS this install is not sufficient on its own. lisaanalysistools and
-# fastlisaresponse each vendor libstdc++.6.dylib, and loading both aborts the
-# interpreter. Run conventions.check_environment() for the diagnosis and fix.
-comparison = [
-    "fastlisaresponse",
+# fastlisaresponse has the wrong link sign before 1.2.1a0; naming the
+# pre-release lets pip pick it without --pre. On macOS it and
+# lisaanalysistools each vendor libstdc++.6.dylib, and loading both aborts the
+# interpreter: run comparison.conventions_flr.check_environment() for the fix.
+compare-flr = [
+    "fastlisaresponse>=1.2.1a0",
     "lisaanalysistools",
+]
+compare-gwr = [
+    "lisagwresponse>=3.0",
+    "pytdi>=2.2",
+]
+comparison = [
+    "WDM_LISAresponse[compare-flr,compare-gwr]",
     "matplotlib",
     "nbformat",
     "nbclient",
