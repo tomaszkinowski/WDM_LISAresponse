@@ -14,8 +14,8 @@ The sky mapping is latitude against polar angle with no frame rotation, the
 two sample grids differ by a whole number of samples, and no scale or time
 offset has to be fitted.
 
-**The polarisation bases are not the same triad, and the minus sign above is
-not only the derivative.** The two codes' :math:`\hat{u}`, :math:`\hat{v}`
+**The polarisation bases are not the same triad, and that is where the minus
+sign above comes from.** The two codes' :math:`\hat{u}`, :math:`\hat{v}`
 differ by a 90 degree rotation about the propagation direction - see
 ``to_flr_angles``, which carries the mapping - and a rotation of a spin-2
 basis by 90 degrees sends both :math:`e^+` and :math:`e^\times` to minus
@@ -341,12 +341,11 @@ def to_wdm_units(series, cfg) -> np.ndarray:
     costs nothing since the source sits at :math:`m = 13` and the integration
     constant is unobservable anyway.
 
-    The minus is a *product* of two conventions, not the derivative relation
-    on its own. The two codes' polarisation bases differ by a 90 degree
-    rotation, worth a global :math:`-1` on both antenna-pattern factors - see
-    ``to_flr_angles`` Notes. What is measured below is the net sign; this
-    module does not separate the halves, and a comment claiming either one
-    alone would be unfounded.
+    The minus comes from the polarisation bases, not the derivative. They
+    differ by a 90 degree rotation, an exact :math:`-1` on both antenna-pattern
+    factors (see ``to_flr_angles`` Notes), and the measured net sign is also
+    :math:`-1` - so everything else between the two codes, fractional
+    frequency against delay included, nets to :math:`+1`.
 
     Applied to *their* output and never to ours, so the quantity under test is
     not touched by the thing that makes it comparable.

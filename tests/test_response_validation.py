@@ -78,6 +78,50 @@ def test_a_non_finite_epoch_is_refused(t0, wdm, orbits):
         _build(wdm, orbits, t0=t0)
 
 
+#: Span of the bounded provider below: it starts at T0 and runs a day.
+SPAN_START = T0
+SPAN_END = T0 + 86400.0
+
+
+@pytest.fixture(scope="module")
+def bounded_orbits(orbits):
+    """A real ``InterpolatedOrbits`` that only covers one day.
+
+    Sampled from the analytic orbits, so the positions are genuine and the
+    NaNs outside the span come from ``lisaorbits`` itself - the behaviour of
+    an ESA orbit file, without needing one.
+    """
+    from lisaorbits import InterpolatedOrbits
+
+    knots = np.linspace(SPAN_START, SPAN_END, 25)
+    positions = orbits.compute_position(knots)
+
+    return InterpolatedOrbits(knots, positions)
+
+
+@pytest.mark.parametrize("t0", [
+    SPAN_START - 1e4,              # before the orbit file starts
+    SPAN_START + 1.0,              # lead-in shorter than one light-travel time
+    SPAN_END - NF * NT * DT / 2,   # record runs off the end
+], ids=["before", "short_lead_in", "past_end"])
+def test_an_epoch_outside_the_orbit_span_is_refused(t0, wdm, bounded_orbits):
+    """InterpolatedOrbits returns NaN, not an error, outside its span.
+
+    Without the check this builds silently and every response is NaN. The
+    short lead-in case is the subtle one: every receiver time is covered, but
+    the solve reads the sender ~8 s earlier, before the first knot.
+    """
+    with pytest.raises(AssertionError, match="Link geometry is not finite"):
+        _build(wdm, bounded_orbits, t0=t0)
+
+
+def test_an_epoch_inside_the_orbit_span_builds(wdm, bounded_orbits):
+    """With room for the sender's backwards reach, the same provider works."""
+    built = _build(wdm, bounded_orbits, t0=SPAN_START + 1280.0)
+
+    assert np.all(np.isfinite(built.light_travel_time))
+
+
 @pytest.mark.parametrize("max_lag_L", [0, -1, NT, NT + 5])
 def test_a_lag_outside_the_record_is_refused(max_lag_L, wdm, orbits):
     """L must satisfy 0 < L < Nt.

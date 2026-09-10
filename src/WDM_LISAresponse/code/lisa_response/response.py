@@ -171,7 +171,9 @@ class LISAresponse:
         The orbit time span is deliberately not checked here. Providers are
         duck-typed and analytic ones such as ``EqualArmlengthOrbits`` are
         unbounded, so there is no span to test against. An out-of-range ``t0``
-        surfaces as an interpolation-bounds error from ``setup_geometry``.
+        is caught afterwards instead, by the finiteness check at the end of
+        ``setup_geometry``: ``InterpolatedOrbits`` returns NaN outside its
+        span rather than raising.
 
         Returns
         -------
@@ -287,6 +289,13 @@ class LISAresponse:
         on the host in ``numpy``, since orbit providers cannot be traced. The
         results are moved to the device here, at the boundary.
 
+        The geometry is checked to be finite before it is stored. This is the
+        orbit-coverage check: ``InterpolatedOrbits`` returns NaN rather than
+        raising outside its span, and without the check a ``t0`` outside the
+        orbit file gives an all-NaN response and no error. The solve reads the
+        sender one light-travel time before each :math:`t_n`, so the orbits
+        must start at least that far before ``t0``.
+
         Returns
         -------
         None
@@ -298,6 +307,15 @@ class LISAresponse:
                 self.link_convention,
             )
         )
+
+        assert all(np.all(np.isfinite(array)) for array in
+                   (light_travel_time, link_direction, receiver_position)), \
+                    f"Link geometry is not finite on " \
+                    f"[{float(self.wavelet_times[0]):.6g}, " \
+                    f"{float(self.wavelet_times[-1]):.6g}] s. The orbits must " \
+                    f"cover this span plus one light-travel time before it; " \
+                    f"InterpolatedOrbits returns NaN, not an error, outside " \
+                    f"its span. Check t0 against the orbit file."
 
         self.light_travel_time = jnp.asarray(light_travel_time)
         self.link_direction = jnp.asarray(link_direction)

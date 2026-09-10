@@ -42,7 +42,16 @@ dmypy.json
 data/*.txt
 data/*.h5
 
-#keeps local save files 
+#keeps local save files
 _local_wdm_*
 dense_runtime_*
 examples/exact_shift_results/
+
+# Figures. Notebooks write plots beside themselves and none of them belong in
+# the history; the logo is the one tracked image. examples/stylesheet.mplstyle
+# is deliberately NOT ignored - the notebooks load it by name, so a clone
+# without it has examples that fail on the first plot.
+*.png
+*.pdf
+*.svg
+!logo_images/*.png
