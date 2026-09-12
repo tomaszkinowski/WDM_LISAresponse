@@ -635,25 +635,39 @@ class LISAresponse:
     
     def __repr__(self) -> str:
         r"""
-        #String representation of the WDM_transform instance.
+        String representation of the LISAresponse instance.
 
-        #Returns
-        #-------
-        #text : str
-        #    A string representation of WDM_transform instance.
+        Returns
+        -------
+        text : str
+            A string representation of LISAresponse instance.
         """
+        t_end = self.t0 + self.N * self.dt
+        orbits_name = type(self.orbits_class).__name__
+        orbit_times = getattr(self.orbits_class, "t_interp", None)
+
         lines = []
-        lines.append( (f"WDM_transform(Nf={self.Nf}, N={self.N}, q={self.q}, "
-                f"d={self.d}, A_frac={self.A_frac})") )
-        lines.append( f"{self.Nt = } time cells" )
-        lines.append( f"{self.Nf = } frequency cells" )
-        lines.append( f"{self.dT = } time resolution" )
-        lines.append( f"{self.dF = } frequency resolution" )
-        lines.append( f"{self.dt = } time series cadence" )
-        lines.append( f"{self.df = } time series fft frequency resolution" )
-        lines.append( f"{self.K = } window length" )
-        text = "\n".join(lines)
-        return text
+        lines.append(f"LISAresponse(max_lag_L={self.max_lag_L}, "
+                     f"num_interp_points={self.num_interp_points})")
+        lines.append(f"record       [{self.t0:.4f}, {t_end:.4f}] s TCB, "
+                     f"{self.N * self.dt / 86400.0:.2f} d")
+
+        if orbit_times is None:
+            lines.append(f"orbits       {orbits_name} (analytic, unbounded)")
+        else:
+            lines.append(f"orbits       {orbits_name}, span "
+                         f"[{orbit_times[0]:.4f}, {orbit_times[-1]:.4f}] s; "
+                         f"t0 is {self.t0 - orbit_times[0]:.1f} s after its "
+                         f"start")
+
+        lines.append(f"links        {self.num_links}: {self.link_convention}")
+        lines.append(f"light time   "
+                     f"{float(self.light_travel_time.min()):.6f} to "
+                     f"{float(self.light_travel_time.max()):.6f} s")
+        lines.append("wdm_class:")
+        lines.extend("    " + line for line in repr(self.wdm_class).splitlines())
+
+        return "\n".join(lines)
     
     def __call__(self,
                  theta,
