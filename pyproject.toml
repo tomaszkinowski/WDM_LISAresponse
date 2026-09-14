@@ -55,6 +55,8 @@ compare-flr = [
     "fastlisaresponse>=1.2.1a0",
     "lisaanalysistools",
 ]
+# lisagwresponse 3 takes the ICRS ra/dec and pytdi 2.2 has the
+# Data.from_orbits(dataset=...) that conventions_gwr passes.
 compare-gwr = [
     "lisagwresponse>=3.0",
     "pytdi>=2.2",

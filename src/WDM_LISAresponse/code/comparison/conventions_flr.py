@@ -41,9 +41,6 @@ from .common import LINK_LABELS, sky_angles
 #: not checking at all.
 _VENDORED = ("libstdc++.6.dylib",)
 
-#: The first release with the corrected link sign.
-MIN_VERSION = (1, 2, 1)
-
 #: Seconds at each end of their record that are not valid, their ``t_buffer``.
 T_BUFFER = 10000.0
 

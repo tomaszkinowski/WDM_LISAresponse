@@ -314,7 +314,7 @@ def test_wavelet_and_time_domain_tdi_agree_on_the_same_links():
         gen2_xyz_time_domain,
     )
     from WDM_LISAresponse.code.utils.utils import (
-        apply_zero_padding, wdm_mismatch,
+        apply_wdm_cut, apply_zero_padding, wdm_cut_info, wdm_mismatch,
     )
 
     cfg = config.ComparisonConfig(N=2 ** 15, Nf=64)
@@ -335,9 +335,9 @@ def test_wavelet_and_time_domain_tdi_agree_on_the_same_links():
     )
     from_time = np.asarray(wdm.dwt(from_time[0]))
 
-    interior = slice(cfg.padding["rows_left"],
-                     cfg.Nt - cfg.padding["rows_right"])
-    result = wdm_mismatch(from_wavelet[interior], from_time[interior])
+    cut = wdm_cut_info(cfg.padding)
+    result = wdm_mismatch(apply_wdm_cut(from_wavelet, cut),
+                          apply_wdm_cut(from_time, cut))
 
     assert result["rel_L2"] < 1e-6
     assert result["mismatch"] < 1e-12

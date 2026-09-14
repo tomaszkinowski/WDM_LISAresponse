@@ -15,10 +15,6 @@ import numpy as np
 from .common import LINK_LABELS, sky_angles
 
 
-#: Oldest releases checked against this package: ``lisagwresponse`` 3 takes
-#: ICRS ``ra``/``dec``, ``pytdi`` 2.2 has ``Data.from_orbits(dataset=...)``.
-MIN_VERSIONS = {"lisagwresponse": (3, 0, 0), "pytdi": (2, 2, 0)}
-
 #: Light travel times in TCB, the quantity our geometry solves.
 DELAY_DATASET = "tcb/ltt"
 
@@ -114,6 +110,8 @@ def channels(data_class, combinations, cfg, links,
         stop = min(start + block_size, cfg.N)
         lo, hi = max(start - margin, 0), min(stop + margin, cfg.N)
 
+        # A GW enters only the science interferometers; pytdi sets the
+        # unlisted ref_/tmi_ measurements to zero.
         data = data_class.from_orbits(
             cfg.orbit_file, fs=1.0 / cfg.dt, t0=float(cfg.padded_times[lo]),
             dataset=DELAY_DATASET,

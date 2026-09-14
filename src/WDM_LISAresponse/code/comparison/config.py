@@ -2,12 +2,10 @@ r"""Locked parameters for the external-code comparisons.
 
 Every number defining the study lives here once, so the pipelines cannot
 drift onto different grids, sources or orbits. ``DEFAULT`` is the real run;
-``SMOKE`` is a thirty-day version for shaking out conventions before spending
-minutes on the time-domain reference path. Both share :math:`\Delta F`, and so
-the same source frequency, because :math:`\Delta F = 1/(2 \delta t N_f)` does
-not depend on the record length.
+``SHORT`` is a thirty-day version for shaking out conventions before spending
+minutes on the time-domain reference path.
 
-Nothing here imports an external code. Angle and unit translation belongs in
+Nothing here imports an external code; angle and unit translation live in
 ``common``.
 """
 
@@ -41,10 +39,10 @@ ORBIT_LEAD_IN = 1280.0
 class ComparisonConfig:
     r"""The full parameter set for one comparison run.
 
-    Frozen: derive variants with ``variant()``, which keeps ``__post_init__``
-    on the path of every object that exists. ``build()`` turns one into a
-    transform and a response, and ``waveform()`` generates the source it
-    names, so a caller never assembles either by hand.
+    Frozen: ``variant()`` returns a revalidated copy, so every instance has
+    passed ``__post_init__``. ``build()`` constructs the transform and
+    response, and ``waveform()`` the source, so a caller never assembles
+    either by hand.
 
     Attributes
     ----------
@@ -56,19 +54,16 @@ class ComparisonConfig:
         *Padded* record length, in samples; the signal length follows by
         subtracting the guard band. This way round because the transform does
         length-:math:`N` FFTs, so :math:`N` wants to be a power of two.
-    q : int
-        WDM truncation parameter.
     max_lag_L : int
-        Maximum retained wavelet time-pixel lag :math:`L`. 51 rather than the
-        usual 25; see ``Notes``. Sets the guard band - see ``padding``.
+        Maximum retained wavelet time-pixel lag :math:`L`. Sets the guard
+        band (see ``padding``) and the shift error (see ``Notes``).
     num_interp_points : int
-        Interpolation points for the time-delay filter tables. See ``Notes``.
+        Interpolation points for the time-delay filter tables.
     num_integral_points : int
         Trapezoidal nodes for the time-domain reference,
-        ``one_arm_response_time_domain``. The package default of 10 leaves up
-        to :math:`3\times10^{-4}` at 5 mHz; 80 leaves
-        :math:`3.4\times10^{-6}` on the worst link, below every other
-        difference between the codes.
+        ``one_arm_response_time_domain``. 80 rather than the package default
+        of 10: on the worst link at 5 mHz, 10 leaves :math:`2.8\times10^{-4}`
+        and 80 leaves :math:`3.6\times10^{-6}`.
     t0 : float
         Absolute time of the first *padded* sample, in seconds.
     m_bin : int
@@ -119,15 +114,14 @@ class ComparisonConfig:
     dt: float = 10.0
     Nf: int = 128
     N: int = 2 ** 22
-    q: int = 16
 
     # Response
     max_lag_L: int = 51
     num_interp_points: int = 256
     num_integral_points: int = 80
     # Only ever reached by an equal-armlength config; for_esa() overrides it
-    # from the file. Not zero, so phase accumulation is exercised at an epoch
-    # as realistic as the ESA one.
+    # from the file. Non-zero so phase accumulation is exercised away from
+    # t = 0.
     t0: float = 3.15e7
 
     # Source
@@ -221,7 +215,10 @@ class ComparisonConfig:
 
     @property
     def guard_rows(self) -> int:
-        r"""What ``wdm_padding_info`` adds per side, :math:`\lceil L/2 \rceil`."""
+        r"""Rows ``wdm_padding_info`` adds per side.
+
+        That is :math:`\lceil L/2 \rceil`.
+        """
         return -(-self.max_lag_L // 2)
 
     @property
@@ -231,7 +228,7 @@ class ComparisonConfig:
         Both pads are exact multiples of ``Nf``, so this is a whole number of
         wavelet rows and the signal starts on a row boundary.
         """
-        rows = 2 * self.guard_rows 
+        rows = 2 * self.guard_rows
         return self.N - 2 * rows * self.Nf
 
     @property
@@ -243,7 +240,7 @@ class ComparisonConfig:
 
         Notes
         -----
-        The guard is :math:`P = 2\lceil L/2 \rceil` rows per side, twice what
+        The guard is :math:`2\lceil L/2 \rceil` rows per side, twice what
         ``wdm_padding_info`` adds alone and so :math:`\geq L`. The signal
         passes through two variable time shifts - one in ``one_arm_response``
         to reach the retarded phase, one in the TDI combination.
@@ -380,8 +377,7 @@ class ComparisonConfig:
         ``InterpolatedOrbits``, as ``wdm_lisatools_benchmark`` does, which
         preserves the file's absolute epoch. That epoch is around
         :math:`2.07\\times10^9` s, so a default ``t0`` will not fit inside it -
-        hence the span check, which fails readably instead of letting the
-        solve run off the end of a spline.
+        hence the span check.
 
         Returns
         -------
@@ -390,9 +386,9 @@ class ComparisonConfig:
 
         Notes
         -----
-        **The comparison runs on the ESA file.** Not for precision - both are
-        far inside the budget - but because second-generation TDI exists to
-        handle flexing arms, and the analytic model flexes 120 times less.
+        **The comparison runs on the ESA file**, because second-generation
+        TDI exists to handle flexing arms and the analytic model flexes 120
+        times less.
 
         The two packages' analytic equal-armlength models are also not the
         same orbit: ``lisaorbits`` works in equatorial coordinates and
@@ -400,19 +396,11 @@ class ComparisonConfig:
         obliquity, :math:`23.4393^\\circ` or :math:`6\\times10^{10}` m. That is
         description rather than physics - mapping the sky angles between
         frames would recover it - but reading the *same file* avoids the
-        rotation entirely, since neither package converts on load. Positions
-        then agree to 304 m. ``conventions_flr.run`` refuses a non-ESA
-        configuration on these grounds.
-
-        ``"equal_armlength"`` stays for the tests: closed
-        form, no file, no epoch, unbounded in time. Its arms are rigid but its
-        light-travel times are not - the solve is retarded, giving
-        :math:`\\ell_{sr} \\approx L(1 + v_s\\cdot\\hat{r}_{sr}/c)`, which
-        splits the two directions of a link by :math:`1.1\\times10^{-3}` s and
-        drifts each by :math:`3\\times10^{-4}` s over 30 days. First-generation
-        TDI does leave a residual here; the ESA orbits vary ~150 times faster,
-        which is why the cancellation test belongs on them.
+        rotation entirely, since neither package converts on load.
+        ``conventions_flr.run`` refuses a non-ESA configuration on these
+        grounds. ``"equal_armlength"`` stays for the tests.
         """
+
         if self.orbits_model == "equal_armlength":
             from lisaorbits import EqualArmlengthOrbits
 
@@ -508,7 +496,7 @@ class ComparisonConfig:
 
         from ..lisa_response.response import LISAresponse
 
-        wdm = WDM_transform(dt=self.dt, Nf=self.Nf, N=self.N, q=self.q)
+        wdm = WDM_transform(dt=self.dt, Nf=self.Nf, N=self.N)
 
         response = LISAresponse(
             wdm,
@@ -536,8 +524,10 @@ class ComparisonConfig:
             f"({self.T_signal / 86400.0:.1f} d)",
             f"tiling           dT = {self.dT:g} s, dF = {self.dF:.6e} Hz",
             f"source        m = {self.m_bin}, f = {self.f_gb * 1e3:.6f} mHz",
+            f"tukey alpha      = {self.tukey_alpha:g}",
             f"guard         {pad['rows_left']} rows per side "
             f"(2x default; L = {self.max_lag_L})",
+            f"interp points    = {self.num_interp_points}",
             f"reference nodes   P = {self.num_integral_points}",
             f"grid memory      = {self.grid_bytes / 2**20:.1f} MiB per "
             f"(Nt, Nf) grid",
@@ -549,7 +539,8 @@ class ComparisonConfig:
             # this, and a summary that ends up in a committed notebook output
             # should not carry someone's home directory. ``orbit_file`` still
             # holds it for anything that needs to open the file.
-            lines.insert(-1, f"orbit file       = {Path(self.orbit_file).name}")
+            name = Path(self.orbit_file).name
+            lines.insert(-1, f"orbit file       = {name}")
         return "\n".join(lines)
 
 
@@ -561,7 +552,7 @@ DEFAULT = ComparisonConfig.for_esa()
 
 #: Thirty days, same cadence and bands and so the same source frequency and
 #: conventions. Fix every convention here before running the full record.
-SMOKE = ComparisonConfig.for_esa(N=2 ** 18)
+SHORT = ComparisonConfig.for_esa(N=2 ** 18)
 
 #: Closed-form equal-armlength orbits, fifteen days. No file, no epoch to get
 #: right, unbounded in time - which makes it the convenient one for tests and

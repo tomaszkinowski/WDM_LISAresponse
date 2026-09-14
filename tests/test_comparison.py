@@ -1,8 +1,8 @@
 """The external-code comparisons: the conversion first, then each code.
 
 The first tests need no external code: the basis sign written out from both
-definitions, the conversion against a closed form, the version gate and the
-velocity factor against its definition. The rest run ``lisagwresponse``,
+definitions, the conversion against a closed form and the velocity factor
+against its definition. The rest run ``lisagwresponse``,
 ``pytdi`` and ``fastlisaresponse`` when they are installed and skip when not.
 """
 
@@ -18,7 +18,9 @@ from WDM_LISAresponse.code.comparison import (
 from WDM_LISAresponse.code.lisa_response.response_sub import (
     antenna_pattern_factors, build_sky_basis,
 )
-from WDM_LISAresponse.code.utils.utils import apply_zero_padding, wdm_mismatch
+from WDM_LISAresponse.code.utils.utils import (
+    apply_wdm_cut, apply_zero_padding, wdm_mismatch,
+)
 
 
 # -- no external code ----------------------------------------------------
@@ -62,24 +64,10 @@ def test_the_conversion_is_a_plus_integral():
     np.testing.assert_allclose(omega * got, np.sin(omega * t), atol=1e-10)
 
 
-@pytest.mark.parametrize("version, accepted", [
-    ("1.1.17", False), ("1.2.0b0", False), ("1.2.1a0", True), ("1.3", True),
-])
-def test_fastlisaresponse_before_the_sign_fix_is_refused(version, accepted):
-    """1.2.1a0 is the first release computing the link as h_em - h_rec."""
-    minimum = conventions_flr.MIN_VERSION
-
-    if accepted:
-        common.check_version("fastlisaresponse", version, minimum)
-    else:
-        with pytest.raises(AssertionError, match="older than"):
-            common.check_version("fastlisaresponse", version, minimum)
-
-
 def test_the_velocity_factor_is_one_minus_omega_dot_v_over_c():
     """Against the definition, with the velocities taken directly rather than
     interpolated."""
-    cfg = config.SMOKE
+    cfg = config.SHORT
     orbits = cfg.build_orbits()
     times = cfg.padded_times[::1009]
 
@@ -95,10 +83,9 @@ def test_the_velocity_factor_is_one_minus_omega_dot_v_over_c():
 # -- the external codes --------------------------------------------------
 
 
-#: A sky position where every arm stays at 0.26 <= |Omega.r| <= 0.58 over the
-#: six days, so all six links are strong and the two directions of each arm
-#: differ. The study's own source has the 1-3 arm nearly along the wave, 15
-#: times weaker, which inflates that link's relative error.
+#: Every arm keeps 0.26 <= |Omega.r| <= 0.58, so all six links are strong and
+#: each arm's two directions differ. At the study's sky the 1-3 arm is nearly
+#: along the wave and 15 times weaker.
 THETA, PHI = np.radians(90.0), np.radians(170.0)
 
 
@@ -144,9 +131,10 @@ def test_lisagwresponse_links_match_the_time_domain_reference(six_days):
         cfg.theta, cfg.phi, h_plus, h_cross, out_domain="wdm",
         num_integral_points=cfg.num_integral_points))
 
-    rows = common.interior(cfg, conventions_gwr.dead_samples(cfg))
+    cut = common.interior(cfg, conventions_gwr.dead_samples(cfg))
+    ours, theirs = apply_wdm_cut(ours, cut), apply_wdm_cut(theirs, cut)
     for k in range(6):
-        assert wdm_mismatch(ours[k][rows], theirs[k][rows])["rel_L2"] < 4e-5
+        assert wdm_mismatch(ours[k], theirs[k])["rel_L2"] < 4e-5
 
 
 @pytest.mark.slow
@@ -185,15 +173,11 @@ def test_fastlisaresponse_matches_lisagwresponse_and_pytdi(six_days):
     if "vendor separate copies" in report:
         pytest.skip(report)
 
-    import fastlisaresponse
     from fastlisaresponse import pyResponseTDI
     from lisagwresponse import ReadStrain
     from lisatools.detector import Orbits
     from pytdi import Data
     from pytdi.michelson import X2, Y2, Z2
-
-    common.check_version("fastlisaresponse", fastlisaresponse.__version__,
-                         conventions_flr.MIN_VERSION)
 
     cfg, _, _, h_plus, h_cross = six_days
 
@@ -207,7 +191,8 @@ def test_fastlisaresponse_matches_lisagwresponse_and_pytdi(six_days):
     gwr = (gwr_links,
            conventions_gwr.channels(Data, (X2, Y2, Z2), cfg, gwr_links))
 
-    rows = common.interior(cfg, conventions_flr.dead_samples(cfg))
+    cut = common.interior(cfg, conventions_flr.dead_samples(cfg))
+    rows = cut["time_slice"]
     samples = slice(rows.start * cfg.Nf, rows.stop * cfg.Nf)
 
     for theirs, other in zip(flr, gwr):

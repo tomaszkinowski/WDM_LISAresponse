@@ -1,67 +1,32 @@
-r"""What every external comparison shares.
+r"""What the external comparisons share.
 
-The external codes return the fractional frequency shift :math:`y` of the
-received light, in their polarisation basis; this package returns the extra
-light travel time :math:`\delta\ell`, in seconds, in its own. Two signs relate
-them:
+The mapping between their output and ours: they return the fractional
+frequency shift :math:`y` of the received light, we return the extra light
+travel time :math:`\delta\ell` in seconds, and after two signs that cancel
+theirs is :math:`+\mathrm{d}/\mathrm{d}t` of ours with the constellation
+frozen (``to_wdm_units``, ``BASIS_SIGN``, ``velocity_factor``, ``convert``).
+Plus the bookkeeping every comparison needs: sky angles, link labels, the
+shared interior and the results table.
 
-- Light received at :math:`t` left at :math:`t - \ell(t)`, so a growing delay
-  spreads the wavefronts out and lowers the received frequency:
-  :math:`y = -\mathrm{d}\ell/\mathrm{d}t`. Their formula has
-  :math:`h_\mathrm{em} - h_\mathrm{rec}` where the derivative of our integral
-  has :math:`h_\mathrm{rec} - h_\mathrm{em}`.
-- Their :math:`(\hat{u}, \hat{v})` is ours turned by 90 degrees -
-  :math:`\hat{u}_\mathrm{theirs} = \hat{v}`,
-  :math:`\hat{v}_\mathrm{theirs} = -\hat{u}` - which flips both antenna
-  patterns, ``BASIS_SIGN``.
-
-The two cancel:
-
-.. math::
-
-    \mathrm{theirs} = +\frac{\mathrm{d}}{\mathrm{d}t}\,\mathrm{ours} .
-
-Their formula is the derivative of our delay with the constellation frozen.
-The spacecraft moving together multiply it by
-:math:`1 - \hat{\Omega}\cdot\mathbf{v}/c`, with :math:`\hat{\Omega} = -\hat{n}`
-the propagation direction, up to :math:`10^{-4}`; ``velocity_factor`` applies
-that to their output. Each arm's ends moving apart and its direction turning
-add terms of relative size :math:`\sim 1/(f \times 1\,\mathrm{yr})`,
-:math:`10^{-5}` at 5 mHz and growing as :math:`1/f`. They need our geometry
-and window integral, so they are not applied, and they set the floor of any
-comparison against these codes. Cornish & Rubbo's Eq. 9 drops further terms of
-the same order, which none of the codes has.
+The derivation, and the :math:`\sim 10^{-5}` residual it leaves, is in
+``examples/response_comparison.ipynb``.
 """
-
-import re
 
 import numpy as np
 from lisaconstants import c
 
 from ..lisa_response.response import DEFAULT_DIRECTED_LINKS
 from ..lisa_response.response_sub import build_sky_basis
-from ..utils.utils import wdm_mismatch
+from ..utils.utils import apply_wdm_cut, wdm_cut_info, wdm_mismatch
 
 
 #: Their antenna patterns are minus ours: the bases differ by 90 degrees.
 BASIS_SIGN = -1.0
 
-#: Our default link order, labelled receiver-first like ``lisaconstants.LINKS``.
+#: Our link order as the two-digit labels the external codes use: receiver in
+#: the tens digit, sender in the units, as ``lisaorbits.LINKS``. So
+#: ``Link(2, 1)``, from 2 to 1, is 12.
 LINK_LABELS = tuple(10 * r + s for s, r in DEFAULT_DIRECTED_LINKS)
-
-
-def check_version(name : str, version : str, minimum : tuple) -> None:
-    """Refuse a release older than ``minimum``, e.g. ``(1, 2, 1)``.
-
-    Pre-release tags are ignored, so ``1.2.1a0`` counts as ``(1, 2, 1)``.
-    """
-    release = re.match(r"\d+(\.\d+)*", version).group()
-    release = tuple(int(part) for part in release.split("."))
-
-    assert release >= tuple(minimum), \
-                f"{name} {version} is older than " \
-                f"{'.'.join(map(str, minimum))}, the oldest release this " \
-                f"comparison was checked against."
 
 
 def sky_angles(theta, phi) -> tuple:
@@ -79,10 +44,11 @@ def velocity_factor(orbits, times, theta, phi) -> np.ndarray:
     r"""The factor :math:`1 - \hat{\Omega}\cdot\bar{\mathbf{v}}/c` that turns
     their link response into ours, to first order in :math:`v/c`.
 
-    :math:`\bar{\mathbf{v}}` is the mean spacecraft velocity. Using it rather
-    than each link's own two spacecraft leaves ~1e-7, part of the terms this
-    factor does not cover. It varies over the year, so it is evaluated every
-    1000 s and interpolated.
+    :math:`\bar{\mathbf{v}}` is the mean velocity of the three spacecraft at
+    each time, so one factor serves every link and the TDI channels, which mix
+    all six. It varies over the year, so it is evaluated every 1000 s and
+    interpolated, to 2e-13. Why the mean is enough is in
+    ``examples/response_comparison.ipynb``.
 
     Parameters
     ----------
@@ -112,9 +78,11 @@ def velocity_factor(orbits, times, theta, phi) -> np.ndarray:
 def to_wdm_units(series, cfg) -> np.ndarray:
     r"""Their fractional frequency as our delay, in our basis.
 
-    Integrated spectrally, so exact for a band-limited record; the constant is
-    unobservable and dropped. The sign is ``BASIS_SIGN`` times the :math:`-1`
-    of :math:`y = -\mathrm{d}\ell/\mathrm{d}t`, so :math:`+1`.
+    Their :math:`y` integrated over time (spectrally, which is exact here),
+    since :math:`y = -\mathrm{d}\ell/\mathrm{d}t`. The sign is ``BASIS_SIGN``
+    times that :math:`-1`, so :math:`+1`. The result has zero mean: the
+    integration constant is not in their output, and it would only touch the
+    :math:`m = 0` band, which ``interior`` cuts.
 
     Parameters
     ----------
@@ -174,25 +142,29 @@ def convert(series, cfg, wdm, factor=None) -> np.ndarray:
                      for row in to_wdm_units(series, cfg)])
 
 
-def interior(cfg, dead_samples : int = 0) -> slice:
-    """Wavelet rows every code has valid output on.
+def interior(cfg, dead_samples : int = 0) -> dict:
+    """The part of the wavelet grid every code has valid output on.
 
-    Ours is limited by the guard band. ``dead_samples`` is the widest unusable
-    stretch at either end of the other codes' records, and must fit inside it.
+    ``utils.wdm_cut_info`` on this configuration's padding: the guard rows go,
+    and so does the :math:`m = 0` band, which ``WDM_transform`` does not
+    compute correctly by default. Apply it with ``utils.apply_wdm_cut``.
+    ``dead_samples`` is the widest unusable stretch at either end of the other
+    codes' records, and must fit inside our guard band.
     """
-    guard = min(cfg.padding["rows_left"], cfg.padding["rows_right"]) * cfg.Nf
+    pad = cfg.padding
+    guard = min(pad["rows_left"], pad["rows_right"]) * cfg.Nf
 
     assert dead_samples <= guard, \
                 f"{dead_samples} dead samples do not fit in the " \
                 f"{guard}-sample guard band."
 
-    return slice(cfg.padding["rows_left"], cfg.Nt - cfg.padding["rows_right"])
+    return wdm_cut_info(pad)
 
 
 def report(grids : dict,
-           rows : slice,
+           cut : dict,
            reference : str,
-           measure : str = "rel_L2",
+           measures = ("rel_L2", "mismatch"),
            channels = ("X", "Y", "Z")) -> str:
     """Tabulate every method in ``grids`` against ``reference``.
 
@@ -201,31 +173,39 @@ def report(grids : dict,
     grids : dict
         Method name to its channels on the wavelet grid.
         Array shape=(num_channels, Nt, Nf).
-    rows : slice
-        Rows to compare on, from ``interior``.
+    cut : dict
+        The part of the grid to compare on, from ``interior``.
     reference : str
         The key the others are compared against.
-    measure : str
-        Any entry of ``utils.wdm_mismatch``'s result. Optional.
+    measures : sequence of str
+        Entries of ``utils.wdm_mismatch``'s result, one row each per
+        channel. Optional.
     channels : sequence of str
         Channel names, for the table. Optional.
 
     Returns
     -------
     text : str
-        One line per channel, one column per method.
+        One row per channel and measure, one column per method.
     """
     others = [name for name in grids if name != reference]
     width = max(11, *(len(name) + 2 for name in others))
+    label = max(len(measure) for measure in measures) + 2
 
-    lines = [f"{measure} against {reference}",
-             "ch " + "".join(f"{name:>{width}}" for name in others)]
+    lines = [f"against {reference}",
+             f"{'ch':<4}{'measure':<{label}}"
+             + "".join(f"{name:>{width}}" for name in others)]
+
+    def cut_grid(name, i):
+        return apply_wdm_cut(np.asarray(grids[name][i]), cut)
 
     for i, channel in enumerate(channels):
-        ours = np.asarray(grids[reference][i])[rows]
-        values = [wdm_mismatch(ours, np.asarray(grids[name][i])[rows])[measure]
-                  for name in others]
-        lines.append(f"{channel:<3}"
-                     + "".join(f"{value:>{width}.2e}" for value in values))
+        ours = cut_grid(reference, i)
+        results = [wdm_mismatch(ours, cut_grid(name, i)) for name in others]
+        for j, measure in enumerate(measures):
+            lead = channel if j == 0 else ""
+            lines.append(f"{lead:<4}{measure:<{label}}"
+                         + "".join(f"{result[measure]:>{width}.2e}"
+                                   for result in results))
 
     return "\n".join(lines)
