@@ -32,7 +32,14 @@ dev = [
     "astropy",
     "ipykernel",
     "matplotlib",
-    "few",
+    "WDM_LISAresponse[emri]",
+]
+
+# EMRIs through waveforms.emri_generator. FEW installs as fastemriwaveforms and
+# imports as few. Pinned to 2.0 because code/waveforms/few_memmap.py replaces a
+# step inside FEW's amplitude loader and relies on its internals.
+emri = [
+    "fastemriwaveforms==2.0.*",
 ]
 
 docs = [

@@ -12,8 +12,9 @@ from lisaconstants import SIDEREALYEAR_J2000DAY
 from typing import Dict, Optional, Any
 
 # Sidereal year in seconds. Matches ``few.utils.constants.YRSID_SI`` to within
-# one ULP, so FEW stays an optional (dev-only) dependency: EMRI generators are
-# passed in by the caller rather than constructed here.
+# one ULP, so FEW stays an optional dependency (the ``emri`` extra): EMRI
+# generators are passed in by the caller, and ``emri_generator`` imports FEW
+# only when it is called.
 YRSID_SI = SIDEREALYEAR_J2000DAY * 86400.0
 
 
@@ -450,6 +451,46 @@ def generate_waveform_emri(
         h_cross = np.pad(h_cross, (0, pad), mode="constant")
 
     return h_plus, h_cross
+
+
+def emri_generator(**kwargs):
+    r"""
+    Build FEW's Kerr eccentric equatorial EMRI generator, memory-light.
+
+    The ``td_gen`` that ``generate_waveform_emri`` takes: FEW's
+    ``GenerateEMRIWaveform("FastKerrEccentricEquatorialFlux", ...)``, with its
+    amplitude table memory-mapped rather than read into memory. The waveforms
+    are bit-identical, at about a quarter of the peak memory - 1.5 GB against
+    6.4 GB - and a generator that builds in a third of the time. See
+    ``few_memmap`` for how.
+
+    Needs FEW, ``pip install WDM_LISAresponse[emri]``. It is imported here,
+    not at the top of the module, so nothing else in the package needs it.
+
+    Parameters
+    ----------
+    **kwargs : dict
+        Passed to ``GenerateEMRIWaveform``. They override the defaults
+        ``sum_kwargs=dict(pad_output=True, odd_len=True)`` and
+        ``force_backend="cpu"``. ``return_list=True`` is always set, because
+        ``generate_waveform_emri`` reads the two polarisations as a list.
+        Optional.
+
+    Returns
+    -------
+    td_gen : few.waveform.GenerateEMRIWaveform
+        The generator, ready to pass as ``td_gen``.
+    """
+    from few.waveform import GenerateEMRIWaveform
+
+    from .few_memmap import MemmapKerrEccentricEquatorialFlux
+
+    settings = dict(sum_kwargs=dict(pad_output=True, odd_len=True),
+                    force_backend="cpu")
+    settings.update(kwargs)
+
+    return GenerateEMRIWaveform(MemmapKerrEccentricEquatorialFlux,
+                                return_list=True, **settings)
 
 
 def apply_tukey_window(h_plus, h_cross, alpha, **_):
