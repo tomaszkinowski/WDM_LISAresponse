@@ -29,7 +29,7 @@ xtick.labelsize     : 9
 ytick.labelsize     : 9
 
 legend.fontsize     : 9
-legend.frameon      : True
+legend.frameon      : False
  
 lines.linewidth     : 0.8
 
