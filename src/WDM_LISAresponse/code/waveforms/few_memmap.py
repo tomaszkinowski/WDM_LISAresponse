@@ -1,21 +1,60 @@
 """FEW's Kerr EMRI model without reading its amplitude table into memory.
 
-``FastKerrEccentricEquatorialFlux`` builds its amplitude interpolant by reading
-two arrays of spline coefficients, 4.0 and 1.1 GB, from
-``ZNAmps_l10_m10_n55_DS2Outer.h5`` in full. That happens before any waveform is
-made and whatever its length, and it is enough to exhaust
-memory on certain machines. The table's first axis is the spin grid, 
-and a waveform evaluates only the one or two spin knots either side of its own spin: 
-about a sixteenth of the table.
+Building ``FastKerrEccentricEquatorialFlux`` constructs its amplitude class,
+``AmpInterpKerrEccEq``, which reads the spline coefficients in
+``ZNAmps_l10_m10_n55_DS2Outer.h5`` into RAM in full: 5.1 GB, for a process
+peak of 6.4 GB. That happens once, before any waveform is made and whatever
+its length, and it is enough to exhaust an 8 GB machine.
 
-Both arrays are stored contiguous and uncompressed, so here they are
-memory-mapped rather than read. The operating system pages in what the
-interpolant touches, and because those pages are backed by the file it can drop
-them again under pressure instead of compressing or swapping them. Nothing else
-changes: the classes below are FEW's own with only the loading step replaced,
-and the waveforms are bit-identical. Measured on a one-year EMRI at
-:math:`a = 0.9`, peak memory is 1.5 GB against 6.4 GB, and building the
-generator takes 9 s against 33 s.
+The coefficients cover two regions of parameter space, A and B. Each region
+is one array, and in both the first axis is the spin knots::
+
+    CoeffsRegionA   (33, 6993, 2, 1089)   4.0 GB
+    CoeffsRegionB   (33, 6993, 2,  289)   1.1 GB
+
+The axes are spin knot, Teukolsky mode :math:`(l, m, n)`, real and imaginary
+part, and bicubic spline coefficient over FEW's :math:`(w, u)`. The knots are
+in FEW's spin coordinate :math:`z`, not in :math:`a` itself.
+
+A waveform has a single spin, and FEW interpolates linearly in :math:`z`
+between the two knots either side of it, or uses one knot if it lands on
+one. So a waveform uses at most 2 of the 33 knots in each region, yet stock
+FEW reads all 33.
+
+This module memory-maps the two arrays instead of reading them, one map per
+region. Each spin knot's interpolant, an ``AmpInterp2D``, holds a view of its
+own slice of that map, ``coeffs[i]``, which is one dimension lower. Building
+the generator therefore reads only the small knot arrays; coefficients are
+read from disk only when a waveform accesses them. Three things make this
+work:
+
+- Both arrays are stored contiguous and uncompressed, so each is one block of
+  raw bytes at a fixed offset in the file, which is what a memory map needs.
+  ``memory_map_dataset`` refuses anything else.
+- Spin is the first axis and the arrays are in C order, so each knot's slice
+  is itself one contiguous block (122 MB in A, 32 MB in B). Accessing a knot
+  reads only that block. Were spin the last axis, every page of the file
+  would hold values from all 33 knots, and reading one knot would read the
+  whole array.
+- ``AmpInterp2D`` stores ``xp.asarray(coefficients)``, which on the CPU
+  backend is a view rather than a copy, so the interpolants keep the map
+  itself.
+
+When a waveform is evaluated, FEW assigns each trajectory point to region A
+or B and calls that region's interpolants at the 1-2 knots it needs. The
+operating system reads those knots' pages from the file, and FEW makes a
+temporary copy of the requested modes (all of them by default) for its
+interpolation kernel, freed after the call. An inspiral that crosses from one
+region into the other reads the same knots from both maps. Pages that have
+been read stay cached, but they are backed by the file, so under memory
+pressure the operating system drops them instead of compressing or swapping
+them.
+
+Nothing else changes: the classes below are FEW's own with only the loading
+step replaced, and the waveforms are bit-identical. Measured on a one-year
+EMRI at :math:`a = 0.9`, peak memory is 1.5 GB against 6.4 GB, and building
+the generator takes 9 s against 33 s. On a GPU backend each knot's slice is
+still copied to the device at build, as in FEW, so the saving is on the host.
 
 This leans on FEW internals: the layout of ``AmpInterpKerrEccEq.__init__``, and
 the module-level name through which ``FastKerrEccentricEquatorialFlux`` finds
