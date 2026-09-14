@@ -3,10 +3,10 @@
 ``FastKerrEccentricEquatorialFlux`` builds its amplitude interpolant by reading
 two arrays of spline coefficients, 4.0 and 1.1 GB, from
 ``ZNAmps_l10_m10_n55_DS2Outer.h5`` in full. That happens before any waveform is
-made and whatever its length, and on an 8 GB machine it is enough to exhaust
-memory. The table's first axis is the spin grid, and a waveform evaluates only
-the one or two spin knots either side of its own spin: about a sixteenth of the
-table.
+made and whatever its length, and it is enough to exhaust
+memory on certain machines. The table's first axis is the spin grid, 
+and a waveform evaluates only the one or two spin knots either side of its own spin: 
+about a sixteenth of the table.
 
 Both arrays are stored contiguous and uncompressed, so here they are
 memory-mapped rather than read. The operating system pages in what the
