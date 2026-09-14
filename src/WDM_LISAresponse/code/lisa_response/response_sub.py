@@ -678,8 +678,31 @@ def apply_batch_shift(wdm_class,
     to shifting the basis functions, since
     :math:`\langle f(t-\delta), g_{nm}(t)\rangle = \langle f(t),
     g_{nm}(t+\delta)\rangle`, so passing :math:`\delta_n` samples the wave at
-    :math:`t + \delta_n` - the window centre. The shift itself is good to
-    :math:`6\times10^{-7}` at :math:`L=25`, far below the local-delay term.
+    :math:`t + \delta_n` - the window centre.
+
+    How accurate the shift is depends on whether the delay varies. A constant
+    delay is shifted essentially exactly: at :math:`L=25` a shifted tone
+    matches the transform of the exactly shifted signal to a mismatch of
+    :math:`10^{-11}` on a band centre and :math:`6\times10^{-8}` halfway
+    between two. A varying delay is sampled once per row, and every lag
+    feeding row :math:`n` sees :math:`\delta_n`. On a band centre that costs
+    nothing measurable, :math:`2\times10^{-10}`, but a tone whose power is
+    split between two bands pays for it. Halfway between band centres, the
+    one-year orbital delay - :math:`\pm 436` s, changing by up to 0.086 s per
+    row at :math:`\Delta T = 1000` s - leaves mismatches of
+    :math:`8\times10^{-7}`, :math:`10^{-5}` and :math:`4\times10^{-5}` at 1, 5
+    and 10 mHz. At 5 and 10 mHz it grows as the square of the delay's rate of
+    change. This is the off-bin error of the full response, not the
+    band-centre frequency in the sinc, and at 10 mHz it is already within a
+    factor of two of the SNR-100 threshold of :math:`5\times10^{-5}`: higher
+    frequencies, higher SNR or a coarser :math:`\Delta T` can be expected to
+    cross it.
+
+    Removing it needs a first-order term in the delay's rate inside the
+    shift, with filter tables of its own, and that is not implemented.
+    Evaluating each lag at the delay midway between its two rows was tried
+    and rejected: it halves the off-bin error and makes tones on a band centre
+    hundreds of times worse.
 
     The shift wraps periodically at the ends of the record rather than running
     off it. Pixel row :math:`n` reads rows :math:`n-L \ldots n+L`, the kernel
