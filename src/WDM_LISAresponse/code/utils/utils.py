@@ -43,6 +43,10 @@ is why ``wdm_cut_info`` needs no arithmetic of its own.
 None of it is applied automatically anywhere. Padding is the caller's
 decision, since the two response paths need different amounts of it and the
 time-domain path needs no guard band at all.
+
+When a record padded one way must sit on a grid padded another - one
+time-domain reference compared against several tilings - ``apply_repadding``
+moves it between the two without recomputing it.
 """
 from typing import NamedTuple
 
@@ -117,6 +121,85 @@ def apply_zero_padding(times, h_plus, h_cross, pad_left : int, pad_right : int):
     times_pad = np.concatenate((times_left, times, times_right))
 
     return times_pad, h_plus_pad, h_cross_pad
+
+
+def apply_repadding(series,
+                    pad_left_from : int,
+                    pad_right_from : int,
+                    pad_left_to : int,
+                    pad_right_to : int):
+    r"""
+    Move a padded record onto a grid padded differently, at the same cadence.
+
+    **Applies; decides nothing.** Both paddings are sample counts, as
+    ``apply_zero_padding`` takes them. The record moves sample for sample and
+    nothing is interpolated, so the two grids must share a cadence and start
+    the unpadded signal on the same sample of the absolute timeline.
+
+    This is what lets one time-domain reference serve many wavelet tilings.
+    ``wdm_padding_info`` pads by whole rows, so every :math:`N_f` asks for a
+    different record, and rerunning the slow reference for each would dominate
+    any sweep. The response is local in time - outside the signal plus one
+    retarded-phase excursion, about 500 s, it is exactly zero - so compute it
+    once on a generously padded record and move it onto each grid here::
+
+        ref = wdm_padding_info(len(times), Nf_ref, extra_rows_left=..., ...)
+        # ... time-domain reference on the grid ``ref`` describes ...
+        info = wdm_padding_info(len(times), Nf, max_lag_L=L)
+        on_grid = apply_repadding(reference, ref["pad_left"], ref["pad_right"],
+                                  info["pad_left"], info["pad_right"])
+
+    Growing a pad adds zeros. Shrinking one drops samples, which is allowed
+    only when every dropped sample is exactly zero: a crop that discards
+    response would silently change the record, so it raises instead.
+
+    Parameters
+    ----------
+    series : ndarray
+        Padded record, shape ``(..., pad_left_from + n + pad_right_from)``.
+        Leading axes, such as links or a batch, pass through untouched.
+    pad_left_from, pad_right_from : int
+        Padding ``series`` carries at each end, in samples.
+    pad_left_to, pad_right_to : int
+        Padding wanted at each end, in samples.
+
+    Returns
+    -------
+    repadded : ndarray
+        The same record on the new grid. Array shape
+        ``(..., pad_left_to + n + pad_right_to)``.
+    """
+    series = np.asarray(series)
+    pads = tuple(int(pad) for pad in
+                 (pad_left_from, pad_right_from, pad_left_to, pad_right_to))
+
+    if min(pads) < 0:
+        raise ValueError(f"Padding must be non-negative, got {pads}.")
+
+    pad_left_from, pad_right_from, pad_left_to, pad_right_to = pads
+    length_from = series.shape[-1]
+
+    if length_from - pad_left_from - pad_right_from < 1:
+        raise ValueError(
+            f"The padding ({pad_left_from} + {pad_right_from} samples) leaves "
+            f"nothing of a record {length_from} samples long."
+        )
+
+    # The span of the source that survives; anything outside it is dropped.
+    keep_start = max(pad_left_from - pad_left_to, 0)
+    keep_stop = length_from - max(pad_right_from - pad_right_to, 0)
+
+    if np.any(series[..., :keep_start]) or np.any(series[..., keep_stop:]):
+        raise ValueError(
+            "Shrinking the padding would discard non-zero samples. The record "
+            "holds response outside the span the new padding keeps; compute "
+            "it on a record padded at least as generously as the target."
+        )
+
+    widths = [(0, 0)] * (series.ndim - 1) + [
+        (max(pad_left_to - pad_left_from, 0), max(pad_right_to - pad_right_from, 0))]
+
+    return np.pad(series[..., keep_start:keep_stop], widths)
 
 
 def wdm_padding_info(n_samples : int,

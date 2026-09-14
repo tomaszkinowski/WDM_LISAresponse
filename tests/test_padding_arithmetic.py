@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from WDM_LISAresponse.code.utils.utils import (
+    apply_repadding,
     apply_zero_padding,
     apply_wdm_cut,
     wdm_cut_info,
@@ -196,6 +197,70 @@ def test_padding_then_cutting_is_a_round_trip():
 
     assert len(padded_times) == info["target_length"]
     assert np.array_equal(rows[cut["time_slice"]].reshape(-1), signal)
+
+
+# ------------------------------------------------ moving between two paddings
+
+@pytest.mark.parametrize("pads_from, pads_to", [
+    ((40, 70), (40, 70)),      # unchanged
+    ((10, 5), (40, 70)),       # both grow
+    ((40, 70), (10, 5)),       # both shrink
+    ((10, 70), (40, 5)),       # one of each
+    ((0, 0), (16, 48)),        # from no padding at all
+])
+def test_repadding_matches_padding_directly(pads_from, pads_to):
+    """Moving a record to new padding is the same as padding it that way.
+
+    The signal ends in zeros, as a tapered one does, so shrinking a pad only
+    ever drops zeros and is allowed.
+    """
+    times = np.arange(512) * 5.0
+    signal = np.sin(times) * np.hanning(len(times))
+    _, source, _ = apply_zero_padding(times, signal, signal, *pads_from)
+    _, direct, _ = apply_zero_padding(times, signal, signal, *pads_to)
+
+    assert np.array_equal(apply_repadding(source, *pads_from, *pads_to), direct)
+
+
+def test_repadding_keeps_response_that_sits_in_the_padding():
+    """Samples outside the signal survive the move when the new pad reaches.
+
+    The case it exists for: a response leaks a few hundred seconds past the
+    signal, and that leakage belongs to the record on every grid.
+    """
+    source = np.zeros(100)
+    source[18:83] = 1.0                                    # 2 into each pad
+
+    moved = apply_repadding(source, 20, 20, 5, 35)
+
+    assert moved.shape == (100,)
+    assert np.array_equal(np.nonzero(moved)[0], np.arange(3, 68))
+
+
+def test_repadding_leaves_leading_axes_alone():
+    """Links and batch axes pass through; only the last axis moves."""
+    source = np.random.default_rng(0).normal(size=(3, 6, 64))
+    source[..., :8] = source[..., -8:] = 0.0
+
+    moved = apply_repadding(source, 8, 8, 16, 4)
+
+    assert moved.shape == (3, 6, 68)
+    assert np.array_equal(moved[..., 16:64], source[..., 8:56])
+
+
+def test_repadding_refuses_to_drop_response():
+    """A crop that discards non-zero samples would change the record."""
+    source = np.ones(64)
+
+    with pytest.raises(ValueError, match="discard non-zero samples"):
+        apply_repadding(source, 8, 8, 4, 8)
+
+
+@pytest.mark.parametrize("pads", [(-1, 0, 0, 0), (0, 0, 0, -1), (40, 30, 0, 0)])
+def test_repadding_with_impossible_pads_raises(pads):
+    """Negative pads, or pads that leave no signal, are mistakes."""
+    with pytest.raises(ValueError, match="non-negative|leaves nothing"):
+        apply_repadding(np.zeros(64), *pads)
 
 
 # ------------------------------------------------------------------- refusal
