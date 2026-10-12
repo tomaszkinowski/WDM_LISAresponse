@@ -48,9 +48,7 @@ dense_runtime_*
 examples/exact_shift_results/
 
 # Figures. Notebooks write plots beside themselves and none of them belong in
-# the history; the logo is the one tracked image. examples/stylesheet.mplstyle
-# is deliberately NOT ignored - the notebooks load it by name, so a clone
-# without it has examples that fail on the first plot.
+# the history; the logo is the one tracked image.
 *.png
 *.pdf
 *.svg
