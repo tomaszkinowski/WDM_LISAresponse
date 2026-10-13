@@ -6,7 +6,10 @@ The neutrals are for anything that is structure rather than data (grids,
 reference lines, shading).
 """
 
-PALETTE = ["#2a78d6", "#eb6834", "#1baf7a"]
+# blue, orange, aqua, yellow, magenta. Consecutive slots stay distinguishable
+# under colour blindness; slots 2 and 4 (orange, yellow) are the closest pair,
+# so avoid putting those two right next to each other.
+PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
 
 DARK = "#2b2b2b"        # a fourth series that should read as "the main one"
 INK = "#52514e"         # text and annotations
