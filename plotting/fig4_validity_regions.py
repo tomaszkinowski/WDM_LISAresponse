@@ -72,7 +72,30 @@ for f_gb, c in zip(F_GB, PALETTE):
 ax.text(3.5e-2, np.sqrt(DT_LIM[0] * DT_NARROWBAND), "Narrowband", fontsize=8, va="center")
 ax.text(3.5e-2, np.sqrt(DT_SHORT_ATOM * DT_LIM[1]), "Short-atom", fontsize=8, va="center")
 
-ax.text(3.5e-2, 5e6, "Slowly varying\ndelay", fontsize=8, va="center", linespacing=1.0)
+# Rotate the diagonal's label to run parallel to the line on screen, sitting above it
+f0, f1 = 1e-2, 1e-1
+(x0, y0), (x1, y1) = ax.transData.transform([(f0, dt_slow_delay(f0)), (f1, dt_slow_delay(f1))])
+angle = np.degrees(np.arctan2(y1 - y0, x1 - x0))
+# The label is wider than any gap between the GB lines, so it straddles the 3e-2 Hz line:
+# start it so the space between "Slowly" and "varying" falls exactly on that line.
+renderer = fig.canvas.get_renderer()
+def text_width(txt):
+    t = ax.text(0, 0, txt, fontsize=8)
+    w = t.get_window_extent(renderer).width
+    t.remove()
+    return w
+w_space = text_width("Slowly varying") - text_width("Slowly") - text_width("varying")
+along = text_width("Slowly") + 0.5 * w_space                 # anchor -> gap centre, on screen
+x_gap = ax.transData.transform([(F_GB[-1], 1)])[0][0]
+# Aim at the gap at mid-letter height, not at the baseline: rotated text leans, so the
+# gap shifts sideways by (height * sin(angle)) as you go up the letters.
+mid_height = 0.5 * renderer.points_to_pixels(8) * 0.45       # half the x-height, roughly
+SHIFT_UP_LINE = 1.5                                             # [pt] slide up-left along the line
+x_start = (x_gap - (along + renderer.points_to_pixels(SHIFT_UP_LINE)) * np.cos(np.radians(angle))
+           + mid_height * np.sin(np.radians(angle)))
+F_LABEL = ax.transData.inverted().transform([(x_start, 0)])[0][0]
+ax.text(F_LABEL, dt_slow_delay(F_LABEL) * 2.0, "Slowly varying delay", fontsize=8,
+        ha="left", va="bottom", rotation=angle, rotation_mode="anchor", zorder=5)
 
 ax.set_xlabel(r"$f$ [Hz]")
 ax.set_ylabel(r"$\Delta T$ [s]")
