@@ -90,7 +90,7 @@ x_gap = ax.transData.transform([(F_GB[-1], 1)])[0][0]
 # Aim at the gap at mid-letter height, not at the baseline: rotated text leans, so the
 # gap shifts sideways by (height * sin(angle)) as you go up the letters.
 mid_height = 0.5 * renderer.points_to_pixels(8) * 0.45       # half the x-height, roughly
-SHIFT_UP_LINE = 1.5                                             # [pt] slide up-left along the line
+SHIFT_UP_LINE = 6                                             # [pt] slide up-left along the line
 x_start = (x_gap - (along + renderer.points_to_pixels(SHIFT_UP_LINE)) * np.cos(np.radians(angle))
            + mid_height * np.sin(np.radians(angle)))
 F_LABEL = ax.transData.inverted().transform([(x_start, 0)])[0][0]
