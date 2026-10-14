@@ -75,7 +75,7 @@ ax_freq.set_ylim(0, wdm.f_Ny)
 ax_freq.set_xticks([])
 ax_freq.set_yticks([])
 ax_freq.xaxis.set_label_position("top")
-ax_freq.set_xlabel(r"$|\tilde{G}_{nm}(f)|$")
+ax_freq.set_xlabel(r"$|\tilde{g}_{nm}(f)|$")
 
 # Time-frequency tiling (bottom-left)
 ax_tf = fig.add_subplot(gs[1, 0])
