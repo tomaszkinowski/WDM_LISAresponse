@@ -38,7 +38,7 @@ F_LIM = (1e-5, 1.0)
 DT_LIM = (1.0, 3e8)
 DT_BAND = (3600.0, 36000.0)                             # 1-10 h
 DT_STUDIED = (1e2, 1e6)                                 # range scanned in the results [s]
-F_GB = [3e-4, 1e-3, 1e-2]                               # example Galactic binaries [Hz]
+F_GB = [3e-4, 3e-3, 3e-2]                               # example Galactic binaries [Hz]
 
 GREY = dict(color="k", alpha=0.25, lw=0)
 EDGE = dict(color="k", ls=":", lw=0.8)
@@ -69,15 +69,10 @@ for f_gb, c in zip(F_GB, PALETTE):
     ax.axvline(f_gb, color=c, lw=1)
 
 # Region labels sit right of the last GB line, the only stretch no vertical line crosses.
-ax.text(2e-2, np.sqrt(DT_LIM[0] * DT_NARROWBAND), "Narrowband", fontsize=8, va="center")
-ax.text(2e-2, np.sqrt(DT_SHORT_ATOM * DT_LIM[1]), "Short-atom", fontsize=8, va="center")
+ax.text(3.5e-2, np.sqrt(DT_LIM[0] * DT_NARROWBAND), "Narrowband", fontsize=8, va="center")
+ax.text(3.5e-2, np.sqrt(DT_SHORT_ATOM * DT_LIM[1]), "Short-atom", fontsize=8, va="center")
 
-# Rotate the diagonal's label to follow the line on screen
-f0, f1 = 1e-3, 1e-2
-(x0, y0), (x1, y1) = ax.transData.transform([(f0, dt_slow_delay(f0)), (f1, dt_slow_delay(f1))])
-angle = np.degrees(np.arctan2(y1 - y0, x1 - x0))
-ax.text(1.2e-2, dt_slow_delay(1.2e-2) * 2.2, "Slowly varying delay", fontsize=7,
-        rotation=angle, rotation_mode="anchor")
+ax.text(3.5e-2, 5e6, "Slowly varying\ndelay", fontsize=8, va="center", linespacing=1.0)
 
 ax.set_xlabel(r"$f$ [Hz]")
 ax.set_ylabel(r"$\Delta T$ [s]")
