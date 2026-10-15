@@ -162,6 +162,25 @@ def test_an_out_of_range_alpha_raises(alpha):
     with pytest.raises(ValueError):
         _monochromatic(window_function="tukey",
                        window_kwargs=dict(alpha=alpha))
+    with pytest.raises(ValueError):
+        waveforms.tukey_taper_samples(N, alpha)
+
+
+@pytest.mark.parametrize("n_samples", [9, 11, 101, 1000, 1024, 4180992])
+@pytest.mark.parametrize("alpha", [0.0, 0.01, 0.05, 0.5, 1.0])
+def test_the_taper_length_covers_every_tapered_sample(n_samples, alpha):
+    """Outside the counted ramps the window is exactly one, and the count is
+    at most one sample over - the case where scipy's last ramp sample lands on
+    unity. Read off the window itself, not off scipy's formula."""
+    from scipy.signal.windows import tukey
+
+    window = tukey(n_samples, alpha)
+    taper = waveforms.tukey_taper_samples(n_samples, alpha)
+    below = np.flatnonzero(window[: n_samples // 2] < 1.0)
+    tapered = below[-1] + 1 if below.size else 0
+
+    assert np.all(window[taper:n_samples - taper] == 1.0)
+    assert tapered <= taper <= tapered + 1
 
 
 # ------------------------------------------------------------------ refusal
