@@ -520,3 +520,36 @@ def apply_tukey_window(h_plus, h_cross, alpha, **_):
 
     w = tukey(len(h_plus), alpha=alpha)
     return w * h_plus, w * h_cross
+
+
+def tukey_taper_samples(n_samples, alpha):
+    r"""Samples the Tukey taper covers at each end of a record.
+
+    What ``utils.wdm_padding_info`` takes as ``taper_samples``, so the cut can
+    drop the tapered rows along with the padding. It mirrors ``scipy``'s
+    convention: each ramp is :math:`\lfloor \alpha (n-1)/2 \rfloor + 1`
+    samples, every one below unity except, when :math:`\alpha (n-1)/2` is an
+    integer, the last - so the count errs by at most one sample, on the side
+    of cutting more. Everything between the two ramps is exactly one.
+
+    Parameters
+    ----------
+    n_samples : int
+        Length of the record the window was applied to, unpadded.
+    alpha : float
+        Tukey window shape parameter in ``[0, 1]``. Zero is no taper.
+
+    Returns
+    -------
+    samples : int
+        Ramp length at each end, in samples; zero when ``alpha`` is zero.
+    """
+    if not (0.0 <= float(alpha) <= 1.0):
+        raise ValueError(f"Tukey alpha must lie in [0, 1], got {alpha}.")
+
+    # scipy returns a rectangular window for alpha <= 0 rather than
+    # evaluating the ramp, which the formula below would count as one sample.
+    if float(alpha) == 0.0:
+        return 0
+
+    return int(np.floor(float(alpha) * (int(n_samples) - 1) / 2.0)) + 1

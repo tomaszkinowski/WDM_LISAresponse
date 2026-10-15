@@ -21,7 +21,8 @@ arithmetic and touch no data; the appliers do nothing but index::
 
 The usual sequence is therefore::
 
-    info = wdm_padding_info(len(times), Nf, max_lag_L=L)
+    info = wdm_padding_info(len(times), Nf, max_lag_L=L,
+                            taper_samples=tukey_taper_samples(len(times), alpha))
     times, h_plus, h_cross = apply_zero_padding(
         times, h_plus, h_cross, info["pad_left"], info["pad_right"])
 
@@ -37,8 +38,9 @@ however you like.
 
 The ``info`` dictionary is the only thing crossing between the domains. It
 carries the one padding decision in both unit systems - samples for the time
-series that was padded, rows for the coefficient grid that will be cut - which
-is why ``wdm_cut_info`` needs no arithmetic of its own.
+series that was padded, rows for the coefficient grid that will be cut - and,
+when the record was windowed, how far each taper ramp reaches. The cut keeps
+the rows that hold neither a pad nor a tapered sample.
 
 None of it is applied automatically anywhere. Padding is the caller's
 decision, since the two response paths need different amounts of it and the
@@ -207,7 +209,8 @@ def wdm_padding_info(n_samples : int,
                      *,
                      max_lag_L : int = None,
                      extra_rows_left : int = 0,
-                     extra_rows_right : int = 0):
+                     extra_rows_right : int = 0,
+                     taper_samples : int = 0):
     r"""
     Work out the zero padding a record needs for the wavelet response.
 
@@ -261,16 +264,21 @@ def wdm_padding_info(n_samples : int,
         when ``None`` no guard band is added and only the tiling constraint is
         applied. Optional.
     extra_rows_left, extra_rows_right : int
-        Further rows to pad, over and above the guard band - the window taper
-        pad arrives this way. Optional.
+        Further rows to pad, over and above the guard band. Optional.
+    taper_samples : int
+        Samples the window taper covers at each end of the record -
+        ``waveforms.tukey_taper_samples`` for a Tukey window. It changes no
+        padding; it is recorded so ``wdm_cut_info`` drops the tapered rows
+        too, and must describe the window actually applied. Optional.
 
     Returns
     -------
     info : dict
         The padding decision, in both unit systems at once:
 
-        - ``pad_left``, ``pad_right``, ``target_length``, ``input_length`` -
-          samples, for the time series that is about to be padded;
+        - ``pad_left``, ``pad_right``, ``target_length``, ``input_length``,
+          ``taper_samples`` - samples, for the time series that is about to
+          be padded;
         - ``rows_left``, ``rows_right``, ``guard_rows``, ``Nt``, ``Nf`` -
           wavelet rows, for the coefficient grid that will later be cut.
 
@@ -290,6 +298,13 @@ def wdm_padding_info(n_samples : int,
         raise ValueError(
             f"extra_rows_left/right must be non-negative, got "
             f"{extra_left_i} and {extra_right_i}."
+        )
+
+    taper_i = int(taper_samples)
+    if not 0 <= 2 * taper_i <= n_samples_i:
+        raise ValueError(
+            f"taper_samples must lie in [0, n_samples/2], got {taper_i} "
+            f"for {n_samples_i} samples."
         )
 
     if max_lag_L is None:
@@ -323,14 +338,14 @@ def wdm_padding_info(n_samples : int,
         "guard_rows": int(guard_rows),
         "Nf": Nf_i,
         "Nt": int(target_length // Nf_i),
+        "taper_samples": taper_i,
     }
 
 
 def wdm_cut_info(pad_info : dict,
                  *,
                  extra_rows : int = 0,
-                 drop_m0 : bool = True,
-                 drop_freq_edges : bool = False):
+                 drop_m0 : bool = True,):
     r"""
     Work out which rows and bands to keep in a ``(..., Nt, Nf)`` grid.
 
@@ -340,31 +355,19 @@ def wdm_cut_info(pad_info : dict,
     trims the time axis the same way, which is why the slices are returned
     rather than applied here.
 
-    Because the padding went on in whole rows, the rows to drop are exactly
-    the rows that were added: known integers, with no sample-to-row conversion
-    and no ceiling anywhere. The result is the span the original signal
-    occupied, which is what makes two runs padded differently comparable at
-    all.
-
-    Note this is not removing corrupted data. With the guard band in place
-    nothing wrapped, and the discarded rows hold genuine response - signal the
-    delay carried outside the original record. They are dropped because they
-    have no counterpart in a differently padded run, not because they are
-    wrong.
+    Drops the padding rows and, when ``wdm_padding_info`` recorded
+    ``taper_samples``, every row holding a tapered sample.
 
     Parameters
     ----------
     pad_info : dict
         The dictionary ``wdm_padding_info`` returned for this record.
     extra_rows : int
-        Additional rows to drop at each end, for trimming the window taper as
-        well as the padding. Optional.
+        Additional rows to drop at each end, beyond the padding and the
+        taper. Optional.
     drop_m0 : bool
         Drop the :math:`m=0` band, which ``WDM_transform`` computes wrongly
         unless it was built with ``calc_m0=True``. Optional.
-    drop_freq_edges : bool
-        Drop both the :math:`m=0` and the Nyquist band. Takes precedence over
-        ``drop_m0``. Optional.
 
     Returns
     -------
@@ -377,25 +380,38 @@ def wdm_cut_info(pad_info : dict,
         raise ValueError(f"extra_rows must be non-negative, got {extra_i}.")
 
     Nt = int(pad_info["Nt"])
-    start = int(pad_info["rows_left"]) + extra_i
-    stop = Nt - int(pad_info["rows_right"]) - extra_i
+    Nf = int(pad_info["Nf"])
+    taper = int(pad_info["taper_samples"])
+
+    # The signal's span in samples, [first, end). It starts on a row
+    # boundary; it need not end on one.
+    first = int(pad_info["pad_left"])
+    end = first + int(pad_info["input_length"])
+
+    # Keep a row only if it holds no padding-only and no tapered sample.
+    # Without a taper this is the padding cut alone, and a last row holding
+    # the signal's final few samples stays.
+    start = -(-(first + taper) // Nf) #ceil function
+    stop = (end - taper) // Nf if taper else Nt - int(pad_info["rows_right"])
+
+    start += extra_i
+    stop -= extra_i
 
     if stop <= start:
         raise ValueError(
             f"Nothing left after cutting: {start=}, {stop=}, {Nt=}. The "
-            f"padding and extra_rows together cover the whole record."
+            f"padding, taper ({taper} samples) and extra_rows together cover "
+            f"the whole record."
         )
-
-    if drop_freq_edges:
-        freq_slice = slice(1, -1)
-    elif drop_m0:
+    
+    if drop_m0:
         freq_slice = slice(1, None)
     else:
         freq_slice = slice(None)
 
     return {
         "wdm_Nt": Nt,
-        "Nf": int(pad_info["Nf"]),
+        "Nf": Nf,
         "rows_cut_left": start,
         "rows_cut_right": Nt - stop,
         "time_slice": slice(start, stop),

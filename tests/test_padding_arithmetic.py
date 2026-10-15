@@ -11,7 +11,9 @@ leading offset so differently padded grids stay comparable.
 
 import numpy as np
 import pytest
+from scipy.signal.windows import tukey
 
+from WDM_LISAresponse.code.waveforms.waveforms import tukey_taper_samples
 from WDM_LISAresponse.code.utils.utils import (
     apply_repadding,
     apply_zero_padding,
@@ -139,7 +141,7 @@ def test_the_cut_recovers_the_original_span(n_samples, max_lag_L):
 
 
 def test_extra_rows_trim_further_at_both_ends():
-    """``extra_rows`` cuts beyond the padding, for trimming a taper."""
+    """``extra_rows`` cuts beyond the padding and taper, one row per row."""
     info = wdm_padding_info(1024, NF, max_lag_L=25)
 
     plain = wdm_cut_info(info)
@@ -197,6 +199,66 @@ def test_padding_then_cutting_is_a_round_trip():
 
     assert len(padded_times) == info["target_length"]
     assert np.array_equal(rows[cut["time_slice"]].reshape(-1), signal)
+
+
+# ------------------------------------------------------------------ the taper
+
+@pytest.mark.parametrize("n_samples", [1024, 1000, 1537, 4096])
+@pytest.mark.parametrize("alpha", [0.05, 0.1, 0.3])
+def test_the_kept_rows_hold_no_tapered_sample(n_samples, alpha):
+    """Every kept row is window exactly one; the rows either side are not.
+
+    Checked on the window itself, padded as the signal would be, so the test
+    does not repeat the arithmetic it is checking - and 1000 and 1537 leave
+    a partial last row for it to get wrong.
+    """
+    info = wdm_padding_info(n_samples, NF, max_lag_L=25,
+                            taper_samples=tukey_taper_samples(n_samples, alpha))
+    rows = np.pad(tukey(n_samples, alpha),
+                  (info["pad_left"], info["pad_right"])).reshape(-1, NF)
+
+    kept = wdm_cut_info(info)["time_slice"]
+
+    assert np.all(rows[kept] == 1.0)
+    assert np.any(rows[kept.start - 1] < 1.0)
+    assert np.any(rows[kept.stop] < 1.0)
+
+
+@pytest.mark.parametrize("n_samples", LENGTHS)
+def test_without_a_taper_the_cut_is_unchanged(n_samples):
+    """No recorded taper, or a zero one, cuts the padding and nothing else."""
+    plain = wdm_padding_info(n_samples, NF, max_lag_L=25)
+    zero = wdm_padding_info(n_samples, NF, max_lag_L=25, taper_samples=0)
+
+    for info in (plain, zero):
+        assert wdm_cut_info(info)["time_slice"] == slice(
+            info["rows_left"], info["Nt"] - info["rows_right"])
+
+
+def test_a_taper_changes_no_padding():
+    """The taper is recorded for the cut; the padding is decided without it."""
+    plain = wdm_padding_info(1000, NF, max_lag_L=25)
+    tapered = wdm_padding_info(1000, NF, max_lag_L=25, taper_samples=100)
+
+    assert {k: v for k, v in tapered.items() if k != "taper_samples"} == \
+           {k: v for k, v in plain.items() if k != "taper_samples"}
+
+
+def test_extra_rows_count_from_the_end_of_the_taper():
+    """``extra_rows`` steps in from the first full-amplitude row, not the pad."""
+    info = wdm_padding_info(1024, NF, max_lag_L=25, taper_samples=40)
+
+    plain = wdm_cut_info(info)["time_slice"]
+    trimmed = wdm_cut_info(info, extra_rows=3)["time_slice"]
+
+    assert trimmed == slice(plain.start + 3, plain.stop - 3)
+
+
+@pytest.mark.parametrize("taper", [-1, 513])
+def test_a_taper_longer_than_half_the_record_raises(taper):
+    """Two ramps cannot together outrun the record."""
+    with pytest.raises(ValueError, match="taper_samples must lie"):
+        wdm_padding_info(1024, NF, taper_samples=taper)
 
 
 # ------------------------------------------------ moving between two paddings
