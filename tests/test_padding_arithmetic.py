@@ -155,11 +155,9 @@ def test_extra_rows_trim_further_at_both_ends():
     ({}, slice(1, None)),
     ({"drop_m0": True}, slice(1, None)),
     ({"drop_m0": False}, slice(None)),
-    ({"drop_freq_edges": True}, slice(1, -1)),
-    ({"drop_m0": False, "drop_freq_edges": True}, slice(1, -1)),
 ])
 def test_the_frequency_slice_follows_the_flags(kwargs, expected):
-    """m=0 is dropped by default; ``drop_freq_edges`` takes precedence.
+    """m=0 is dropped by default, and kept when asked.
 
     The lowest band is wrong unless the transform was built with
     ``calc_m0=True``, so dropping it is the safe default.

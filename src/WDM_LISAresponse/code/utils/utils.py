@@ -345,7 +345,7 @@ def wdm_padding_info(n_samples : int,
 def wdm_cut_info(pad_info : dict,
                  *,
                  extra_rows : int = 0,
-                 drop_m0 : bool = True,):
+                 drop_m0 : bool = True):
     r"""
     Work out which rows and bands to keep in a ``(..., Nt, Nf)`` grid.
 
