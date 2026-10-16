@@ -5,7 +5,7 @@ same composed delays, but applies each delay by interpolating a sampled series
 instead of shifting a coefficient grid. 
 
 Fed the output of ``LISAresponse.one_arm_response_time_domain`` this is the
-full reference path - trapezoidal link integrals, then interpolated delays -
+full reference path - Gauss-Legendre link integrals, then interpolated delays -
 against which the wavelet pipeline's local-delay approximation can be priced.
 Fed link series that came from the wavelet response instead, it isolates the
 TDI stage alone.

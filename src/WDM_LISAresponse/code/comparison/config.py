@@ -60,10 +60,10 @@ class ComparisonConfig:
     num_interp_points : int
         Interpolation points for the time-delay filter tables.
     num_integral_points : int
-        Trapezoidal nodes for the time-domain reference,
-        ``one_arm_response_time_domain``. 80 rather than the package default
-        of 10: on the worst link at 5 mHz, 10 leaves :math:`2.8\times10^{-4}`
-        and 80 leaves :math:`3.6\times10^{-6}`.
+        Gauss-Legendre nodes for the time-domain reference,
+        ``one_arm_response_time_domain``. The package default of twelve
+        leaves the quadrature at rounding level at 5 mHz, so the reference
+        error is the waveform interpolation's alone.
     t0 : float
         Absolute time of the first *padded* sample, in seconds.
     m_bin : int
@@ -118,7 +118,7 @@ class ComparisonConfig:
     # Response
     max_lag_L: int = 51
     num_interp_points: int = 256
-    num_integral_points: int = 80
+    num_integral_points: int = 12
     # Only ever reached by an equal-armlength config; for_esa() overrides it
     # from the file. Non-zero so phase accumulation is exercised away from
     # t = 0.

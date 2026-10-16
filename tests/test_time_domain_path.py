@@ -239,9 +239,7 @@ def test_time_domain_response_matches_the_monochromatic_closed_form():
     )
 
     # Nf is left at the study default: m = 13 is then 5.078 mHz, 19.7 samples
-    # per cycle. Halving Nf doubles dF and puts the same bin at 10.2 mHz,
-    # where the quadrature and the interpolation are both an order worse and
-    # this margin closes.
+    # per cycle.
     cfg = config.ANALYTIC
     wdm, response = cfg.build()
 
@@ -295,7 +293,7 @@ def test_time_domain_response_matches_the_monochromatic_closed_form():
 
     got = np.asarray(response.one_arm_response_time_domain(
         cfg.theta, cfg.phi, h_plus, h_cross,
-        num_taps=20, num_integral_points=80,
+        num_taps=20,
     ))
     got = np.stack([np.asarray(wdm.dwt(row)) for row in got])
 
@@ -308,16 +306,17 @@ def test_time_domain_response_matches_the_monochromatic_closed_form():
 
 
 def test_time_domain_response_converges_to_the_definition_on_the_esa_orbits():
-    r"""On real orbits the only error left is the trapezoid's, as predicted.
+    r"""On real orbits the only error left is the quadrature's, as predicted.
 
     The reference shares nothing with the code under test: its own
     light-travel-time solve and link direction, the closed-form waveform at
     times measured from the record start, and 32-point Gauss-Legendre along
-    the photon path, exact to rounding. Measured, the error then follows
-    :math:`(2\pi f\tau)^2/12(P-1)^2` to 1 % from :math:`2.6\times10^{-4}` at
-    :math:`P = 10` to :math:`3\times10^{-9}` at :math:`P = 2560`, with twelve
-    and sixteen taps indistinguishable. Asserting the prediction rather than a
-    bound means any other error above ~1e-7 fails it.
+    the photon path, exact to rounding. Measured at 5 mHz, the error then
+    follows Gauss-Legendre's error on a single tone to 0.5 % from
+    :math:`1.1\times10^{-2}` at :math:`P = 1` to :math:`9.6\times10^{-9}` at
+    :math:`P = 3`, and from :math:`P = 4` sits on a :math:`1.3\times10^{-10}`
+    floor that twelve and sixteen taps share. Asserting the prediction rather
+    than a bound means any other error above ~1e-10 fails it.
     """
     from lisaconstants import c
 
@@ -373,14 +372,23 @@ def test_time_domain_response_converges_to_the_definition_on_the_esa_orbits():
                      + 2.0 * ru * rv * integral_c) / (2.0 * (1.0 + r @ n)))
         tau.append((2 * half).max())
 
-    for P in (40, 160):
+    def run(P):
         got = np.asarray(response.one_arm_response_time_domain(
             cfg.theta, cfg.phi, h_plus, h_cross, num_integral_points=P,
         ))[:, start:start + count]
+        return max(np.linalg.norm(g - w) / np.linalg.norm(w)
+                   for g, w in zip(got, want))
 
-        error = max(np.linalg.norm(g - w) / np.linalg.norm(w)
-                    for g, w in zip(got, want))
-        predicted = ((2.0 * np.pi * cfg.f_gb * max(tau)) ** 2
-                     / 12.0 / (P - 1) ** 2)
+    # Gauss-Legendre's error on a single tone across the widest window.
+    omega, width = 2.0 * np.pi * cfg.f_gb, max(tau)
+    exact = (np.exp(1j * omega * width) - 1.0) / (1j * omega)
 
-        assert 0.8 * predicted < error < 1.2 * predicted
+    for P in (1, 2, 3):
+        x, w = np.polynomial.legendre.leggauss(P)
+        quadrature = 0.5 * width * np.sum(
+            w * np.exp(0.5j * omega * width * (x + 1.0)))
+        predicted = abs(quadrature - exact) / abs(exact)
+
+        assert 0.95 * predicted < run(P) < 1.05 * predicted
+
+    assert run(12) < 1e-9

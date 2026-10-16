@@ -329,7 +329,7 @@ class LISAresponse:
                                      in_domain : str = "time",
                                      out_domain : str = "time",
                                      link = None,
-                                     num_integral_points : int = 10,
+                                     num_integral_points : int = 12,
                                      num_taps : int = 12,
                                      time_chunk_size : int = None,
                                      memory_budget_bytes : float = 2 ** 30):
@@ -363,7 +363,7 @@ class LISAresponse:
         seconds, not the optical path length :math:`c\,\delta\ell_{sr}`.
 
         This is the slow, reference path. It is the WDM path's yardstick, not
-        its competitor: the quadrature is a straight trapezoidal rule with no
+        its competitor: the quadrature is a Gauss-Legendre rule with no
         approximation beyond node count and waveform interpolation, so it is
         the thing to compare against when the local-delay approximation in the
         wavelet response is under suspicion. Two costs follow from that.
@@ -414,12 +414,13 @@ class LISAresponse:
             drops the link axis from the result; a sequence of either keeps it.
             See ``utils.utils.resolve_link_selection``. Optional.
         num_integral_points : int
-            Number of trapezoidal nodes per link integral, :math:`P`, at least
-            two. Convergence is :math:`(2\pi f \ell_{sr})^2/12(P-1)^2`, so
-            what matters is the wave cycles inside one arm crossing, not the
-            sample count: ten nodes leave :math:`2.6\times10^{-5}` in the
-            record interior for a millihertz source, and only the edges (see
-            Notes) resist more nodes. Raise it for a shorter arm or a higher
+            Number of Gauss-Legendre nodes per link integral, :math:`P`, at
+            least one. What matters is the wave phase swept in one arm
+            crossing, not the sample count, and the error falls exponentially
+            once :math:`P` exceeds about half of it: the default twelve leave
+            the quadrature at :math:`10^{-13}` at 0.1 Hz on the worst link and
+            at rounding level below, so only the edges (see Notes) and
+            ``num_taps`` remain. Raise it only for a longer arm or a higher
             frequency. Optional.
         num_taps : int
             Stencil width for reconstructing the waveform at each quadrature
@@ -451,23 +452,17 @@ class LISAresponse:
 
         Notes
         -----
-        Accuracy degrades near either end of the record and no node count
-        rescues it: once the integration window straddles :math:`t_0` or the
-        last sample the integrand steps where the waveform stops, and the
-        trapezoidal rule is only first order on a discontinuity. The affected
-        band is the retarded-phase excursion, up to 499 s - a hundred samples
-        at 5 s cadence - at each end, and over a 4096-sample record it alone
-        lifts the error from :math:`2.6\times10^{-5}` to
-        :math:`1.4\times10^{-3}`. This is a property of a finite record, not
-        of the method, and the wavelet path has its own edge behaviour, so
-        compare the two on the interior or pad both.
+        Pass a tapered, zero-padded series (see ``utils.apply_zero_padding``).
+        If the waveform is non-zero at either end of the record, the
+        integration window there straddles a step, and no node count recovers
+        the accuracy over the last ~500 s.
         """
         assert out_domain in ("time", "wdm"), \
                     f"out_domain must be 'time' or 'wdm', got {out_domain!r}."
 
-        assert int(num_integral_points) >= 2, \
-                    f"num_integral_points must be at least two to form a " \
-                    f"trapezoid, got {num_integral_points=}."
+        assert int(num_integral_points) >= 1, \
+                    f"num_integral_points must be at least one, got " \
+                    f"{num_integral_points=}."
 
         link_indices, drop_link_axis = resolve_link_selection(
             link, self.link_convention,
