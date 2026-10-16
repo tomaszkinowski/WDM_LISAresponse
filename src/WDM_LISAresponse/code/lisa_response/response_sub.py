@@ -943,7 +943,7 @@ def one_arm_time_domain_chunk(h_plus,
                               sender_position,
                               chunk_times,
                               waveform_step : float,
-                              num_integral_points : int = 10,
+                              num_integral_points : int = 12,
                               num_taps : int = 12):
     r"""
     One-arm time-domain response for one block of reception times.
@@ -980,21 +980,28 @@ def one_arm_time_domain_chunk(h_plus,
     and that direction is genuinely singular in this model.
 
     Two independent errors enter and neither knob repairs the other: the
-    quadrature falls as :math:`(2\pi f W)^2/12(P-1)^2` with the node count
-    :math:`P`, the interpolation as :math:`(2\pi f \delta t)^{n-1}` with the
-    stencil width :math:`n`. The second matters more than it looks, because the
-    window :math:`W` is *narrower than the sample spacing* - 1.63 intervals at
-    LISA's 8.3 s arm and 5 s cadence - so every node is a sub-sample
-    reconstruction rather than a lookup. At the default twelve taps the
-    interpolation term sits far below the quadrature term, leaving
-    ``num_integral_points`` as the only one worth tuning; see
-    ``interpolate_uniform_grid``. The wavelet path meets the same difficulty
-    and answers it through its filter tables instead.
+    quadrature, set by the node count :math:`P`, and the interpolation, which
+    falls as :math:`(2\pi f \delta t)^{n-1}` with the stencil width :math:`n`.
+    The quadrature is Gauss-Legendre, so on this smooth integrand its error
+    falls exponentially in :math:`P` once :math:`P` exceeds about half the
+    phase :math:`2\pi f W` swept across the window :math:`W`. That phase is
+    at most about 10 radians (0.1 Hz on a link with
+    :math:`1 - \hat{\Omega}\cdot\hat{r}_{sr} = 2`), and twelve nodes leave
+    the quadrature at :math:`10^{-13}` there and at rounding level below,
+    where a trapezoidal rule needs thousands of nodes to reach
+    :math:`10^{-6}`. The
+    interpolation matters more than it looks, because the window is *narrower
+    than the sample spacing* - 1.63 intervals at LISA's 8.3 s arm and 5 s
+    cadence - so every node is a sub-sample reconstruction rather than a
+    lookup. With the quadrature converged it is the term left, so
+    ``num_taps`` is the one worth tuning; see ``interpolate_uniform_grid``.
+    The wavelet path meets the same difficulty and answers it through its
+    filter tables instead.
 
-    The mean is a trapezoidal rule on ``num_integral_points`` nodes spread
-    uniformly across the window, accumulated in a ``jax.lax.fori_loop`` rather
-    than materialised, so peak memory is one ``(batch, links, chunk)`` array
-    per node and *not* ``num_integral_points`` times that. The node count
+    The mean is a Gauss-Legendre rule on ``num_integral_points`` nodes across
+    the window, accumulated in a ``jax.lax.fori_loop`` rather than
+    materialised, so peak memory is one ``(batch, links, chunk)`` array per
+    node and *not* ``num_integral_points`` times that. The node count
     therefore costs time and not memory.
 
     Parameters
@@ -1025,8 +1032,8 @@ def one_arm_time_domain_chunk(h_plus,
     waveform_step : float
         Waveform sample spacing, in seconds.
     num_integral_points : int
-        Number of trapezoidal nodes per link integral, at least two. Static
-        under ``jit``. Optional.
+        Number of Gauss-Legendre nodes per link integral, at least one.
+        Static under ``jit``. Optional.
     num_taps : int
         Stencil width for the waveform interpolation, even and at least two.
         Static under ``jit``. Optional.
@@ -1045,21 +1052,23 @@ def one_arm_time_domain_chunk(h_plus,
     batch_size, num_links, chunk_size = tau.shape
     flat_shape = (batch_size, num_links * chunk_size)
 
-    node_spacing = 1.0 / (num_integral_points - 1)
+    # Gauss-Legendre on [-1, 1], mapped to fractions of the window on [0, 1]
+    # with weights summing to one. Tabulated at trace time: the node count is
+    # static, so these are compile-time constants.
+    unit_nodes, unit_weights = np.polynomial.legendre.leggauss(
+        num_integral_points)
+    node_fractions = jnp.asarray(0.5 * (unit_nodes + 1.0))
+    node_weights = jnp.asarray(0.5 * unit_weights)
 
     def accumulate(node, carry):
-        r"""Add one trapezoidal node to the running plus/cross means."""
+        r"""Add one Gauss-Legendre node to the running plus/cross means."""
         total_plus, total_cross = carry
 
         # xi runs from the emission endpoint up to the reception endpoint.
-        offset = tau * (1.0 - node * node_spacing)
+        offset = tau * (1.0 - node_fractions[node])
         query = (xi_receive - offset).reshape(flat_shape)
 
-        weight = jnp.where(
-            (node == 0) | (node == num_integral_points - 1),
-            0.5 * node_spacing,
-            node_spacing,
-        )
+        weight = node_weights[node]
 
         # The waveform grid starts at zero because the caller hands this
         # kernel offsets from sample zero, never absolute times.
@@ -1097,7 +1106,7 @@ def one_arm_time_domain_blocked(orbits,
                                 h_cross,
                                 theta,
                                 phi,
-                                num_integral_points : int = 10,
+                                num_integral_points : int = 12,
                                 num_taps : int = 12):
     r"""
     Drive ``one_arm_time_domain_chunk`` over the reception grid in blocks.
@@ -1131,7 +1140,7 @@ def one_arm_time_domain_blocked(orbits,
     theta, phi : jnp.ndarray
         Source direction angles, in radians. Array shape=(batch,).
     num_integral_points : int
-        Trapezoidal nodes per link integral. Optional.
+        Gauss-Legendre nodes per link integral. Optional.
     num_taps : int
         Waveform interpolation stencil width. Optional.
 
