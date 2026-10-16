@@ -29,6 +29,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter, LogLocator, NullLocator
 
 from _colours import HAIRLINE, MUTED, PALETTE
+from parameters import NUM_INTEGRAL_POINTS
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
@@ -40,7 +41,6 @@ N_SIGNAL = 2 ** 23                              # 388 d
 F_GW = 3e-3                                     # [Hz], PALETTE[1] in every figure
 AMP = 1e-21
 THETA, PHI = 1.66742348, 4.65722819             # Galactic centre, ecliptic J2000
-NUM_INTEGRAL_POINTS = 40
 NFS = [2500, 25000]                             # dT = 1e4, 1e5 s; f/dF = 60, 600
 LS = [15, 25, 51]
 RAMPS = [2, 5, 10, 15, 20]                      # nominal rows per end

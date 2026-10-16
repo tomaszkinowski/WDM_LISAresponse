@@ -28,6 +28,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from _colours import HAIRLINE, MUTED, PALETTE
+from parameters import NUM_INTEGRAL_POINTS
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
@@ -43,7 +44,6 @@ AMP = 1e-21
 # longitude 266.84 deg.
 THETA, PHI = 1.66742348, 4.65722819
 MAX_LAG = 25
-NUM_INTEGRAL_POINTS = 40
 REACHES = np.array([0, 1, 2, 3, 5, 10, 25])     # rows past the taper; 25 = L
 REACH_YES = int(np.flatnonzero(REACHES == MAX_LAG)[0])
 

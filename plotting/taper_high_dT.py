@@ -29,6 +29,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import FixedFormatter, FixedLocator, NullLocator
 
 from _colours import HAIRLINE, MUTED, PALETTE
+from parameters import NUM_INTEGRAL_POINTS
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
@@ -41,7 +42,6 @@ F_GW = 3e-3
 AMP = 1e-21
 THETA, PHI = 1.66742348, 4.65722819             # Galactic centre, ecliptic J2000
 MAX_LAG = 25
-NUM_INTEGRAL_POINTS = 40
 # On-bin (f/dF = 0.024 Nf integer, Nf even): multiples of 250.
 NF = np.array([20000, 25000, 30000, 37500, 50000, 62500, 75000, 100000, 125000])
 TAPERS = ("alpha", "10 dT", "20 dT")
