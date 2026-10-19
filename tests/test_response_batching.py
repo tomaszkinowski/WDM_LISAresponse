@@ -11,6 +11,7 @@ checked both for its shape and - where broadcasting is involved - for agreeing
 with the standalone single-source call it stands in for.
 """
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -221,13 +222,22 @@ def test_calling_the_response_is_the_default_path(
 
 
 def test_the_response_is_linear_in_the_waveform(response, wavelet_waveform):
-    """Scaling the wave scales the response."""
+    """Scaling the wave scales the response.
+
+    On a CUDA device WDM runs the time shift in float32, so there linearity
+    holds to float32 rounding (relative L2 ~1e-7) rather than to float64.
+    """
     h_plus, h_cross = wavelet_waveform
 
     single = response(THETA, PHI, h_plus, h_cross)
     scaled = response(THETA, PHI, 3.0 * h_plus, 3.0 * h_cross)
 
-    assert np.allclose(scaled, 3.0 * single, rtol=1e-13)
+    if jax.default_backend() == "gpu":
+        rel_l2 = np.linalg.norm(scaled - 3.0 * single) \
+            / np.linalg.norm(3.0 * single)
+        assert rel_l2 < 1e-6
+    else:
+        assert np.allclose(scaled, 3.0 * single, rtol=1e-13)
 
 
 def test_a_silent_waveform_gives_a_silent_response(response, wdm):
