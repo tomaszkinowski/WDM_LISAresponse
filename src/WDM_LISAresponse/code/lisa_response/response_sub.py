@@ -606,7 +606,8 @@ def compute_detector_amplitudes(light_travel_time,
                                 projection_plus,
                                 projection_cross,
                                 tau,
-                                wavelet_freqs):
+                                wavelet_freqs,
+                                dtype=None):
     r"""
     Per-pixel amplitudes of the one-arm transfer function.
 
@@ -638,6 +639,13 @@ def compute_detector_amplitudes(light_travel_time,
         Effective light travel time :math:`\tau_{sr}`, in seconds. Same shape.
     wavelet_freqs : jnp.ndarray
         Pixel centre frequencies :math:`f_m`, in hertz. Array shape=(Nf,).
+    dtype : jnp.dtype
+        Working precision of the :math:`(N_t, N_f)` arrays. ``None`` keeps
+        that of the inputs. The GPU path passes float32: the sinc argument
+        :math:`f_m\tau_{sr}` is of order one, so float32 costs only its own
+        rounding, while a float64 sinc over the full grid runs at a small
+        fraction of float32 speed on most GPUs - 43 ms against 3 ms for six
+        links of a year-long record on an RTX A400. Optional.
 
     Returns
     -------
@@ -645,11 +653,19 @@ def compute_detector_amplitudes(light_travel_time,
         :math:`A^{+}` and :math:`A^{\times}`.
         Array shape=(batch, num_links, Nt, Nf).
     """
-    transfer = jnp.sinc(tau[..., jnp.newaxis] * wavelet_freqs)
+    argument = tau[..., jnp.newaxis] * wavelet_freqs
     scale = 0.5 * light_travel_time[..., jnp.newaxis]
+    plus = projection_plus[..., jnp.newaxis]
+    cross = projection_cross[..., jnp.newaxis]
 
-    return (scale * projection_plus[..., jnp.newaxis] * transfer,
-            scale * projection_cross[..., jnp.newaxis] * transfer)
+    if dtype is not None:
+        argument, scale, plus, cross = (
+            x.astype(dtype) for x in (argument, scale, plus, cross))
+
+    transfer = jnp.sinc(argument)
+
+    return (scale * plus * transfer,
+            scale * cross * transfer)
 
 
 def apply_batch_shift(wdm_class,
@@ -659,19 +675,15 @@ def apply_batch_shift(wdm_class,
     r"""
     Apply a per-link variable time shift to a batch of coefficient grids.
 
-    ``wdm_class.apply_variable_time_shift`` takes one :math:`(N_t, N_f)` grid
-    and one :math:`(N_t,)` delay, so the source and link axes are flattened
-    together and the grids are swept one at a time.
-
-    The sweep is a python loop, which unrolls into the graph. That is worth
-    2.7x over the ``lax.scan`` this used to be, for a bit-identical result:
-    the shift is a chain of :math:`2L+1` accumulations over
-    :math:`(N_t, N_f)` arrays, and XLA:CPU fuses that chain into one pass only
-    when it is not inside a loop body. Vmapping instead is worse still,
-    measured 18.5% slower than the scan.
-
-    The graph therefore grows with the number of grids, so a large source
-    batch is better looped over on the host than passed in as a leading axis.
+    The source and link axes are flattened together and the whole stack is
+    handed to ``wdm_class.apply_variable_time_shift_batch``. On a CPU that
+    sweeps the grids in an unrolled python loop - 2.7x faster than a
+    ``lax.scan``, because XLA:CPU fuses each shift's chain of :math:`2L+1`
+    accumulations into one pass only outside a loop body - so the graph grows
+    with the number of grids, and a large source batch is better looped over
+    on the host than passed in as a leading axis. On a GPU the stack is one
+    kernel launch, which halves the shift for six links against shifting them
+    one by one.
 
     The delay is passed with its own sign, not negated. Shifting the
     *coefficients* is the active transformation and carries the opposite sign
@@ -744,12 +756,9 @@ def apply_batch_shift(wdm_class,
         num_grids, num_times, num_freqs)
     delta = time_shift.reshape(num_grids, num_times)
 
-    shifted = jnp.stack([
-        wdm_class.apply_variable_time_shift(
-            filter_tables, coefficients[grid], delta[grid],
-        )
-        for grid in range(num_grids)
-    ])
+    shifted = wdm_class.apply_variable_time_shift_batch(
+        filter_tables, coefficients, delta,
+    )
 
     return shifted.reshape(batch_size, num_links, num_times, num_freqs)
 
@@ -795,8 +804,15 @@ def one_arm_response_wdm(wdm_class,
     ``wdm_class.apply_variable_time_shift``, which applies a time-varying delay
     directly in the wavelet domain rather than returning to the time series.
 
-    Links are swept one at a time in ``apply_batch_shift``, which is where the
-    runtime of this path very nearly all sits - 98% of it at a year.
+    Links are shifted together in ``apply_batch_shift``, which on a CPU is
+    where the runtime of this path very nearly all sits - 98% of it at a year.
+
+    On a CUDA device the amplitudes and the shift run in float32, with the
+    geometry, delays and phases still float64, and the response is cast back
+    to the dtype of the CPU path: relative L2 :math:`2\times10^{-7}`,
+    mismatch :math:`2\times10^{-14}` at a year. The branch is chosen by
+    ``jax.lax.platform_dependent`` when the call is lowered, so on a CPU this
+    is the float64 code exactly as before.
 
     Parameters
     ----------
@@ -834,16 +850,32 @@ def one_arm_response_wdm(wdm_class,
 
     time_shift = compute_time_shifts(source_direction, receiver_position, tau)
 
-    amplitude_plus, amplitude_cross = compute_detector_amplitudes(
-        light_travel_time, projection_plus, projection_cross, tau,
-        wavelet_freqs,
-    )
+    def shifted_response(dtype):
+        def response(wavelet_plus, wavelet_cross):
+            amplitude_plus, amplitude_cross = compute_detector_amplitudes(
+                light_travel_time, projection_plus, projection_cross, tau,
+                wavelet_freqs, dtype=dtype,
+            )
 
-    unshifted = (amplitude_plus * wavelet_plus[:, jnp.newaxis]
-                 + amplitude_cross * wavelet_cross[:, jnp.newaxis])
+            unshifted = (amplitude_plus * wavelet_plus[:, jnp.newaxis]
+                         + amplitude_cross * wavelet_cross[:, jnp.newaxis])
 
-    return apply_batch_shift(
-        wdm_class, filter_tables, unshifted, time_shift,
+            return apply_batch_shift(
+                wdm_class, filter_tables, unshifted, time_shift,
+            )
+        return response
+
+    # Both branches must return the same dtype: that of the CPU path.
+    output_dtype = jnp.result_type(light_travel_time, wavelet_plus,
+                                   wavelet_cross)
+
+    def cuda(wavelet_plus, wavelet_cross):
+        return shifted_response(jnp.float32)(
+            wavelet_plus, wavelet_cross).astype(output_dtype)
+
+    return jax.lax.platform_dependent(
+        wavelet_plus, wavelet_cross,
+        default=shifted_response(None), cuda=cuda,
     )
 
 
