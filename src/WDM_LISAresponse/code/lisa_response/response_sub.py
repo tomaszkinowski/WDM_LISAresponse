@@ -807,8 +807,8 @@ def one_arm_response_wdm(wdm_class,
     Links are shifted together in ``apply_batch_shift``, which on a CPU is
     where the runtime of this path very nearly all sits - 98% of it at a year.
 
-    On a CUDA device the amplitudes and the shift run in float32, with the
-    geometry, delays and phases still float64, and the response is cast back
+    On a CUDA device the amplitudes, the polarisation combination and the
+    shift run in float32, with the geometry, delays and phases still float64, and the response is cast back
     to the dtype of the CPU path: relative L2 :math:`2\times10^{-7}`,
     mismatch :math:`2\times10^{-14}` at a year. The branch is chosen by
     ``jax.lax.platform_dependent`` when the call is lowered, so on a CPU this
@@ -856,6 +856,13 @@ def one_arm_response_wdm(wdm_class,
                 light_travel_time, projection_plus, projection_cross, tau,
                 wavelet_freqs, dtype=dtype,
             )
+
+            # Combine the polarisations at the same precision, or a float64
+            # waveform promotes the whole (batch, links, Nt, Nf) result back
+            # to float64: 10.2 ms against 5.8 ms on the RTX A400.
+            if dtype is not None:
+                wavelet_plus = wavelet_plus.astype(dtype)
+                wavelet_cross = wavelet_cross.astype(dtype)
 
             unshifted = (amplitude_plus * wavelet_plus[:, jnp.newaxis]
                          + amplitude_cross * wavelet_cross[:, jnp.newaxis])
