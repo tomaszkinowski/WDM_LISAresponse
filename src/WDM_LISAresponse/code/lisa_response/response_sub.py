@@ -822,9 +822,10 @@ def one_arm_response_wdm(wdm_class,
     filter_tables : jnp.ndarray
         Time-delay filter tables, shape=(2, 2L+1, num_interp_points).
     wavelet_plus : jnp.ndarray
-        Wavelet coefficients of :math:`h_+`. Array shape=(batch, Nt, Nf).
+        Wavelet coefficients of :math:`h_+`. Array shape=(batch, Nt, Nf), or
+        (Nt, Nf) for a single source.
     wavelet_cross : jnp.ndarray
-        Wavelet coefficients of :math:`h_\times`. Array shape=(batch, Nt, Nf).
+        Wavelet coefficients of :math:`h_\times`. Same shape.
     theta, phi : jnp.ndarray
         Source direction angles, in radians. Array shape=(batch,).
     light_travel_time : jnp.ndarray
@@ -840,8 +841,17 @@ def one_arm_response_wdm(wdm_class,
     -------
     response : jnp.ndarray
         Link delay fluctuations :math:`\delta \ell_{sr}`, in seconds, as
-        wavelet coefficients. Array shape=(batch, num_links, Nt, Nf).
+        wavelet coefficients. Array shape=(batch, num_links, Nt, Nf), or
+        (num_links, Nt, Nf) for a single source.
     """
+    # A single source arrives without a batch axis so that no eager copy is
+    # made to add one. It costs nothing in here, and the result gives it back,
+    # so the caller's final reshape is a no-op too.
+    single = wavelet_plus.ndim == 2
+    if single:
+        wavelet_plus = wavelet_plus[jnp.newaxis]
+        wavelet_cross = wavelet_cross[jnp.newaxis]
+
     projection_plus, projection_cross, tau, source_direction = (
         compute_angular_geometry_wdm(
             theta, phi, light_travel_time, link_direction,
@@ -880,10 +890,12 @@ def one_arm_response_wdm(wdm_class,
         return shifted_response(jnp.float32)(
             wavelet_plus, wavelet_cross).astype(output_dtype)
 
-    return jax.lax.platform_dependent(
+    response = jax.lax.platform_dependent(
         wavelet_plus, wavelet_cross,
         default=shifted_response(None), cuda=cuda,
     )
+
+    return response[0] if single else response
 
 
 def broadcast_sources(wdm_class,
@@ -924,7 +936,9 @@ def broadcast_sources(wdm_class,
     Returns
     -------
     h_plus, h_cross : jnp.ndarray
-        Waveforms in ``target_domain``, with one leading batch axis.
+        Waveforms in ``target_domain``, with one leading batch axis - except
+        a single source in the wavelet domain, which keeps its own shape
+        (Nt, Nf) for ``one_arm_response_wdm`` to batch inside the jit.
     theta, phi : jnp.ndarray
         Angles broadcast to the batch and flattened. Array shape=(batch,).
     batch_shape : tuple
@@ -959,6 +973,13 @@ def broadcast_sources(wdm_class,
         h_cross.shape[:-len(wanted)],
     )
     batch_size = int(np.prod(batch_shape, dtype=int))
+
+    # A single source bound for the wavelet kernel is passed on without a
+    # batch axis. Adding it here would be an eager op - a full copy of each
+    # waveform, 4 ms on a GPU at a year - whereas one_arm_response_wdm adds
+    # it inside the jit for nothing.
+    if batch_shape == () and target_domain == "wdm":
+        return h_plus, h_cross, theta.reshape(1), phi.reshape(1), batch_shape
 
     return (
         jnp.broadcast_to(
@@ -1255,7 +1276,9 @@ def finalise_response(wdm_class,
         The transform supplying ``dwt``/``idwt``.
     response : jnp.ndarray
         Response with a single leading batch axis, shape=(batch, num_links, N)
-        or (batch, num_links, Nt, Nf).
+        or (batch, num_links, Nt, Nf). A single wavelet-domain source comes
+        without it, shape=(num_links, Nt, Nf), and the reshape below is then
+        a no-op rather than a copy.
     from_domain : str
         Domain the kernel produced, ``"time"`` or ``"wdm"``.
     out_domain : str
