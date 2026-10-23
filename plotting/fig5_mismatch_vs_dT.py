@@ -5,7 +5,7 @@ Galactic binaries and the EMRI (parameters.py), on link 1 -> 2.
 Delta T runs from 1e2 to 1e6 s, four tilings per decade. Each grid is compared
 on the rows holding neither padding nor a tapered sample, without the m = 0
 band, which WDM_transform gets wrong without calc_m0. Hollow markers are tones
-that leak into that dropped band: below (1/2 + A_frac) Delta F, the edge of the
+that leak into that dropped band: below (1 - A_frac) Delta F, the edge of the
 Meyer window, not just below the band edge Delta F / 2. The shading is where
 the two responses are distinguishable at SNR 100.
 
@@ -24,7 +24,6 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import FixedLocator, NullFormatter
@@ -51,8 +50,8 @@ REF_ROWS = 16
 SNR = 100
 THRESHOLD = 1 / (2 * SNR ** 2)
 
-# A tone below (1/2 + A_frac) Delta F leaks into the dropped m = 0 band: the band
-# edge is Delta F / 2, but the Meyer window reaches A_frac Delta F past it. The
+# A tone below (1 - A_frac) Delta F leaks into the dropped m = 0 band: the band
+# edge is Delta F / 2, but the Meyer window reaches (1/2 - A_frac) Delta F past it. The
 # taper study measured 1e-1 of the power there at 0.55 Delta F, 1e-5 at 0.70 and
 # none above 0.75. WDM_transform's default A_frac.
 A_FRAC = 0.25
@@ -179,7 +178,7 @@ def plot(res):
         f = FREQUENCIES[TONES.index(name)]
         ax.plot(delta_t, res[name], color=COLOURS[name], lw=0.5, marker="o", zorder=3,
                 label=name, **markers)
-        leaks = f < (0.5 + A_FRAC) / (2 * delta_t)      # f < (1/2 + A_frac) Delta F
+        leaks = f < (1 - A_FRAC) / (2 * delta_t)        # f < (1 - A_frac) Delta F
         ax.plot(delta_t[leaks], res[name][leaks], ls="none", marker="o", ms=2.5,
                 mfc="white", mec=COLOURS[name], mew=0.7, zorder=5)
     ax.plot(delta_t, res["EMRI"], color=COLOURS["EMRI"], lw=1.2, marker="D", zorder=4,
@@ -189,11 +188,13 @@ def plot(res):
     handles.append(Line2D([], [], ls="none", marker="o", ms=2.5, mfc="white", mec=INK,
                           mew=0.7))
     labels.append(r"leaks into $m = 0$")
-    # The swatch sits on the band itself, so a solid outline keeps it visible.
-    handles.append(Patch(facecolor=to_rgba(PALETTE[3], 0.3), edgecolor=PALETTE[3], lw=0.8))
+    handles.append(Patch(color=PALETTE[3], alpha=0.3, lw=0))
     labels.append(r"1--10\,h")
+    # Framed, so the headroom reads as the legend's and the grid can run under it.
     ax.legend(handles, labels, loc="upper center", fontsize="small", ncols=3,
-              handlelength=1.4, handletextpad=0.5, columnspacing=0.9, borderaxespad=0.4)
+              handlelength=1.4, handletextpad=0.5, columnspacing=0.9, borderaxespad=0.4,
+              frameon=True, fancybox=False, framealpha=1, facecolor="white",
+              edgecolor=HAIRLINE).get_frame().set_linewidth(0.6)
 
     ax.set(xscale="log", yscale="log", ylim=(bottom, top),
            xlim=(delta_t[0] / 1.3, delta_t[-1] * 1.3),
@@ -203,9 +204,7 @@ def plot(res):
     ax.yaxis.set_major_locator(FixedLocator(10 ** decades[decades % 2 == 1]))
     ax.yaxis.set_minor_locator(FixedLocator(10 ** decades))
     ax.yaxis.set_minor_formatter(NullFormatter())
-    # The grid stops at the data, so none of it runs through the legend.
-    ax.grid(axis="y", color=HAIRLINE, lw=0.4)
-    ax.vlines(10.0 ** np.arange(2, 7), bottom, data_top, color=HAIRLINE, lw=0.4, zorder=0.6)
+    ax.grid(color=HAIRLINE, lw=0.4)
     ax.set_axisbelow(True)
 
     # Delta F on top: the same axis read the other way, Delta F Delta T = 1/2.

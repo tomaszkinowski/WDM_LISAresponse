@@ -9,7 +9,7 @@ Wavelet one-arm response against the time-domain reference, one link, for the
   1e4 s   each ramp 1e4 s, whatever the tiling
 
 Grey shading marks dT where the source leaks into the dropped m = 0 band
-(f < (1/2 + A_frac) dF, see DT_WINDOW_EDGE); the dotted line is f = dF/2.
+(f < (1 - A_frac) dF, see DT_WINDOW_EDGE); the dotted line is f = dF/2.
 
 Every grid is compared on the rows that hold neither padding nor a tapered
 sample ("reach no"), and on those minus a further L rows at each end ("reach
@@ -51,12 +51,12 @@ REACH_YES = int(np.flatnonzero(REACHES == MAX_LAG)[0])
 NF = np.unique(2 * np.round(np.logspace(2, 6, 13) / (2 * DT)).astype(int))
 
 # Below these dT the source reaches the m = 0 band, which is dropped. The band
-# edge is dF/2, but the Meyer window extends to (1/2 + A_frac) dF, so a tone
+# edge is dF/2, but the Meyer window extends to (1 - A_frac) dF, so a tone
 # between the two still leaks into it: measured 1e-5 of its power at 0.70 dF,
 # 1e-1 at 0.55 dF, and nothing above 0.75 dF. WDM_transform's default A_frac.
 A_FRAC = 0.25
 DT_BAND_EDGE = 0.5 / (2 * F_GW)                  # f = dF/2, 83 s
-DT_WINDOW_EDGE = (0.5 + A_FRAC) / (2 * F_GW)     # f = (1/2 + A_frac) dF, 125 s
+DT_WINDOW_EDGE = (1 - A_FRAC) / (2 * F_GW)       # f = (1 - A_frac) dF, 125 s
 
 TAPERS = ("alpha", "10 dT", "1e4 s")
 ALPHA_FIXED = 0.05

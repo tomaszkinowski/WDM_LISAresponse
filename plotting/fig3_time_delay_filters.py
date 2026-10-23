@@ -56,7 +56,9 @@ ax_T.set_ylabel(r"$T_\ell(\delta)$")
 # A blank-handle first entry puts "ell =" in front of the whole row.
 handles, labels = ax_T.get_legend_handles_labels()
 ax_T.legend([Line2D([], [], lw=0)] + handles, [r"$\ell=$"] + labels, ncols=len(ELLS) + 1,
-            loc="upper center", handlelength=1.2, columnspacing=0.8, handletextpad=0.4)
+            loc="upper center", handlelength=1.0, columnspacing=0.6, handletextpad=0.3,
+            borderpad=0.3, frameon=True, fancybox=False, framealpha=1, facecolor="white",
+            edgecolor=HAIRLINE).get_frame().set_linewidth(0.6)
 
 ax_Tp.set_ylim(0, 0.095)
 ax_Tp.set_yticks([0.02, 0.04, 0.06, 0.08])
