@@ -1,7 +1,7 @@
 """Figure 7: mismatch of the wavelet one-arm response against the time-domain
 reference as the time-shift kernel's maximum lag L changes, for the EMRI
 (parameters.py) on link 1 -> 2, at Delta T = 1000 s (the most accurate tiling of
-figure 5), 1 h and 10 h (the ends of the band figure 4 recommends).
+figure 5), 3600 s and 36000 s (the ends of the band figure 4 recommends).
 
 Every grid is padded for the largest L whatever L is tested, so the transform,
 the compared rows and the time-domain reference are the same along each curve
@@ -31,7 +31,7 @@ ROOT = HERE.parent
 CACHE = HERE / "cache" / "fig7_lag_truncation.npz"
 ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
-NF = np.array([250, 900, 9000])                 # Delta T = 1000 s, 1 h, 10 h
+NF = np.array([250, 900, 9000])                 # Delta T = 1000 s, 3600 s, 36000 s
 LAGS = np.array([2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40])
 PAD_LAG = int(LAGS.max())                       # padding for the widest kernel
 
@@ -45,9 +45,7 @@ STYLES = ({"ls": "-", "marker": "D"}, {"ls": "--", "marker": "s"},
 
 
 def tiling_label(Nf):
-    delta_t = Nf * DT
-    return (rf"$\Delta T = {delta_t / 3600:g}$\,h" if delta_t >= 3600
-            else rf"$\Delta T = {delta_t:g}$\,s")
+    return rf"$\Delta T = {Nf * DT:.0f}$\,s"
 
 
 def compute(nfs, lags):

@@ -49,10 +49,15 @@ examples/exact_shift_results/
 
 # Figures. Notebooks write plots beside themselves and none of them belong in
 # the history; the logo is the one tracked image. On this branch the paper
-# figures in plotting/figures/ are the exception (see the !-rules below).
+# figures in plotting/figures/, plotting/figures/appendix/ and
+# plotting/figures/investigations/ are the exception (see the !-rules below).
 *.png
 *.pdf
 *.svg
 !logo_images/*.png
 !plotting/figures/*.pdf
 !plotting/figures/*.png
+!plotting/figures/appendix/*.pdf
+!plotting/figures/appendix/*.png
+!plotting/figures/investigations/*.pdf
+!plotting/figures/investigations/*.png

@@ -201,9 +201,9 @@ def plot(res):
     axes[2].text(0.02, 0.08, "orange: reach no, grey: reach yes",
                  transform=axes[2].transAxes, fontsize="small", color=MUTED)
 
-    (HERE / "figures").mkdir(exist_ok=True)
-    fig.savefig(HERE / "figures" / "taper_study.pdf")
-    print(f"wrote {HERE / 'figures' / 'taper_study.pdf'}")
+    (HERE / "figures" / "investigations").mkdir(parents=True, exist_ok=True)
+    fig.savefig(HERE / "figures" / "investigations" / "taper_study.pdf")
+    print(f"wrote {HERE / 'figures' / 'investigations' / 'taper_study.pdf'}")
 
 
 if __name__ == "__main__":

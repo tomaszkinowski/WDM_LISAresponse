@@ -56,7 +56,7 @@ THRESHOLD = 1 / (2 * SNR ** 2)
 # none above 0.75. WDM_transform's default A_frac.
 A_FRAC = 0.25
 
-DT_BAND = (3600.0, 36000.0)                     # 1-10 h, recommended in fig 4
+DT_BAND = (3600.0, 36000.0)                     # 3600-36000 s, recommended in fig 4
 LEGEND_DECADES = 2.3                           # headroom above the data
 
 TONES = tuple(f"{f * 1e3:g} mHz" for f in FREQUENCIES)
@@ -189,7 +189,7 @@ def plot(res):
                           mew=0.7))
     labels.append(r"leaks into $m = 0$")
     handles.append(Patch(color=PALETTE[3], alpha=0.3, lw=0))
-    labels.append(r"1--10\,h")
+    labels.append(r"3600--36000\,s")
     # Framed, so the headroom reads as the legend's and the grid can run under it.
     ax.legend(handles, labels, loc="upper center", fontsize="small", ncols=3,
               handlelength=1.4, handletextpad=0.5, columnspacing=0.9, borderaxespad=0.4,

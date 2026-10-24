@@ -237,9 +237,9 @@ def plot(res):
     top.set_xlabel(r"$\alpha = 0.05$ ramp [rows]", fontsize="small")
 
     fig.tight_layout()
-    (HERE / "figures").mkdir(exist_ok=True)
-    fig.savefig(HERE / "figures" / "taper_high_dT.pdf")
-    print(f"wrote {HERE / 'figures' / 'taper_high_dT.pdf'}")
+    (HERE / "figures" / "investigations").mkdir(parents=True, exist_ok=True)
+    fig.savefig(HERE / "figures" / "investigations" / "taper_high_dT.pdf")
+    print(f"wrote {HERE / 'figures' / 'investigations' / 'taper_high_dT.pdf'}")
 
 if __name__ == "__main__":
     if CACHE.exists():

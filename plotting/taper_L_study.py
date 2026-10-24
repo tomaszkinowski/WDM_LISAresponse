@@ -190,9 +190,9 @@ def plot(res):
               columnspacing=0.8)
 
     fig.tight_layout()
-    (HERE / "figures").mkdir(exist_ok=True)
-    fig.savefig(HERE / "figures" / "taper_L_study.pdf")
-    print(f"wrote {HERE / 'figures' / 'taper_L_study.pdf'}")
+    (HERE / "figures" / "investigations").mkdir(parents=True, exist_ok=True)
+    fig.savefig(HERE / "figures" / "investigations" / "taper_L_study.pdf")
+    print(f"wrote {HERE / 'figures' / 'investigations' / 'taper_L_study.pdf'}")
 
 
 if __name__ == "__main__":

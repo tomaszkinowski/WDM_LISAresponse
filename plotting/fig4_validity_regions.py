@@ -36,7 +36,7 @@ def dt_slow_delay(f):
 
 F_LIM = (1e-5, 1.0)
 DT_LIM = (1.0, 3e8)
-DT_BAND = (3600.0, 36000.0)                             # 1-10 h
+DT_BAND = (3600.0, 36000.0)                             # 3600-36000 s
 DT_STUDIED = (1e2, 1e6)                                 # range scanned in the results [s]
 F_GB = [3e-4, 3e-3, 3e-2]                               # example Galactic binaries [Hz]
 
