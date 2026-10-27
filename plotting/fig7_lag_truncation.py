@@ -7,7 +7,6 @@ Every grid is padded for the largest L whatever L is tested, so the transform,
 the compared rows and the time-domain reference are the same along each curve
 and only the kernel's truncation changes; the reference is computed once per
 tiling, on its grid directly. Window, cut and the rest are as in figure 5. The
-shading is where the two responses are distinguishable at SNR 100, and the
 vertical line marks the L used everywhere else.
 
 Run with no arguments to compute (or reuse the cache) and plot. ``--only NF L``
@@ -22,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from _colours import DARK, HAIRLINE, MUTED, SHADE
+from _colours import DARK, HAIRLINE, MUTED
 from parameters import (DT, EMRI_PARAMS, MAX_LAG_L, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 
@@ -35,9 +34,6 @@ NF = np.array([250, 900, 9000])                 # Delta T = 1000 s, 3600 s, 3600
 LAGS = np.array([2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40])
 PAD_LAG = int(LAGS.max())                       # padding for the widest kernel
 
-# Two SNR-100 signals are distinguishable above a mismatch of 1/(2 SNR^2).
-SNR = 100
-THRESHOLD = 1 / (2 * SNR ** 2)
 
 # One source, so the tilings share the EMRI's colour and differ in line style.
 STYLES = ({"ls": "-", "marker": "D"}, {"ls": "--", "marker": "s"},
@@ -123,11 +119,9 @@ def compute(nfs, lags):
 def plot(res):
     plt.style.use(HERE / "paper.mplstyle")
     bottom = np.nanmin(res["mismatch"]) / 3
-    top = min(3.0, max(10 * THRESHOLD, 3 * np.nanmax(res["mismatch"])))
+    top = min(3.0, 3 * np.nanmax(res["mismatch"]))
 
     fig, ax = plt.subplots(figsize=(3.375, 2.6), layout="constrained")
-    ax.axhspan(THRESHOLD, top, color=SHADE, lw=0, zorder=0)
-    ax.axhline(THRESHOLD, color=MUTED, lw=0.8, ls=(0, (4, 3)), zorder=1)
     ax.axvline(MAX_LAG_L, color=MUTED, lw=0.6, zorder=1)
 
     for Nf, values, style in zip(res["Nf"], res["mismatch"], STYLES):

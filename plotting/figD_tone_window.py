@@ -7,8 +7,7 @@ across its band, r from 0 to 1 in steps of 0.05, as in figure 6; everything else
 is held at the paper's values. The reference is a time series, so it is computed
 once per r and transformed with each window's own WDM transform. The vertical
 lines in D3 mark, for each A_frac in its curve's line style, where the tone
-enters both bands' windows: r = A_frac and 1 - A_frac. The shading is where the
-two responses are distinguishable at SNR 100.
+enters both bands' windows: r = A_frac and 1 - A_frac.
 
 Run with no arguments to compute (or reuse the cache) and plot both. ``--only R
 A_FRAC D`` runs one point, prints it and caches nothing - for checking time and
@@ -22,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from _colours import HAIRLINE, MUTED, PALETTE, SHADE
+from _colours import HAIRLINE, MUTED, PALETTE
 from parameters import (A_CROSS, A_PLUS, DT, FREQUENCIES, GC_PHI, GC_THETA, MAX_LAG_L,
                         N_SIGNAL, NUM_INTEGRAL_POINTS, NUM_INTERP_POINTS, PHI_0,
                         WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -49,9 +48,6 @@ DS = (2, 4, 16)
 # Every (A_frac, d) to run: the default sits in both sweeps but is run once.
 CONFIGS = tuple(dict.fromkeys([(a, D) for a in A_FRACS] + [(A_FRAC, d) for d in DS]))
 
-# Two SNR-100 signals are distinguishable above a mismatch of 1/(2 SNR^2).
-SNR = 100
-THRESHOLD = 1 / (2 * SNR ** 2)
 LEGEND_DECADES = 1.9                            # headroom above the data, as in figure 6
 
 STYLES = ({"ls": "-", "marker": "o"}, {"ls": "--", "marker": "s"},
@@ -140,12 +136,10 @@ def plot(res, sweep):
 
     bottom = np.nanmin(mismatch) / 3
     # Headroom above the peaks holds the legend, as in figure 6.
-    top = (min(3.0, max(10 * THRESHOLD, 3 * np.nanmax(mismatch)))
+    top = (min(3.0, 3 * np.nanmax(mismatch))
            * 10 ** LEGEND_DECADES)
 
     fig, ax = plt.subplots(figsize=(3.375, 2.8), layout="constrained")
-    ax.axhspan(THRESHOLD, top, color=SHADE, lw=0, zorder=0)
-    ax.axhline(THRESHOLD, color=MUTED, lw=0.8, ls=(0, (4, 3)), zorder=1)
     ax.axvline(0.5, color=MUTED, lw=0.6, zorder=1)
     if sweep == "A_frac":
         # Where each window starts to share the tone with the next band.

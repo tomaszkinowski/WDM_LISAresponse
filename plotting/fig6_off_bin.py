@@ -6,8 +6,8 @@ Each of the three example Galactic binaries (parameters.py) is moved to
 f = (m + r) Delta F, with m its nearest band at this tiling and r from 0 (on the
 centre of band m) to 1 (on the centre of band m + 1), in steps of 0.05. Everything
 else - sky, amplitudes, window, cut - is as in figure 5. With one tiling only,
-the reference is computed on its grid directly. The shading is where the two
-responses are distinguishable at SNR 100.
+the reference is computed on its grid directly. Each curve is labelled by its
+frequency at r = 0, m Delta F.
 
 Ported from the off-bin section of examples/accuracy_analysis.ipynb, at the
 paper's parameters. Run with no arguments to compute (or reuse the cache) and
@@ -23,7 +23,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from _colours import HAIRLINE, INK, MUTED, PALETTE, SHADE
+from _colours import HAIRLINE, INK, MUTED, PALETTE
 from parameters import (A_CROSS, A_PLUS, DT, FREQUENCIES, GC_PHI, GC_THETA, MAX_LAG_L,
                         N_SIGNAL, NUM_INTEGRAL_POINTS, NUM_INTERP_POINTS, PHI_0,
                         WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -37,9 +37,6 @@ NF = 250                                        # Delta T = 1000 s
 DELTA_F = 1 / (2 * NF * DT)
 R = np.linspace(0.0, 1.0, 21)
 
-# Two SNR-100 signals are distinguishable above a mismatch of 1/(2 SNR^2).
-SNR = 100
-THRESHOLD = 1 / (2 * SNR ** 2)
 LEGEND_DECADES = 1.9                           # headroom above the data
 # Each band's Meyer window spans (1 - A_frac) Delta F either side of its centre,
 # (1/2 - A_frac) Delta F past its edges, so a tone lies in the windows of both
@@ -114,11 +111,9 @@ def plot(res):
     bottom = np.nanmin(values) / 3
     # Headroom above the peaks holds the legend, as in figure 5: the curves leave
     # no corner free.
-    top = min(3.0, max(10 * THRESHOLD, 3 * np.nanmax(values))) * 10 ** LEGEND_DECADES
+    top = min(3.0, 3 * np.nanmax(values)) * 10 ** LEGEND_DECADES
 
     fig, ax = plt.subplots(figsize=(3.375, 2.8), layout="constrained")
-    ax.axhspan(THRESHOLD, top, color=SHADE, lw=0, zorder=0)
-    ax.axhline(THRESHOLD, color=MUTED, lw=0.8, ls=(0, (4, 3)), zorder=1)
     # r = 1/2 is halfway between the centres of bands m and m + 1, as far as a
     # tone can sit from any band centre: its power splits equally between the two.
     ax.axvline(0.5, color=MUTED, lw=0.6, zorder=1)
@@ -129,7 +124,7 @@ def plot(res):
     markers = dict(ms=2.5, mec="white", mew=0.4)
     for name, m in zip(TONES, res["m"]):
         ax.plot(res["r"], res[name], color=COLOURS[name], lw=0.8, marker="o", zorder=3,
-                label=rf"{name} ($m = {m}$)", **markers)
+                label=rf"{m * DELTA_F * 1e3:g} mHz ($m = {m}$)", **markers)
 
     handles, labels = ax.get_legend_handles_labels()
     handles.append(Line2D([], [], **overlap))

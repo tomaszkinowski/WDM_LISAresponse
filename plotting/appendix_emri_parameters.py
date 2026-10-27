@@ -8,8 +8,7 @@ One script for both appendices, so the three sweeps share each tiling's referenc
 Everything else is held at the paper's values (P = 128, A_frac = 0.25, d = 4,
 L = 25), with window and cut as in figure 5. The reference is a time series, so
 it is computed once per tiling and transformed with each setting's own WDM
-transform. The shading is where the two responses are distinguishable at SNR
-100, and the vertical line marks the value used everywhere else.
+transform. The vertical line marks the value used everywhere else.
 
 Run with no arguments to compute (or reuse the cache) and plot all three.
 ``--only NF SETTING VALUE`` (SETTING one of P, A_frac, d) runs one point, prints
@@ -24,7 +23,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from _colours import DARK, HAIRLINE, MUTED, SHADE
+from _colours import DARK, HAIRLINE, MUTED
 from parameters import (DT, EMRI_PARAMS, MAX_LAG_L, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 
@@ -49,9 +48,6 @@ SETTINGS = {
               xlabel=r"window steepness $d$", figure="figD2_d"),
 }
 
-# Two SNR-100 signals are distinguishable above a mismatch of 1/(2 SNR^2).
-SNR = 100
-THRESHOLD = 1 / (2 * SNR ** 2)
 
 # One source, so the tilings share the EMRI's colour and differ in line style.
 STYLES = ({"ls": "-", "marker": "D"}, {"ls": "--", "marker": "s"},
@@ -155,11 +151,9 @@ def plot(res, setting):
     values, mismatch = res[f"{setting}_values"][keep], res[setting][:, keep]
     bottom = np.nanmin(mismatch) / 3
     # Headroom above the data holds a one-row legend, the same in all three figures.
-    top = min(3.0, max(10 * THRESHOLD, 3 * np.nanmax(mismatch))) * 10 ** LEGEND_DECADES
+    top = min(3.0, 3 * np.nanmax(mismatch)) * 10 ** LEGEND_DECADES
 
     fig, ax = plt.subplots(figsize=(3.375, 2.7), layout="constrained")
-    ax.axhspan(THRESHOLD, top, color=SHADE, lw=0, zorder=0)
-    ax.axhline(THRESHOLD, color=MUTED, lw=0.8, ls=(0, (4, 3)), zorder=1)
     ax.axvline(spec["default"], color=MUTED, lw=0.6, zorder=1)
 
     for Nf, row, style in zip(res["Nf"], mismatch, STYLES):
