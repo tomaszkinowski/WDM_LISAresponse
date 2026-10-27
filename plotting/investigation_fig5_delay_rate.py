@@ -1,8 +1,8 @@
 """Figure 5 with the prototype response corrections.
 
 Figure 5 (fig5_mismatch_vs_dT.py) recomputed several ways from the same
-responses, via WDM_GW_wavelets prototypes/delay_rate_correction/
-response_corrections.py:
+responses, via prototypes/delay_rate_correction/response_corrections.py in this
+repository:
 
 - production: the wavelet response as figure 5 computes it, on the current
   WDM_GW_wavelets (which fixes the T' filter half-bin offset when Nt = 2 mod 4,
@@ -18,8 +18,8 @@ response_corrections.py:
   sinc term too, and with the first-order delay-rate kernel for the rest.
 
 Tilings, signals, references, on-/off-bin frequencies, the cut (padding, taper
-and m = 0) and the plot are figure 5's own. The prototype directory must be on
-PYTHONPATH. Run with no arguments to compute (or reuse the caches) and plot;
+and m = 0) and the plot are figure 5's own. ../prototypes/delay_rate_correction
+must be on PYTHONPATH. Run with no arguments to compute (or reuse the caches) and plot;
 ``--only NF`` runs one tiling and the bounds at it, prints, caches nothing.
 ``--part K/COUNT`` computes tilings K, K + COUNT, ... into cache/parts/ and
 stops, so COUNT processes can split the work; ``--merge COUNT`` assembles
