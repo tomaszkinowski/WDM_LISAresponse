@@ -533,8 +533,12 @@ class LISAresponse:
 
         with :math:`\tau_n` the half-window, :math:`\delta_n` the delay to the
         window centre, and :math:`\mathcal{S}` the variable time shift. The
-        model is stated in full in ``response_sub.one_arm_response_wdm``. The
-        result is a *time*, in seconds, not the optical path length.
+        detector factors :math:`\ell_{sr}`, :math:`F^{+,\times}` and
+        :math:`\tau_n` are taken at :math:`t_n - \delta_n`, the time row
+        :math:`n` lands at, so that the shift delivers them at the reception
+        time. The model is stated in full in
+        ``response_sub.one_arm_response_wdm``. The result is a *time*, in
+        seconds, not the optical path length.
 
         Evaluating the sinc at the pixel's own centre frequency is the
         local-delay approximation, which costs an L2 of order

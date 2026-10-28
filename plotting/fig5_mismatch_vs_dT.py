@@ -11,14 +11,17 @@ where more than 1% of its WDM power lies in m = 0 (from investigation_emri_m0.py
 dense sweep of Delta T, which must be run first).
 
 Each tone's mismatch depends on where it falls within its band (figure 6), so at
-every tiling the same tone is also moved to its nearest band centre, m Delta F
-(on-bin, r = 0), and to its nearest point halfway between two centres,
-(k + 1/2) Delta F (off-bin, r = 1/2, the peak of every curve in figure 6); the
-shading spans the two, and the points themselves are not drawn. Above Delta T ~ 1e5 s the 30 mHz on-bin point can lie
-above the off-bin one, so neither is a bound there. Neither
-is drawn where the tone itself leaks into m = 0, and the off-bin point is kept to
-k >= 1 so it does not leak either. These come from a separate run, on each
-tiling's grid directly, cached in fig5_bounds.npz.
+every tiling the same tone is also moved to its nearest point halfway between two
+centres, (k + 1/2) Delta F (off-bin, r = 1/2, the peak of every curve in figure
+6), and to its nearest band centre m Delta F and OFFSETS around it. The shading
+runs from the least of those near-centre points and the source itself up to the
+off-bin point; the points themselves are not drawn. The least is taken, not the
+band centre alone, because near the floor the error is set by the lag truncation
+at L = 25, which varies with the offset from the centre. Above Delta T ~ 1e5 s the
+30 mHz on-bin point can lie above the off-bin one, so neither is a bound there.
+Nothing is drawn where the tone itself leaks into m = 0, and the off-bin point is
+kept to k >= 1 so it does not leak either. These come from a separate run, on
+each tiling's grid directly, cached in fig5_bounds.npz.
 
 The time-domain reference is computed once per waveform, on a grid with a few
 hours of zeros at each end, and utils.apply_repadding moves it onto each
@@ -27,7 +30,9 @@ tiling: the response reaches at most ~500 s past the signal, so nothing is lost.
 Ported from examples/accuracy_analysis.ipynb, at the paper's parameters.
 Run with no arguments to compute (or reuse the caches) and plot. ``--only NF``
 runs one tiling, prints it and caches nothing - for checking time and memory;
-``--only-bounds NF`` does the same for the on- and off-bin points. With
+``--only-bounds NF`` does the same for the on- and off-bin points.
+``--part K/COUNT`` computes tilings K, K + COUNT, ... into cache/parts/ and stops,
+so COUNT processes can split the work; ``--merge COUNT`` assembles them. With
 ``--drop-edge-bands`` everything compares bands 2 to Nf - 2 only (m = 0, 1 and
 Nf - 1 dropped), with caches of its own, and the plot goes to
 figures/investigations/fig5_mismatch_vs_dT_edge_bands.pdf.
@@ -130,6 +135,21 @@ def bound_frequencies(nfs, freq_slice=None):
         off[i, ok] = (np.maximum(np.floor(f / delta_f[ok]), lowest_band(freq_slice))
                       + 0.5) * delta_f[ok]
     return on, off
+
+
+# Offsets from the nearest band centre, in units of Delta F, at which each tone is
+# also evaluated for the lower edge of its shading.
+OFFSETS = (-0.25, -0.1, -0.05, 0.05, 0.1, 0.25)
+
+
+def offset_frequencies(nfs, freq_slice=None):
+    """Each tone at OFFSETS around its nearest band centre, NaN where that leaks
+    into a dropped band. Array of shape (tones, offsets, tilings)."""
+    on, _ = bound_frequencies(nfs, freq_slice)
+    delta_f = 1 / (2 * np.asarray(nfs) * DT)
+    shifted = on[:, None, :] + np.asarray(OFFSETS)[None, :, None] * delta_f
+    shifted[shifted < leak_edge(freq_slice) * delta_f] = np.nan
+    return shifted
 
 
 def setup():
@@ -236,9 +256,10 @@ def compute(nfs, freq_slice=None):
 
 
 def compute_bounds(nfs, freq_slice=None):
-    """Mismatch of each tone moved to its on- and off-bin frequency at every tiling.
-    With a different frequency at every tiling, each reference is computed on that
-    tiling's grid directly, as in figure 6."""
+    """Mismatch of each tone moved to its on- and off-bin frequency, and to OFFSETS
+    around its band centre, at every tiling. With a different frequency at every
+    tiling, each reference is computed on that tiling's grid directly, as in
+    figure 6."""
     import jax
 
     import WDM
@@ -248,9 +269,12 @@ def compute_bounds(nfs, freq_slice=None):
 
     orbits, start, signal_times, link = setup()
     freqs = dict(zip(("on", "off"), bound_frequencies(nfs, freq_slice)))
+    freqs["offsets"] = offset_frequencies(nfs, freq_slice)
     out = dict(Nf=np.asarray(nfs), f_on=freqs["on"], f_off=freqs["off"],
+               f_offsets=freqs["offsets"],
                on=np.full(freqs["on"].shape, np.nan),
-               off=np.full(freqs["on"].shape, np.nan))
+               off=np.full(freqs["on"].shape, np.nan),
+               offsets=np.full(freqs["offsets"].shape, np.nan))
     taper = waveforms.tukey_taper_samples(N_SIGNAL, WINDOW_KWARGS["alpha"])
     for j, Nf in enumerate(nfs):
         if np.all(np.isnan(freqs["on"][:, j])):
@@ -265,32 +289,39 @@ def compute_bounds(nfs, freq_slice=None):
         cut = utils.wdm_cut_info(info)
         if freq_slice is not None:
             cut["freq_slice"] = freq_slice
+
+        def mismatch(params, f):
+            _, h_plus, h_cross = waveforms.generate_windowed_waveform(
+                "monochromatic", t0=start, dt=DT, N=N_SIGNAL,
+                model_kwargs=dict(params, f=f), window_function=WINDOW_FUNCTION,
+                window_kwargs=WINDOW_KWARGS)
+            _, h_plus, h_cross = utils.apply_zero_padding(
+                signal_times, h_plus, h_cross, info["pad_left"], info["pad_right"])
+            ours = response.one_arm_response(GC_THETA, GC_PHI, wdm.dwt(h_plus),
+                                             wdm.dwt(h_cross), link=link)
+            reference = response.one_arm_response_time_domain(
+                GC_THETA, GC_PHI, h_plus, h_cross, link=link,
+                num_integral_points=NUM_INTEGRAL_POINTS)
+            return utils.wdm_mismatch(
+                utils.apply_wdm_cut(np.asarray(ours), cut),
+                utils.apply_wdm_cut(np.asarray(wdm.dwt(np.asarray(reference))), cut)
+            )["mismatch"]
+
         for i, params in enumerate(MONOCHROMATIC_PARAMS):
             for kind in ("on", "off"):
-                f = freqs[kind][i, j]
-                if np.isnan(f):
-                    continue
-                _, h_plus, h_cross = waveforms.generate_windowed_waveform(
-                    "monochromatic", t0=start, dt=DT, N=N_SIGNAL,
-                    model_kwargs=dict(params, f=f), window_function=WINDOW_FUNCTION,
-                    window_kwargs=WINDOW_KWARGS)
-                _, h_plus, h_cross = utils.apply_zero_padding(
-                    signal_times, h_plus, h_cross, info["pad_left"], info["pad_right"])
-                ours = response.one_arm_response(GC_THETA, GC_PHI, wdm.dwt(h_plus),
-                                                 wdm.dwt(h_cross), link=link)
-                reference = response.one_arm_response_time_domain(
-                    GC_THETA, GC_PHI, h_plus, h_cross, link=link,
-                    num_integral_points=NUM_INTEGRAL_POINTS)
-                out[kind][i, j] = utils.wdm_mismatch(
-                    utils.apply_wdm_cut(np.asarray(ours), cut),
-                    utils.apply_wdm_cut(np.asarray(wdm.dwt(np.asarray(reference))), cut)
-                )["mismatch"]
+                if not np.isnan(freqs[kind][i, j]):
+                    out[kind][i, j] = mismatch(params, freqs[kind][i, j])
+            for k, f in enumerate(freqs["offsets"][i, :, j]):
+                if not np.isnan(f):
+                    out["offsets"][i, k, j] = mismatch(params, f)
 
         del response, wdm
         jax.clear_caches()
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s:  "
-              + "  ".join(f"{name} on {out['on'][i, j]:.1e} off {out['off'][i, j]:.1e}"
-                          for i, name in enumerate(TONES))
+              + "  ".join(f"{name} on {out['on'][i, j]:.1e} "
+                          f"min {np.nanmin(np.append(out['offsets'][i, :, j], out['on'][i, j])):.1e} "
+                          f"off {out['off'][i, j]:.1e}"
+                          for i, name in enumerate(TONES) if not np.isnan(out["on"][i, j]))
               + f"   ({time.perf_counter() - tick:.0f} s)", flush=True)
 
     return out
@@ -301,7 +332,8 @@ def plot(res, bounds, path, freq_slice=None):
     delta_t = res["Nf"] * DT
     assert np.array_equal(bounds["Nf"], res["Nf"])
     values = np.concatenate([res[name] for name in NAMES]
-                            + [bounds["on"].ravel(), bounds["off"].ravel()])
+                            + [bounds["on"].ravel(), bounds["off"].ravel(),
+                               bounds["offsets"].ravel()])
     # One mismatch scale for all four panels, so they read against each other.
     bottom, top = np.nanmin(values) / 3, min(3.0, 3 * np.nanmax(values))
 
@@ -322,7 +354,10 @@ def plot(res, bounds, path, freq_slice=None):
         else:
             i = TONES.index(name)
             on, off = bounds["on"][i], bounds["off"][i]
-            ax.fill_between(delta_t, on, off, where=~np.isnan(on), color=colour,
+            # the least of on-bin, the offsets around it and the source itself
+            lower = np.nanmin(np.vstack([on, bounds["offsets"][i], res[name]]), axis=0)
+            lower = np.where(np.isnan(on), np.nan, lower)
+            ax.fill_between(delta_t, lower, off, where=~np.isnan(on), color=colour,
                             alpha=0.18, lw=0, zorder=1)
             ax.plot(delta_t, res[name], color=colour, lw=0.5, marker="o", zorder=3,
                     **markers)
@@ -377,9 +412,30 @@ if __name__ == "__main__":
     if "--only-bounds" in sys.argv:
         compute_bounds([int(sys.argv[sys.argv.index("--only-bounds") + 1])], freq_slice)
         sys.exit()
+    targets = ((EDGE_CACHE if edge else CACHE, compute),
+               (EDGE_BOUNDS_CACHE if edge else BOUNDS_CACHE, compute_bounds))
+
+    def part_path(path, index, count):
+        return path.parent / "parts" / f"{path.stem}_part{index}of{count}.npz"
+
+    if "--part" in sys.argv:
+        index, count = map(int, sys.argv[sys.argv.index("--part") + 1].split("/"))
+        for path, run in targets:
+            part_path(path, index, count).parent.mkdir(parents=True, exist_ok=True)
+            np.savez(part_path(path, index, count), **run(NF[index::count], freq_slice))
+        sys.exit()
+    if "--merge" in sys.argv:
+        count = int(sys.argv[sys.argv.index("--merge") + 1])
+        for path, _ in targets:
+            parts = [dict(np.load(part_path(path, i, count))) for i in range(count)]
+            order = np.argsort(np.concatenate([p["Nf"] for p in parts]))
+            merged = {key: np.concatenate([p[key] for p in parts], axis=-1)[..., order]
+                      for key in parts[0]}
+            assert np.array_equal(merged["Nf"], NF), merged["Nf"]
+            np.savez(path, **merged)
+
     caches = []
-    for path, run in ((EDGE_CACHE if edge else CACHE, compute),
-                      (EDGE_BOUNDS_CACHE if edge else BOUNDS_CACHE, compute_bounds)):
+    for path, run in targets:
         if path.exists():
             caches.append(dict(np.load(path)))
         else:

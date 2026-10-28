@@ -1,6 +1,7 @@
 """Figure 6: mismatch of the wavelet one-arm response against the time-domain
 reference as a tone moves across a frequency band, on link 1 -> 2 at
-Delta T = 1000 s (Nf = 250), the most accurate tiling of figure 5.
+Delta T = 1e4 s (Nf = 2500), the middle of the 3600-36000 s band figure 4
+recommends.
 
 Each of the three example Galactic binaries (parameters.py) is moved to
 f = (m + r) Delta F, with m its nearest band at this tiling and r from 0 (on the
@@ -33,7 +34,7 @@ ROOT = HERE.parent
 CACHE = HERE / "cache" / "fig6_off_bin.npz"
 ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
-NF = 250                                        # Delta T = 1000 s
+NF = 2500                                       # Delta T = 1e4 s
 DELTA_F = 1 / (2 * NF * DT)
 R = np.linspace(0.0, 1.0, 21)
 

@@ -602,6 +602,49 @@ def compute_time_shifts(source_direction, receiver_position, tau):
     ) - 0.5 * tau
 
 
+def evaluate_at_landing_times(row_values, time_shift, row_spacing):
+    r"""
+    Per-row detector quantities at the time each row lands after the shift.
+
+    .. math::
+
+        \tilde{q}_n = q\!\left( t_n - \delta_n \right)
+
+    The shift carries row :math:`n` to :math:`t_n - \delta_n`, so a detector
+    quantity multiplied in before it is sampled there to arrive at the right
+    time; see ``one_arm_response_wdm``.
+
+    ``interpolate_uniform_grid`` on the row grid, with ``extrapolate=True``:
+    the quantities are smooth on the orbital timescale and continue past the
+    record, so the stencil stays on the rows at the ends and extrapolates a
+    landing time off the record.
+
+    Parameters
+    ----------
+    row_values : jnp.ndarray
+        A quantity sampled at the rows :math:`t_n`. Array shape=(..., Nt).
+    time_shift : jnp.ndarray
+        :math:`\delta_n`, in seconds, broadcastable against ``row_values``.
+    row_spacing : float
+        :math:`\Delta T`, in seconds.
+
+    Returns
+    -------
+    landed : jnp.ndarray
+        :math:`q(t_n - \delta_n)`. Same shape as ``row_values``.
+    """
+    time_shift = jnp.broadcast_to(time_shift, row_values.shape)
+    num_rows = row_values.shape[-1]
+
+    landing = jnp.arange(num_rows) * row_spacing - time_shift
+
+    landed = interpolate_uniform_grid(
+        row_values.reshape(-1, num_rows), 0.0, row_spacing,
+        landing.reshape(-1, num_rows), extrapolate=True,
+    )
+    return landed.reshape(row_values.shape)
+
+
 def compute_detector_amplitudes(light_travel_time,
                                 projection_plus,
                                 projection_cross,
@@ -631,7 +674,9 @@ def compute_detector_amplitudes(light_travel_time,
     Parameters
     ----------
     light_travel_time : jnp.ndarray
-        :math:`\ell_{sr}(t_n)`, in seconds. Array shape=(num_links, Nt).
+        :math:`\ell_{sr}`, in seconds. Array shape=(num_links, Nt), or
+        (batch, num_links, Nt) when it has been taken to per-source times by
+        ``evaluate_at_landing_times``.
     projection_plus, projection_cross : jnp.ndarray
         Antenna-pattern factors. Array shape=(batch, num_links, Nt).
     tau : jnp.ndarray
@@ -780,8 +825,9 @@ def one_arm_response_wdm(wdm_class,
 
     .. math::
 
-        A^{+,\times}_{nm} = \tfrac{1}{2} \ell_{sr}(t_n) F^{+,\times}(t_n)
-            \, \mathrm{sinc}\!\left( 2 f_m \tau_n \right) ,
+        A^{+,\times}_{nm} = \tfrac{1}{2} \ell_{sr}(t'_n) F^{+,\times}(t'_n)
+            \, \mathrm{sinc}\!\left( 2 f_m \tau(t'_n) \right) ,
+        \qquad t'_n = t_n - \delta_n ,
 
     and the unshifted coefficients are
     :math:`w^\xi = A^+ w^{h_+} + A^\times w^{h_\times}`. Evaluating the sinc at
@@ -791,9 +837,13 @@ def one_arm_response_wdm(wdm_class,
     tables, or anything the time-domain path contributes. That is why the
     time-domain path exists to check it.
 
-    The shift then carries each pixel to :math:`t_n + \delta_n` through
+    The shift then samples the wave at :math:`t_n + \delta_n` through
     ``wdm_class.apply_variable_time_shift``, which applies a time-varying delay
     directly in the wavelet domain rather than returning to the time series.
+    The shift moves the amplitudes with the coefficients they multiply, so they
+    are taken at :math:`t'_n`, where each row lands: the response is
+    :math:`A(t)\,h(t + \delta(t))`, with only the waveform retarded. The delay
+    stays at :math:`t_n`, the output row it is applied for.
 
     Links are swept one at a time in ``apply_batch_shift``, which is where the
     runtime of this path very nearly all sits - 98% of it at a year.
@@ -834,9 +884,15 @@ def one_arm_response_wdm(wdm_class,
 
     time_shift = compute_time_shifts(source_direction, receiver_position, tau)
 
+    landed = evaluate_at_landing_times(
+        jnp.stack(jnp.broadcast_arrays(
+            light_travel_time, projection_plus, projection_cross, tau,
+        )),
+        time_shift, wdm_class.dT,
+    )
+
     amplitude_plus, amplitude_cross = compute_detector_amplitudes(
-        light_travel_time, projection_plus, projection_cross, tau,
-        wavelet_freqs,
+        *landed, wavelet_freqs,
     )
 
     unshifted = (amplitude_plus * wavelet_plus[:, jnp.newaxis]

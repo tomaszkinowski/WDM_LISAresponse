@@ -144,12 +144,17 @@ def test_the_same_link_two_ways_gives_the_same_numbers(
 
 def test_selecting_a_link_matches_its_row_of_the_full_result(
         response, wavelet_waveform):
-    """Asking for one arm gives that arm, not a differently-computed one."""
+    """Asking for one arm gives that arm, not a differently-computed one.
+
+    Equal to rounding rather than bit for bit: the landing-time interpolation
+    is fused into the jitted response, and XLA compiles it differently for one
+    link than for six, which moves the last bit.
+    """
     every = response(THETA, PHI, *wavelet_waveform)
     one = response.one_arm_response(
         THETA, PHI, *wavelet_waveform, link=3)
 
-    assert np.array_equal(np.asarray(every[3]), np.asarray(one))
+    assert np.allclose(np.asarray(every[3]), np.asarray(one), rtol=1e-14, atol=0)
 
 
 def test_the_link_axis_sits_after_the_batch_axes(response, stacked):

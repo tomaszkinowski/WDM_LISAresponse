@@ -192,3 +192,59 @@ def test_each_batch_row_is_independent(rng):
     for row in range(3):
         alone = _interpolate(values[row], queries[row])
         assert np.allclose(together[row], alone, rtol=0, atol=1e-14)
+
+
+# ---------------------------------------------------- extrapolate=True edges
+
+def _interpolate_extrapolating(values, queries, num_taps=12):
+    """As _interpolate, with the stencil kept on the samples at the ends."""
+    return np.asarray(interpolate_uniform_grid(
+        jnp.asarray(values)[None, :],
+        GRID_START,
+        GRID_STEP,
+        jnp.asarray(queries)[None, :],
+        num_taps,
+        extrapolate=True,
+    ))[0]
+
+
+@pytest.mark.parametrize("num_taps", [4, 12])
+def test_extrapolate_is_exact_on_polynomials_at_the_ends_and_beyond(num_taps, rng):
+    """With the stencil slid inward, the contract holds up to and past the ends.
+
+    The same n taps, off-centre, still interpolate a degree < n polynomial
+    exactly, and extrapolate it exactly a few samples beyond the span - which
+    clamped taps cannot do.
+    """
+    times = _grid()
+    near_ends = np.concatenate([
+        rng.uniform(times[0] - 3 * GRID_STEP, times[6], size=20),
+        rng.uniform(times[-7], times[-1] + 3 * GRID_STEP, size=20),
+    ])
+
+    for degree in range(num_taps):
+        polynomial = np.polynomial.Polynomial(rng.normal(size=degree + 1))
+
+        got = _interpolate_extrapolating(
+            polynomial(_unit_interval(times)), near_ends, num_taps)
+
+        expected = polynomial(_unit_interval(near_ends))
+        assert np.allclose(got, expected, rtol=0, atol=1e-9)
+
+
+def test_extrapolate_agrees_with_the_default_away_from_the_ends(rng):
+    """Only the edge handling changes: in the interior the two paths agree."""
+    times = _grid()
+    values = rng.normal(size=NUM_SAMPLES)
+    queries = rng.uniform(times[16], times[-16], size=40)
+
+    assert np.allclose(_interpolate_extrapolating(values, queries),
+                       _interpolate(values, queries), rtol=0, atol=1e-13)
+
+
+def test_extrapolate_needs_a_full_stencil_of_samples():
+    """Fewer samples than taps leaves nowhere to slide the stencil to."""
+    with pytest.raises(AssertionError):
+        interpolate_uniform_grid(
+            jnp.zeros((1, 6)), 0.0, 1.0, jnp.zeros((1, 3)), 12,
+            extrapolate=True)
