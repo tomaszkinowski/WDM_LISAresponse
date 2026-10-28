@@ -4,9 +4,8 @@ Grey regions are where an approximation fails (overlaps darken):
   narrowband            dF << 1/tau, with dF dT = 1/2 and tau <= 2l  =>  dT >> l/c
   short-atom            dT << 1 yr
   slowly varying delay  dT << 1 / (2 pi f |dDelta/dt|), |dDelta/dt| <= v_orb/c
-The yellow band is the dT in [1, 10] h we recommend, nested inside a paler band for
-the dT range studied in the results. Vertical lines are the three example Galactic
-binaries, in the PALETTE slots their curves use in later figures. The x-axis f
+The yellow band is the dT in [1, 10] h we recommend. Vertical lines are the three
+example Galactic binaries, in the PALETTE slots their curves use in later figures. The x-axis f
 stands in for f_eff in the slowly-varying-delay condition.
 """
 
@@ -37,7 +36,6 @@ def dt_slow_delay(f):
 F_LIM = (1e-5, 1.0)
 DT_LIM = (1.0, 3e8)
 DT_BAND = (3600.0, 36000.0)                             # 3600-36000 s
-DT_STUDIED = (1e2, 1e6)                                 # range scanned in the results [s]
 F_GB = [3e-4, 3e-3, 3e-2]                               # example Galactic binaries [Hz]
 
 GREY = dict(color="k", alpha=0.25, lw=0)
@@ -60,8 +58,7 @@ ax.axhline(DT_NARROWBAND, **EDGE)
 ax.axhline(DT_SHORT_ATOM, **EDGE)
 ax.plot(f, dt_slow_delay(f), **EDGE)
 
-# Studied resolutions (pale) with the recommended ones nested inside (stronger)
-ax.axhspan(*DT_STUDIED, color=PALETTE[3], alpha=0.2, lw=0)
+# Recommended resolutions
 ax.axhspan(*DT_BAND, color=PALETTE[3], alpha=0.3, lw=0)
 
 # Example Galactic binaries

@@ -6,16 +6,15 @@ Delta T runs from 1e2 to 1e6 s, four tilings per decade. Each grid is compared
 on the rows holding neither padding nor a tapered sample, without the m = 0
 band, which WDM_transform gets wrong without calc_m0. A signal leaks into that
 dropped band below (1 - A_frac) Delta F, the edge of the Meyer window, not just
-below the band edge Delta F / 2. Hollow markers are tones that do; the EMRI,
-which leaks gradually, is shaded grey where more than 1% of its power does:
-Delta T < (1 - A_frac) / (2 f), with f the frequency with 1% of its power below
-it (from investigation_emri_m0.py, which must be run first).
+below the band edge Delta F / 2. Hollow markers are tones that do, and the EMRI
+where more than 1% of its WDM power lies in m = 0 (from investigation_emri_m0.py's
+dense sweep of Delta T, which must be run first).
 
 Each tone's mismatch depends on where it falls within its band (figure 6), so at
 every tiling the same tone is also moved to its nearest band centre, m Delta F
 (on-bin, r = 0), and to its nearest point halfway between two centres,
 (k + 1/2) Delta F (off-bin, r = 1/2, the peak of every curve in figure 6); the
-shading spans the two. Above Delta T ~ 1e5 s the 30 mHz on-bin point can lie
+shading spans the two, and the points themselves are not drawn. Above Delta T ~ 1e5 s the 30 mHz on-bin point can lie
 above the off-bin one, so neither is a bound there. Neither
 is drawn where the tone itself leaks into m = 0, and the off-bin point is kept to
 k >= 1 so it does not leak either. These come from a separate run, on each
@@ -41,10 +40,9 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
 from matplotlib.ticker import FixedLocator, NullFormatter
 
-from _colours import DARK, HAIRLINE, INK, MUTED, PALETTE
+from _colours import DARK, HAIRLINE, INK, PALETTE
 from parameters import (DT, EMRI_PARAMS, FREQUENCIES, GC_PHI, GC_THETA, MAX_LAG_L,
                         MONOCHROMATIC_PARAMS, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -78,12 +76,11 @@ A_FRAC = 0.25
 
 DT_BAND = (3600.0, 36000.0)                     # 3600-36000 s, recommended in fig 4
 
-# The EMRI is shaded where more than 1% of its Fourier power lies below
-# (1 - A_frac) Delta F: below the leak edge of the frequency with 1% of its power
-# beneath it, f_quantile in investigation_emri_m0.py's cache. In that dense sweep
-# this is also where more than ~1% of its WDM power falls in m = 0.
+# The EMRI is drawn hollow where more than this fraction of its WDM power (h_plus
+# and h_cross) lies in m = 0, m0 in investigation_emri_m0.py's cache.
 EMRI_SWEEP_CACHE = HERE / "cache" / "investigation_emri_m0.npz"
-# With the edge bands dropped, the EMRI is shaded where less than this fraction of
+EMRI_M0_LIMIT = 0.01
+# With the edge bands dropped, the EMRI is hollow where less than this fraction of
 # its WDM power lies in the compared bands (emri_shade_edge).
 EMRI_COMPARED_LIMIT = 0.5
 
@@ -105,19 +102,20 @@ def leak_edge(freq_slice=None):
 
 
 def emri_shade_edge(freq_slice=None):
-    """The Delta T below which the EMRI is shaded. By default, where more than 1% of
-    its Fourier power sits under (1 - A_frac) Delta F and leaks into m = 0. With
-    edge bands dropped, the leak no longer shows in the mismatch (the dropped bands'
-    error is not compared), so the shading marks coverage instead: where less than
-    half its WDM power lies in the compared bands, interpolated in log Delta T
-    between the dense sweep's tilings."""
+    """The Delta T below which the EMRI is drawn hollow. By default, where more than
+    1% of its WDM power lies in m = 0. With edge bands dropped, the leak no longer
+    shows in the mismatch (the dropped bands' error is not compared), so the hollow
+    points mark coverage instead: where less than half its WDM power lies in the
+    compared bands. Both are interpolated in log Delta T between the dense sweep's
+    tilings, at the first one past the limit."""
     sweep = dict(np.load(EMRI_SWEEP_CACHE))
     if freq_slice is None:
-        return leak_edge() / (2 * float(sweep["f_quantile"]))
-    delta_t, compared = np.log(sweep["Nf"] * DT), sweep["compared"]
-    j = np.flatnonzero(compared >= EMRI_COMPARED_LIMIT)[0]
-    return float(np.exp(np.interp(EMRI_COMPARED_LIMIT, compared[[j - 1, j]],
-                                  delta_t[[j - 1, j]])))
+        fraction, limit = -sweep["m0"], -EMRI_M0_LIMIT
+    else:
+        fraction, limit = sweep["compared"], EMRI_COMPARED_LIMIT
+    delta_t = np.log(sweep["Nf"] * DT)
+    j = np.flatnonzero(fraction >= limit)[0]
+    return float(np.exp(np.interp(limit, fraction[[j - 1, j]], delta_t[[j - 1, j]])))
 
 
 def bound_frequencies(nfs, freq_slice=None):
@@ -310,32 +308,27 @@ def plot(res, bounds, path, freq_slice=None):
     fig, axes = plt.subplots(len(NAMES), 1, figsize=(3.375, 7.4), sharex=True,
                              sharey=True, layout="constrained")
     markers = dict(ms=2.5, mec="white", mew=0.4)
-    bound_style = dict(on=dict(marker="s", label="on-bin, $r = 0$"),
-                       off=dict(marker="x", label=r"off-bin, $r = 1/2$"))
+    hollow = dict(ls="none", mfc="white", mew=0.7, zorder=5)
     xlim = (delta_t[0] / 1.3, delta_t[-1] * 1.3)
-    leak_shade = dict(color=MUTED, alpha=0.3, lw=0)
     for ax, name in zip(axes, NAMES):
         ax.axvspan(*DT_BAND, color=PALETTE[3], alpha=0.3, lw=0, zorder=0.5)
         colour = COLOURS[name]
         if name == "EMRI":
-            # The EMRI leaks gradually, so it gets a band rather than markers.
-            ax.axvspan(xlim[0], emri_shade_edge(freq_slice), zorder=0.4, **leak_shade)
-            ax.plot(delta_t, res[name], color=colour, lw=1.2, marker="D", zorder=4,
-                    **dict(markers, ms=2.2))
+            ax.plot(delta_t, res[name], color=colour, lw=1.2, marker="o", zorder=4,
+                    **markers)
+            leaks = delta_t < emri_shade_edge(freq_slice)
+            ax.plot(delta_t[leaks], res[name][leaks], marker="o", ms=2.5, mec=colour,
+                    **hollow)
         else:
             i = TONES.index(name)
             on, off = bounds["on"][i], bounds["off"][i]
-            drawn = ~np.isnan(on)
-            ax.fill_between(delta_t, on, off, where=drawn, color=colour, alpha=0.18,
-                            lw=0, zorder=1)
-            for kind, row in (("on", on), ("off", off)):
-                ax.plot(delta_t, row, ls="none", color=colour, ms=2.6, mec=colour,
-                        mfc="none", mew=0.6, zorder=2, marker=bound_style[kind]["marker"])
+            ax.fill_between(delta_t, on, off, where=~np.isnan(on), color=colour,
+                            alpha=0.18, lw=0, zorder=1)
             ax.plot(delta_t, res[name], color=colour, lw=0.5, marker="o", zorder=3,
                     **markers)
             leaks = FREQUENCIES[i] < leak_edge(freq_slice) / (2 * delta_t)
-            ax.plot(delta_t[leaks], res[name][leaks], ls="none", marker="o", ms=2.5,
-                    mfc="white", mec=colour, mew=0.7, zorder=5)
+            ax.plot(delta_t[leaks], res[name][leaks], marker="o", ms=2.5, mec=colour,
+                    **hollow)
         # Bottom right is empty in every panel: fine tilings are where the error is.
         ax.text(0.97, 0.06, name, transform=ax.transAxes, color=colour, ha="right",
                 va="bottom", fontsize="small", zorder=6)
@@ -361,19 +354,11 @@ def plot(res, bounds, path, freq_slice=None):
     top_axis.set_xlabel(r"$\Delta F$ [mHz]")
 
     # One legend for the four panels, in grey: the colours are the panels'. The
-    # on- to off-bin shading is left to the caption.
+    # on- to off-bin shading and the 3600-36000 s band are left to the caption.
     handles = [Line2D([], [], color=INK, lw=0.5, marker="o", **markers),
-               Line2D([], [], ls="none", marker="o", ms=2.5, mfc="white", mec=INK,
-                      mew=0.7),
-               Line2D([], [], ls="none", marker="s", ms=2.6, mfc="none", mec=INK, mew=0.6),
-               Line2D([], [], ls="none", marker="x", ms=2.6, mfc="none", mec=INK, mew=0.6),
-               Patch(color=PALETTE[3], alpha=0.3, lw=0),
-               Patch(**leak_shade)]
+               Line2D([], [], marker="o", ms=2.5, mec=INK, **hollow)]
     dropped = "m = 0" if lowest_band(freq_slice) == 1 else rf"m \le {lowest_band(freq_slice) - 1}"
-    labels = ["source", rf"tone leaks into ${dropped}$", bound_style["on"]["label"],
-              bound_style["off"]["label"], r"3600--36000\,s",
-              (rf"EMRI: $> 1\%$ of power leaks into ${dropped}$" if freq_slice is None
-               else r"EMRI: $< 50\%$ of power compared")]
+    labels = ["source", rf"power leaks into ${dropped}$"]
     fig.legend(handles, labels, loc="outside lower center", fontsize="small", ncols=2,
                handlelength=1.4, handletextpad=0.5, columnspacing=0.9, frameon=False)
 
