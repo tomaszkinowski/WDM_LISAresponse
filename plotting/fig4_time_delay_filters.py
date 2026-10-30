@@ -1,4 +1,4 @@
-"""Figure 3: the time-delay filters T_ell (top) and T'_ell (bottom) against the
+"""Figure 4: the time-delay filters T_ell (top) and T'_ell (bottom) against the
 delay, with the band -dT/2 <= delta < dT/2 shaded.
 
 Ported from WDM_GW_wavelets/examples/time_delay_filters_demo.ipynb.
@@ -68,4 +68,4 @@ ax_Tp.set_xticks([-15, -10, -5, 0, 5, 10, 15])
 ax_Tp.set_xlabel(r"$\delta/\Delta T$")
 
 fig.align_ylabels((ax_T, ax_Tp))
-fig.savefig(HERE / "figures" / "fig3_time_delay_filters.pdf")
+fig.savefig(HERE / "figures" / "fig4_time_delay_filters.pdf")

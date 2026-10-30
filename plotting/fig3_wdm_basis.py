@@ -1,4 +1,4 @@
-"""Figure 2: three WDM wavelets in the time domain (top), the frequency domain
+"""Figure 3: three WDM wavelets in the time domain (top), the frequency domain
 (right), and the tiles they occupy in the time-frequency plane (centre).
 
 Ported from cell 11 of WDM_GW_wavelets/examples/plotting_the_mother_wavelet.ipynb.
@@ -101,4 +101,4 @@ for n, m, c in zip(N_VALS, M_VALS, PALETTE):
                   path_effects=[patheffects.withStroke(linewidth=1.5, foreground="white")])
 
 plt.subplots_adjust(wspace=0.05, hspace=0.05, left=0.08, right=0.92, top=0.95, bottom=0.08)
-fig.savefig(HERE / "figures" / "fig2_wdm_basis.pdf")
+fig.savefig(HERE / "figures" / "fig3_wdm_basis.pdf")

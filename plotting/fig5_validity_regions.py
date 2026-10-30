@@ -1,4 +1,4 @@
-"""Figure 4: where in (f, dT) the approximations behind the WDM response hold.
+"""Figure 5: where in (f, dT) the approximations behind the WDM response hold.
 
 Grey regions are where an approximation fails (overlaps darken):
   narrowband            dF << 1/tau, with dF dT = 1/2 and tau <= 2l  =>  dT >> l/c
@@ -97,4 +97,4 @@ ax.text(F_LABEL, dt_slow_delay(F_LABEL) * 2.0, "Slowly varying delay", fontsize=
 ax.set_xlabel(r"$f$ [Hz]")
 ax.set_ylabel(r"$\Delta T$ [s]")
 
-fig.savefig(HERE / "figures" / "fig4_validity_regions.pdf")
+fig.savefig(HERE / "figures" / "fig5_validity_regions.pdf")

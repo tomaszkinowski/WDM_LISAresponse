@@ -1,12 +1,12 @@
-"""Figure 5 with the prototype response corrections.
+"""Figure 6 with the prototype response corrections.
 
-Figure 5 (fig5_mismatch_vs_dT.py) recomputed several ways from the same
+Figure 6 (fig6_mismatch_vs_dT.py) recomputed several ways from the same
 responses, via prototypes/delay_rate_correction/response_corrections.py in this
 repository:
 
-- production: the wavelet response as figure 5 computes it, on the current
+- production: the wavelet response as figure 6 computes it, on the current
   WDM_GW_wavelets (which fixes the T' filter half-bin offset when Nt = 2 mod 4,
-  so it differs from figure 5's caches at coarse Delta T);
+  so it differs from figure 6's caches at coarse Delta T);
 - first: the shift with the first-order delay-rate term;
 - full: the amplitude-rate term on the unshifted grid, then the shift to
   second order in the delay's rate and first in its curvature;
@@ -18,7 +18,7 @@ repository:
   sinc term too, and with the first-order delay-rate kernel for the rest.
 
 Tilings, signals, references, on-/off-bin frequencies, the cut (padding, taper
-and m = 0) and the plot are figure 5's own. ../prototypes/delay_rate_correction
+and m = 0) and the plot are figure 6's own. ../prototypes/delay_rate_correction
 must be on PYTHONPATH. Run with no arguments to compute (or reuse the caches) and plot;
 ``--only NF`` runs one tiling and the bounds at it, prints, caches nothing.
 ``--part K/COUNT`` computes tilings K, K + COUNT, ... into cache/parts/ and
@@ -32,7 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-import fig5_mismatch_vs_dT as fig5
+import fig6_mismatch_vs_dT as fig6
 from parameters import (DT, EMRI_PARAMS, GC_PHI, GC_THETA, MAX_LAG_L,
                         MONOCHROMATIC_PARAMS, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -44,8 +44,8 @@ from response_corrections import (SPLIT_VARIANTS, VARIANTS as CORRECTED_VARIANTS
 HERE = Path(__file__).parent
 VARIANTS = CORRECTED_VARIANTS + SPLIT_VARIANTS
 
-CACHES = {kind: (HERE / "cache" / f"investigation_fig5_{kind}.npz",
-                 HERE / "cache" / f"investigation_fig5_{kind}_bounds.npz")
+CACHES = {kind: (HERE / "cache" / f"investigation_fig6_{kind}.npz",
+                 HERE / "cache" / f"investigation_fig6_{kind}_bounds.npz")
           for kind in VARIANTS}
 
 
@@ -129,7 +129,7 @@ def tiling(orbits, start, link, Nf):
 
 
 def compute(nfs):
-    """fig5.compute for every variant, sharing references and responses."""
+    """fig6.compute for every variant, sharing references and responses."""
     import jax
 
     import WDM
@@ -137,12 +137,12 @@ def compute(nfs):
     from WDM_LISAresponse.code.utils import utils
     from WDM_LISAresponse.code.waveforms import waveforms
 
-    orbits, start, signal_times, link = fig5.setup()
-    sky = {name: (GC_THETA, GC_PHI) for name in fig5.TONES}
+    orbits, start, signal_times, link = fig6.setup()
+    sky = {name: (GC_THETA, GC_PHI) for name in fig6.TONES}
     sky["EMRI"] = (EMRI_PARAMS["theta"], EMRI_PARAMS["phi"])
 
     signals, tone_params = {}, {}
-    for name, params in zip(fig5.TONES, MONOCHROMATIC_PARAMS):
+    for name, params in zip(fig6.TONES, MONOCHROMATIC_PARAMS):
         _, hp, hc = waveforms.generate_windowed_waveform(
             "monochromatic", t0=start, dt=DT, N=N_SIGNAL, model_kwargs=params,
             window_function=WINDOW_FUNCTION, window_kwargs=WINDOW_KWARGS)
@@ -161,11 +161,11 @@ def compute(nfs):
                                              info["pad_left"], info["pad_right"])
         return hp, hc
 
-    ref_info = utils.wdm_padding_info(N_SIGNAL, fig5.REF_NF,
-                                      extra_rows_left=fig5.REF_ROWS,
-                                      extra_rows_right=fig5.REF_ROWS)
+    ref_info = utils.wdm_padding_info(N_SIGNAL, fig6.REF_NF,
+                                      extra_rows_left=fig6.REF_ROWS,
+                                      extra_rows_right=fig6.REF_ROWS)
     ref_response = LISAresponse(
-        WDM.WDM.WDM_transform(dt=DT, Nf=fig5.REF_NF, N=ref_info["target_length"]),
+        WDM.WDM.WDM_transform(dt=DT, Nf=fig6.REF_NF, N=ref_info["target_length"]),
         orbits, t0=start - ref_info["pad_left"] * DT, max_lag_L=MAX_LAG_L,
         num_interp_points=NUM_INTERP_POINTS, link_convention=(link,))
     references = {}
@@ -178,7 +178,7 @@ def compute(nfs):
     print("references done", flush=True)
 
     out = {kind: dict(Nf=np.asarray(nfs), kept_rows=np.zeros(len(nfs), dtype=int),
-                      **{name: np.full(len(nfs), np.nan) for name in fig5.NAMES})
+                      **{name: np.full(len(nfs), np.nan) for name in fig6.NAMES})
            for kind in VARIANTS}
     for j, Nf in enumerate(nfs):
         tick = time.perf_counter()
@@ -203,20 +203,20 @@ def compute(nfs):
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s:  "
               + "  ".join(f"{name} " + "/".join(f"{out[kind][name][j]:.1e}"
                                                  for kind in VARIANTS)
-                          for name in fig5.NAMES)
+                          for name in fig6.NAMES)
               + f"   ({time.perf_counter() - tick:.0f} s)", flush=True)
     return out
 
 
 def compute_bounds(nfs):
-    """fig5.compute_bounds for every variant."""
+    """fig6.compute_bounds for every variant."""
     import jax
 
     from WDM_LISAresponse.code.utils import utils
     from WDM_LISAresponse.code.waveforms import waveforms
 
-    orbits, start, signal_times, link = fig5.setup()
-    freqs = dict(zip(("on", "off"), fig5.bound_frequencies(nfs)))
+    orbits, start, signal_times, link = fig6.setup()
+    freqs = dict(zip(("on", "off"), fig6.bound_frequencies(nfs)))
     out = {kind: dict(Nf=np.asarray(nfs), f_on=freqs["on"], f_off=freqs["off"],
                       on=np.full(freqs["on"].shape, np.nan),
                       off=np.full(freqs["on"].shape, np.nan))
@@ -251,14 +251,14 @@ def compute_bounds(nfs):
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s bounds:  "
               + "  ".join(f"{name} off " + "/".join(f"{out[kind]['off'][i, j]:.1e}"
                                                      for kind in VARIANTS)
-                          for i, name in enumerate(fig5.TONES))
+                          for i, name in enumerate(fig6.TONES))
               + f"   ({time.perf_counter() - tick:.0f} s)", flush=True)
     return out
 
 
 def part_paths(index, count):
     return {kind: tuple(HERE / "cache" / "parts"
-                        / f"investigation_fig5_{kind}{suffix}_part{index}of{count}.npz"
+                        / f"investigation_fig6_{kind}{suffix}_part{index}of{count}.npz"
                         for suffix in ("", "_bounds"))
             for kind in VARIANTS}
 
@@ -272,7 +272,7 @@ def merge(count):
             order = np.argsort(np.concatenate([p["Nf"] for p in parts]))
             merged = {key: np.concatenate([p[key] for p in parts], axis=-1)[..., order]
                       for key in parts[0]}
-            assert np.array_equal(merged["Nf"], fig5.NF), merged["Nf"]
+            assert np.array_equal(merged["Nf"], fig6.NF), merged["Nf"]
             np.savez(CACHES[kind][which], **merged)
 
 
@@ -285,7 +285,7 @@ if __name__ == "__main__":
     if "--part" in sys.argv:
         # --part K/COUNT: tilings K, K + COUNT, ..., caches of its own, no plot
         index, count = map(int, sys.argv[sys.argv.index("--part") + 1].split("/"))
-        nfs = fig5.NF[index::count]
+        nfs = fig6.NF[index::count]
         paths = part_paths(index, count)
         paths[VARIANTS[0]][0].parent.mkdir(parents=True, exist_ok=True)
         for which, run in ((0, compute), (1, compute_bounds)):
@@ -301,11 +301,11 @@ if __name__ == "__main__":
         if all(path.exists() for path in paths):
             loaded = {kind: dict(np.load(CACHES[kind][index])) for kind in VARIANTS}
         else:
-            loaded = run(fig5.NF)
+            loaded = run(fig6.NF)
             for kind in VARIANTS:
                 np.savez(CACHES[kind][index], **loaded[kind])
         for kind in VARIANTS:
             results.setdefault(kind, []).append(loaded[kind])
     for kind in VARIANTS:
-        fig5.plot(*results[kind], HERE / "figures" / "investigations"
-                  / f"fig5_{kind}.pdf")
+        fig6.plot(*results[kind], HERE / "figures" / "investigations"
+                  / f"fig6_{kind}.pdf")

@@ -28,9 +28,9 @@ includes the T' half-bin fix (28c3714).
 `response_corrections.py` assembles them for one link from the same geometry:
 `production`, `first`, `full`, `full_sinc` (`responses`) and `split`,
 `split_amp`, `split_amp_sinc`, `split_amp_sinc_first` (`split_responses`).
-`plotting/investigation_fig5_delay_rate.py` runs all eight through figure 5
+`plotting/investigation_fig6_delay_rate.py` runs all eight through figure 6
 (`--part K/COUNT` to split across processes, `--merge COUNT` to assemble) and
-writes `plotting/figures/investigations/fig5_<variant>.pdf`.
+writes `plotting/figures/investigations/fig6_<variant>.pdf`.
 
 ## Timing
 

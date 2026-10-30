@@ -1,12 +1,12 @@
-"""Figure 6: mismatch of the wavelet one-arm response against the time-domain
+"""Figure 7: mismatch of the wavelet one-arm response against the time-domain
 reference as a tone moves across a frequency band, on link 1 -> 2 at
-Delta T = 1e4 s (Nf = 2500), the middle of the 3600-36000 s band figure 4
+Delta T = 1e4 s (Nf = 2500), the middle of the 3600-36000 s band figure 5
 recommends.
 
 Each of the three example Galactic binaries (parameters.py) is moved to
 f = (m + r) Delta F, with m its nearest band at this tiling and r from 0 (on the
 centre of band m) to 1 (on the centre of band m + 1), in steps of 0.05. Everything
-else - sky, amplitudes, window, cut - is as in figure 5. With one tiling only,
+else - sky, amplitudes, window, cut - is as in figure 6. With one tiling only,
 the reference is computed on its grid directly. Each curve is labelled by its
 frequency at r = 0, m Delta F.
 
@@ -31,7 +31,7 @@ from parameters import (A_CROSS, A_PLUS, DT, FREQUENCIES, GC_PHI, GC_THETA, MAX_
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
-CACHE = HERE / "cache" / "fig6_off_bin.npz"
+CACHE = HERE / "cache" / "fig7_off_bin.npz"
 ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
 NF = 2500                                       # Delta T = 1e4 s
@@ -63,7 +63,7 @@ def compute(rs):
     data = read_orbit_file(str(ORBIT_FILE))
     orbit_times = data.t0 + data.dt * np.arange(data.size)
     orbits = InterpolatedOrbits(orbit_times, data.positions, data.velocities)
-    # 200 d in, as in figure 5, so the two figures see the same stretch of orbit.
+    # 200 d in, as in figure 6, so the two figures see the same stretch of orbit.
     start = orbit_times[0] + 200 * 86400.0
     signal_times = start + DT * np.arange(N_SIGNAL)
     link = utils.Link(1, 2)
@@ -110,7 +110,7 @@ def plot(res):
     plt.style.use(HERE / "paper.mplstyle")
     values = np.concatenate([res[name] for name in TONES])
     bottom = np.nanmin(values) / 3
-    # Headroom above the peaks holds the legend, as in figure 5: the curves leave
+    # Headroom above the peaks holds the legend, as in figure 6: the curves leave
     # no corner free.
     top = min(3.0, 3 * np.nanmax(values)) * 10 ** LEGEND_DECADES
 
@@ -139,8 +139,8 @@ def plot(res):
     ax.set_axisbelow(True)
 
     (HERE / "figures").mkdir(exist_ok=True)
-    fig.savefig(HERE / "figures" / "fig6_off_bin.pdf")
-    print(f"wrote {HERE / 'figures' / 'fig6_off_bin.pdf'}")
+    fig.savefig(HERE / "figures" / "fig7_off_bin.pdf")
+    print(f"wrote {HERE / 'figures' / 'fig7_off_bin.pdf'}")
 
 
 if __name__ == "__main__":

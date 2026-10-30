@@ -19,14 +19,14 @@ jax.config.update("jax_enable_x64", True)
 from breakdown_offbin import (DT, EMRI_PARAMS, GC_PHI, GC_THETA, MAX_LAG_L,
                             MONOCHROMATIC_PARAMS, N_SIGNAL, NUM_INTEGRAL_POINTS,
                             NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS,
-                            LISAresponse, WDM, fig5, utils, waveforms)
+                            LISAresponse, WDM, fig6, utils, waveforms)
 from response_corrections import build_tables, responses
 
 
 def main(nfs):
-    orbits, start, signal_times, link = fig5.setup()
-    freqs = dict(zip(("on", "off"), fig5.bound_frequencies(fig5.NF)))
-    nf_index = {int(nf): j for j, nf in enumerate(fig5.NF)}
+    orbits, start, signal_times, link = fig6.setup()
+    freqs = dict(zip(("on", "off"), fig6.bound_frequencies(fig6.NF)))
+    nf_index = {int(nf): j for j, nf in enumerate(fig6.NF)}
     td_gen = waveforms.emri_generator()
     _, emri_p, emri_c = waveforms.generate_windowed_waveform(
         "emri", t0=start, dt=DT, N=N_SIGNAL,
@@ -52,7 +52,7 @@ def main(nfs):
 
         j = nf_index[Nf]
         cases = []
-        for i, (name, params) in enumerate(zip(fig5.TONES, MONOCHROMATIC_PARAMS)):
+        for i, (name, params) in enumerate(zip(fig6.TONES, MONOCHROMATIC_PARAMS)):
             for which in ("on", "off"):
                 f = freqs[which][i, j]
                 if not np.isnan(f):

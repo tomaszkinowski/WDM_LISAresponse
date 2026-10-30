@@ -22,7 +22,7 @@ jax.config.update("jax_enable_x64", True)
 
 from breakdown_offbin import (DT, EMRI_PARAMS, GC_PHI, GC_THETA,
                               MONOCHROMATIC_PARAMS, N_SIGNAL, WINDOW_FUNCTION,
-                              WINDOW_KWARGS, LISAresponse, WDM, fig5, rs,
+                              WINDOW_KWARGS, LISAresponse, WDM, fig6, rs,
                               tukey_continuous, utils, waveforms)
 from rate_kernel import apply_rate_corrected_shift, build_rate_tables
 
@@ -32,10 +32,10 @@ SCALES = (1.0, 0.1, 0.01)
 
 
 def main(nfs, n_signal=N_SIGNAL):
-    orbits, start, _, link = fig5.setup()
+    orbits, start, _, link = fig6.setup()
     signal_times = start + DT*np.arange(n_signal)
-    freqs = dict(zip(("on", "off"), fig5.bound_frequencies(fig5.NF)))
-    nf_index = {int(nf): j for j, nf in enumerate(fig5.NF)}
+    freqs = dict(zip(("on", "off"), fig6.bound_frequencies(fig6.NF)))
+    nf_index = {int(nf): j for j, nf in enumerate(fig6.NF)}
     alpha = WINDOW_KWARGS["alpha"]
     td_gen = waveforms.emri_generator()
     _, emri_p, _ = waveforms.generate_windowed_waveform(
@@ -68,7 +68,7 @@ def main(nfs, n_signal=N_SIGNAL):
 
         cases = []
         j = nf_index[Nf]
-        for i, (name, params) in enumerate(zip(fig5.TONES, MONOCHROMATIC_PARAMS)):
+        for i, (name, params) in enumerate(zip(fig6.TONES, MONOCHROMATIC_PARAMS)):
             if name in ("3 mHz", "30 mHz"):
                 cases.append((f"{name} on", dict(params, f=freqs["on"][i, j])))
         cases.append(("EMRI", None))
