@@ -136,7 +136,7 @@ def plot(res):
         ax.plot(res["L"], res[name], color=COLOURS[name], lw=1.2 if name == "EMRI" else 0.8,
                 marker=MARKERS[name], ms=2.8, mec="white", mew=0.4, zorder=3, label=name)
 
-    ax.legend(loc="upper right", fontsize="small", handlelength=2.2, handletextpad=0.5,
+    ax.legend(loc="center right", fontsize="small", handlelength=2.2, handletextpad=0.5,
               borderaxespad=0.4, frameon=True, fancybox=False, framealpha=1,
               facecolor="white", edgecolor=HAIRLINE).get_frame().set_linewidth(0.6)
     ax.set(yscale="log", xlim=(0, res["L"].max() + 1), ylim=(bottom, top),
