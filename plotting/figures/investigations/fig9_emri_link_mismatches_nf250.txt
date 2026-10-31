@@ -1,0 +1,10 @@
+Nf = 250, Delta T = 1000 s, link 1 -> 2, whole cut record
+                           mismatch    rel L2           mismatch, v-corrected           rel L2, v-corrected
+against time-domain reference
+  WDM response             8.32e-08  4.08e-04
+  lisagwresponse           2.72e-09  7.50e-05      4.45e-10 (x0.164)       2.99e-05 (x0.399)
+  fastlisaresponse         2.72e-09  7.50e-05      4.45e-10 (x0.164)       2.99e-05 (x0.398)
+against WDM response
+  time-domain reference    8.32e-08  4.08e-04
+  lisagwresponse           8.60e-08  4.15e-04      8.37e-08 (x0.973)       4.09e-04 (x0.987)
+  fastlisaresponse         8.60e-08  4.15e-04      8.37e-08 (x0.973)       4.09e-04 (x0.987)

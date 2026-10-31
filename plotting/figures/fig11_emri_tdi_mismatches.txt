@@ -1,0 +1,10 @@
+Nf = 2500, Delta T = 10000 s, second-generation X, whole cut record
+                            mismatch    rel L2           mismatch, v-corrected           rel L2, v-corrected
+against time-domain reference
+  WDM response              2.59e-05  7.20e-03
+  lisagwresponse + pytdi    1.21e-09  4.98e-05      1.96e-10 (x0.162)       1.99e-05 (x0.401)
+  fastlisaresponse          1.21e-09  4.96e-05      1.98e-10 (x0.164)       2.00e-05 (x0.403)
+against WDM response
+  time-domain reference     2.59e-05  7.20e-03
+  lisagwresponse + pytdi    2.59e-05  7.20e-03      2.59e-05 (x1.000)       7.20e-03 (x1.000)
+  fastlisaresponse          2.59e-05  7.20e-03      2.59e-05 (x1.000)       7.20e-03 (x1.000)
