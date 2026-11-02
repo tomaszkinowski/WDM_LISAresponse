@@ -5,7 +5,7 @@ at Delta T = 1e4 s, from four codes:
   - lisagwresponse's links, combined by pytdi
   - fastlisaresponse, links and TDI both its own
 
-X over the whole record and a half-day zoom. In figures/investigations/: the same
+X over the whole record and a third-of-a-day zoom. In figures/investigations/: the same
 with the source's h+ and hx over the zoom (fig10_emri_tdi_signals_waveform.pdf),
 and the residuals of every pair over the zoom (fig10_emri_tdi_residuals.pdf).
 

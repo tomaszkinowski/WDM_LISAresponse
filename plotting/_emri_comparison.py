@@ -1,6 +1,6 @@
 """What figures 9 and 10 share: the EMRI on figure 6's grid, the four codes compared
 on it, the printed mismatches, and the figure drawn for each quantity - the whole
-record and a half-day zoom. Investigations, in figures/investigations/: the same
+record and a third-of-a-day zoom. Investigations, in figures/investigations/: the same
 with the source's h+ and hx over the zoom added, and the residuals over the zoom.
 
 The four are our wavelet response (WDM), our time-domain reference (TD),
@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import ConnectionPatch
+from matplotlib.ticker import FormatStrFormatter, MultipleLocator
 
 from _colours import DARK, HAIRLINE, INK, MUTED, PALETTE
 from parameters import (DT, EMRI_PARAMS, MAX_LAG_L, N_SIGNAL, NUM_INTERP_POINTS,
@@ -34,13 +35,14 @@ ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
 NF = 2500                                       # Delta T = 1e4 s
 ZOOM_DAY = 200.0                                # zoom start, days after the signal starts
-ZOOM_DAYS = 0.5
+ZOOM_DAYS = 1 / 3
 WAVEFORM_CACHE = HERE / "cache" / "emri_waveform.npz"
 
 METHODS = ("WDM", "TD", "GWR", "FLR")
 # The residual overlay and the polarisations. No Galactic binary appears in these
 # figures, so the slots its tones hold elsewhere are free.
 RESIDUAL_COLOUR = PALETTE[0]
+SIGNAL_COLOUR = DARK
 POLARISATION_COLOURS = dict(plus=PALETTE[1], cross=PALETTE[2])
 # lisagwresponse is drawn wide underneath, so the others stay visible on top of it.
 STYLES = dict(WDM=dict(color=DARK, lw=1.2, zorder=3),
@@ -158,12 +160,18 @@ def finish(setup, grids, external):
             out[f"mismatch_{name}_{reference}"] = result["mismatch"]
             out[f"rel_L2_{name}_{reference}"] = result["rel_L2"]
 
-    # Back to time with m = 0 zeroed, kept on the cut rows only.
-    for name in METHODS:
+    return out | to_time(s, grids, METHODS)
+
+
+def to_time(setup, grids, names):
+    """The named wavelet grids back in time with m = 0 zeroed, kept on the cut rows
+    only, and the time of the first kept sample."""
+    s, rows = setup, setup.cut["time_slice"]
+    out = dict(t_first=(rows.start * s.nf - s.info["pad_left"]) * DT)
+    for name in names:
         g = np.array(grids[name])
         g[:, 0] = 0.0
         out[name] = np.asarray(s.wdm.idwt(g))[rows.start * s.nf:rows.stop * s.nf]
-    out["t_first"] = (rows.start * s.nf - s.info["pad_left"]) * DT
     return out
 
 
@@ -190,16 +198,24 @@ def summary(res, labels, quantity):
     return "\n".join(lines)
 
 
-def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=ZOOM_DAY):
-    """The whole record, one translucent shade per code, over a zoom of ZOOM_DAYS;
-    with ``wave``, a third panel of the source's h+ and hx over the same zoom.
+def zoom_ticks(ax):
+    """Ticks on the zoom every 0.1 day, labelled to one decimal place."""
+    ax.xaxis.set_major_locator(MultipleLocator(0.1))
+    ax.xaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+
+
+def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=ZOOM_DAY,
+                 methods=METHODS):
+    """The whole record over a zoom of ZOOM_DAYS, drawn once (the first of
+    ``methods``) for all of them, which coincide at this scale; with ``wave``, a third panel of the source's h+ and hx over the same zoom.
     ``symbol`` is the quantity's LaTeX symbol. ``residual``, a pair of codes,
     overlays their difference on the zoom, magnified by the power of ten that brings
     it to the signal's size."""
     plt.style.use(HERE / "paper.mplstyle")
     nf = int(res["Nf"])
-    t = (res["t_first"] + DT * np.arange(len(res["WDM"]))) / 86400.0
-    scale = 10.0 ** np.floor(np.log10(np.max(np.abs(res["TD"]))))
+    shown = methods[0]
+    t = (res["t_first"] + DT * np.arange(len(res[shown]))) / 86400.0
+    scale = 10.0 ** np.floor(np.log10(np.max(np.abs(res[shown]))))
 
     if wave is None:
         fig, (top, zoom) = plt.subplots(2, 1, figsize=(3.375, 3.6), layout="constrained",
@@ -212,10 +228,9 @@ def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=Z
     # Each row's extent. The axis sits on top, so the lines down to the zoom cross
     # no labels.
     t_rows = t.reshape(-1, nf)[:, nf // 2]
-    for name in METHODS:
-        rows = res[name].reshape(-1, nf) / scale
-        top.fill_between(t_rows, rows.min(axis=1), rows.max(axis=1), lw=0, alpha=0.35,
-                         color=STYLES[name]["color"], zorder=STYLES[name]["zorder"])
+    rows = res[shown].reshape(-1, nf) / scale
+    top.fill_between(t_rows, rows.min(axis=1), rows.max(axis=1), lw=0,
+                     color=SIGNAL_COLOUR, alpha=0.4)
     top.axvline(zoom_day, color=INK, lw=0.6)
     top.set(xlim=(t[0], t[-1]), xlabel=r"$t$ [days]")
     top.xaxis.tick_top()
@@ -223,13 +238,13 @@ def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=Z
 
     zoom_span = (zoom_day, zoom_day + ZOOM_DAYS)
     window = (t >= zoom_span[0]) & (t < zoom_span[1])
-    # Half a day holds ~100 cycles, so thin solid lines: dashes and a wide underlay would
+    # A third of a day holds ~70 cycles, so thin solid lines: dashes and a wide underlay would
     # only fill the band in.
-    handles = []
-    for name in METHODS:
-        handles += zoom.plot(t[window], res[name][window] / scale, label=labels[name],
-                             color=STYLES[name]["color"], lw=0.4,
-                             zorder=STYLES[name]["zorder"])
+    names = [labels[name] for name in methods]
+    label = (" and ".join(names) if len(names) == 2
+             else ", ".join(names[:2]) + ",\n" + " and ".join(names[2:]))
+    handles = zoom.plot(t[window], res[shown][window] / scale, color=SIGNAL_COLOUR,
+                        lw=0.4, label=label)
     if residual is not None:
         a, b = residual
         difference = (res[a] - res[b])[window]
@@ -240,6 +255,7 @@ def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=Z
             label=rf"({labels[a]} $-$ {labels[b]}) $\times 10^{{{int(np.log10(gain))}}}$")
     zoom.set(xlim=zoom_span, xlabel=r"$t$ [days]",
              ylabel=rf"${symbol}$ [$10^{{{int(np.log10(scale))}}}$ s]")
+    zoom_ticks(zoom)
     top.set_ylabel(zoom.get_ylabel())
     axes = [top, zoom]
 
@@ -270,7 +286,7 @@ def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=Z
             (x, y_low), (x, zoom.get_ylim()[1]), coordsA=top.transData,
             coordsB=zoom.transData, color=INK, lw=0.4))
 
-    legend = fig.legend(handles=handles, loc="outside lower center", ncols=2,
+    legend = fig.legend(handles=handles, loc="outside lower center", ncols=1,
                         fontsize="small", frameon=False, handlelength=1.8,
                         columnspacing=1.0)
     for handle in legend.legend_handles:
@@ -309,6 +325,7 @@ def plot_residuals(res, path, labels, zoom_day=ZOOM_DAY):
         ax.set_axisbelow(True)
 
     axes[-1].set(xlim=zoom_span, xlabel=r"$t$ [days]")
+    zoom_ticks(axes[-1])
     handles = [plt.Line2D([], [], **STYLES[name]) for name in METHODS]
     fig.legend(handles, [labels[name] for name in METHODS], loc="outside lower center",
                ncols=2, fontsize="small", frameon=False, handlelength=2.2,

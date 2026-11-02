@@ -1,7 +1,7 @@
 """Figure 9: the EMRI (parameters.py) on link 1 -> 2 at Delta T = 1e4 s, from four
 codes - the wavelet one_arm_response, the time-domain reference
 one_arm_response_time_domain, lisagwresponse and fastlisaresponse: the whole
-record, and a half-day zoom with the wavelet-minus-lisagwresponse residual
+record, and a third-of-a-day zoom with the wavelet-minus-lisagwresponse residual
 overlaid (magnified). In figures/investigations/: the same with the source's h+ and
 hx over the zoom (fig9_emri_link_signals_waveform.pdf), and the residuals of every
 pair over the zoom (fig9_emri_link_residuals.pdf).
