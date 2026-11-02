@@ -1,18 +1,18 @@
-"""Figure 11: the EMRI (parameters.py) in second-generation Michelson TDI X
+"""Figure 10: the EMRI (parameters.py) in second-generation Michelson TDI X
 at Delta T = 1e4 s, from four codes:
   - WDM: our wavelet links, combined by comparison.tdi.TDIgen2
   - TD: our time-domain links, combined by comparison.tdi_reference
   - lisagwresponse's links, combined by pytdi
   - fastlisaresponse, links and TDI both its own
 
-X over the whole record, a one-day zoom, and the source's h+ and hx over that day.
-The residuals of every pair over the zoom go to
-figures/investigations/fig12_emri_tdi_residuals.pdf.
+X over the whole record and a half-day zoom. In figures/investigations/: the same
+with the source's h+ and hx over the zoom (fig10_emri_tdi_signals_waveform.pdf),
+and the residuals of every pair over the zoom (fig10_emri_tdi_residuals.pdf).
 
 As figure 9 (_emri_comparison.py has what they share), except that the
 guard band is twice as wide: TDI shifts the signal a second time. The mismatches
 over the whole cut record, for the caption, are printed and written to
-figures/fig11_emri_tdi_mismatches.txt.
+figures/fig10_emri_tdi_mismatches.txt.
 
 Run with no arguments to compute (or reuse the cache) and plot. ``--short`` runs
 2**19 samples (24 d), prints the mismatches and draws into figures/investigations/
@@ -71,6 +71,6 @@ def compute(n_signal, nf):
 
 
 if __name__ == "__main__":
-    emri.main(compute, "fig11_emri_tdi",
-              ("fig11_emri_tdi_signals", "fig12_emri_tdi_residuals"),
+    emri.main(compute, "fig10_emri_tdi",
+              ("fig10_emri_tdi_signals", "fig10_emri_tdi_residuals"),
               LABELS, "second-generation X", "X_2")

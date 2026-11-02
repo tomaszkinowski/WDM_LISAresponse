@@ -1,4 +1,4 @@
-"""What figures 9 and 11 share: the EMRI on figure 6's grid, the four codes compared
+"""What figures 9 and 10 share: the EMRI on figure 6's grid, the four codes compared
 on it, the printed mismatches, and the figure drawn for each quantity - the whole
 record and a half-day zoom. Investigations, in figures/investigations/: the same
 with the source's h+ and hx over the zoom added, and the residuals over the zoom.

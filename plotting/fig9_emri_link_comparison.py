@@ -1,9 +1,10 @@
 """Figure 9: the EMRI (parameters.py) on link 1 -> 2 at Delta T = 1e4 s, from four
 codes - the wavelet one_arm_response, the time-domain reference
 one_arm_response_time_domain, lisagwresponse and fastlisaresponse: the whole
-record, a one-day zoom with the wavelet-minus-lisagwresponse residual overlaid
-(magnified), and the source's h+ and hx over that day. The residuals of every pair
-over the zoom go to figures/investigations/fig10_emri_link_residuals.pdf.
+record, and a half-day zoom with the wavelet-minus-lisagwresponse residual
+overlaid (magnified). In figures/investigations/: the same with the source's h+ and
+hx over the zoom (fig9_emri_link_signals_waveform.pdf), and the residuals of every
+pair over the zoom (fig9_emri_link_residuals.pdf).
 
 The mismatches over the whole cut record, for the caption, are printed and written
 to figures/fig9_emri_link_mismatches.txt. The grid, window and cut are figure 6's
@@ -66,5 +67,5 @@ def compute(n_signal, nf):
 
 if __name__ == "__main__":
     emri.main(compute, "fig9_emri_link",
-              ("fig9_emri_link_signals", "fig10_emri_link_residuals"),
+              ("fig9_emri_link_signals", "fig9_emri_link_residuals"),
               LABELS, "link 1 -> 2", r"\delta\ell_{1\to2}", residual=("WDM", "GWR"))
