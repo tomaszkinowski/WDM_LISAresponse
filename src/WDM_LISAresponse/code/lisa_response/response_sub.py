@@ -31,7 +31,8 @@ selector, interpolating a uniformly sampled series and budgeting memory -
 lives in ``utils.utils`` instead.
 """
 
-from functools import partial
+from fractions import Fraction
+from functools import lru_cache, partial
 
 import jax
 import jax.numpy as jnp
@@ -46,6 +47,12 @@ from ..utils.utils import interpolate_uniform_grid
 #: solve stalls at ~5e-11 s after the second sweep, so a fourth buys nothing -
 #: see the convergence note in ``solve_light_travel_time``.
 LTT_NUM_ITERATIONS = 3
+
+#: Rows in the stencil, and the Taylor order, of ``evaluate_at_landing_times``.
+#: The geometry turns by omega delta ~ 1e-4 over a delay, so order six leaves
+#: below 1e-30; it is set by the tests' faster series (one cycle per 50 rows).
+LANDING_NUM_TAPS = 12
+LANDING_TAYLOR_ORDER = 6
 
 
 def solve_light_travel_time(times,
@@ -602,6 +609,111 @@ def compute_time_shifts(source_direction, receiver_position, tau):
     ) - 0.5 * tau
 
 
+def evaluate_at_landing_times(row_values, time_shift, row_spacing):
+    r"""
+    Per-row detector quantities at the time each row lands after the shift.
+
+    .. math::
+
+        \tilde{q}_n = q\!\left( t_n - \delta_n \right)
+
+    The shift carries row :math:`n` to :math:`t_n - \delta_n`, so a detector
+    quantity multiplied in before it is sampled there to arrive at the right
+    time; see ``one_arm_response_wdm``.
+
+    A Taylor step from each row,
+
+    .. math::
+
+        \tilde{q}_n = \sum_{k=0}^{K} \frac{(-\delta_n / \Delta T)^k}{k!}
+            \, q^{(k)}_n ,
+
+    with the row derivatives :math:`q^{(k)}_n` those of the Lagrange
+    interpolant through the ``LANDING_NUM_TAPS`` rows around :math:`n`, moved
+    inward at the ends, so a landing time off the record is extrapolated. The
+    stencils sit at fixed rows, so the step is static slices and no gather,
+    which XLA:CPU would otherwise carry into every pixel of the amplitudes.
+
+    Parameters
+    ----------
+    row_values : jnp.ndarray
+        A quantity sampled at the rows :math:`t_n`. Array shape=(..., Nt).
+    time_shift : jnp.ndarray
+        :math:`\delta_n`, in seconds, broadcastable against ``row_values``.
+    row_spacing : float
+        :math:`\Delta T`, in seconds.
+
+    Returns
+    -------
+    landed : jnp.ndarray
+        :math:`q(t_n - \delta_n)`. Same shape as ``row_values``.
+    """
+    num_taps, order = LANDING_NUM_TAPS, LANDING_TAYLOR_ORDER
+    num_rows = row_values.shape[-1]
+    assert num_rows >= num_taps, \
+                f"landing times need at least {num_taps} rows, got {num_rows=}."
+
+    weights = landing_derivative_weights(num_taps, order)
+    centre = num_taps // 2 - 1
+    num_head, num_tail = centre, num_taps - centre - 1
+    num_middle = num_rows - num_taps + 1
+    lead = (1,) * (row_values.ndim - 1)
+
+    # Tap j of every row and its weights, row derivatives of shape
+    # (order + 1, ..., Nt): the first and last rows use the end stencils
+    # off-centre, the rest the centred one. One product per tap, so no element
+    # depends on the batch shape.
+    derivatives = 0.0
+    for j in range(num_taps):
+        tap = jnp.concatenate([
+            jnp.repeat(row_values[..., j:j + 1], num_head, axis=-1),
+            row_values[..., j:j + num_middle],
+            jnp.repeat(row_values[..., num_middle - 1 + j:num_middle + j],
+                       num_tail, axis=-1),
+        ], axis=-1)
+        weight = jnp.concatenate([
+            weights[:centre, :, j].T,
+            jnp.broadcast_to(weights[centre, :, j, None],
+                             (order + 1, num_middle)),
+            weights[centre + 1:, :, j].T,
+        ], axis=-1)
+        derivatives = derivatives \
+            + weight.reshape((order + 1,) + lead + (num_rows,)) * tap
+
+    step = -jnp.broadcast_to(time_shift, row_values.shape) / row_spacing
+    landed = derivatives[order]
+    for k in range(order - 1, -1, -1):
+        landed = derivatives[k] + step / (k + 1) * landed
+    return landed
+
+
+@lru_cache
+def landing_derivative_weights(num_taps : int, order : int) -> np.ndarray:
+    r"""
+    Weights of the row derivatives of a ``num_taps``-row Lagrange stencil.
+
+    ``weights[p, k, j]`` is the weight of tap :math:`j` in the :math:`k`-th
+    derivative, in rows, of the interpolant at its own row :math:`p`, for
+    :math:`k = 0, \dots,` ``order``. Array shape=(num_taps, order + 1,
+    num_taps).
+    """
+    # In exact integers: the power basis over rows 0 .. num_taps - 1 is too
+    # ill-conditioned for float64 (1e-8 off the identity at k = 0).
+    weights = np.empty((num_taps, order + 1, num_taps))
+    for j in range(num_taps):
+        coeffs, denominator = [1], 1
+        for m in range(num_taps):
+            if m != j:
+                coeffs = [a - m * b for a, b in zip([0] + coeffs, coeffs + [0])]
+                denominator *= j - m
+        for k in range(order + 1):
+            for p in range(num_taps):
+                value = sum(a * p**i for i, a in enumerate(coeffs))
+                weights[p, k, j] = Fraction(value, denominator)
+            coeffs = [i * a for i, a in enumerate(coeffs)][1:]
+    return weights
+
+
 def compute_detector_amplitudes(light_travel_time,
                                 projection_plus,
                                 projection_cross,
@@ -632,7 +744,9 @@ def compute_detector_amplitudes(light_travel_time,
     Parameters
     ----------
     light_travel_time : jnp.ndarray
-        :math:`\ell_{sr}(t_n)`, in seconds. Array shape=(num_links, Nt).
+        :math:`\ell_{sr}`, in seconds. Array shape=(num_links, Nt), or
+        (batch, num_links, Nt) when it has been taken to per-source times by
+        ``evaluate_at_landing_times``.
     projection_plus, projection_cross : jnp.ndarray
         Antenna-pattern factors. Array shape=(batch, num_links, Nt).
     tau : jnp.ndarray
@@ -789,8 +903,9 @@ def one_arm_response_wdm(wdm_class,
 
     .. math::
 
-        A^{+,\times}_{nm} = \tfrac{1}{2} \ell_{sr}(t_n) F^{+,\times}(t_n)
-            \, \mathrm{sinc}\!\left( 2 f_m \tau_n \right) ,
+        A^{+,\times}_{nm} = \tfrac{1}{2} \ell_{sr}(t'_n) F^{+,\times}(t'_n)
+            \, \mathrm{sinc}\!\left( 2 f_m \tau(t'_n) \right) ,
+        \qquad t'_n = t_n - \delta_n ,
 
     and the unshifted coefficients are
     :math:`w^\xi = A^+ w^{h_+} + A^\times w^{h_\times}`. Evaluating the sinc at
@@ -800,9 +915,13 @@ def one_arm_response_wdm(wdm_class,
     tables, or anything the time-domain path contributes. That is why the
     time-domain path exists to check it.
 
-    The shift then carries each pixel to :math:`t_n + \delta_n` through
+    The shift then samples the wave at :math:`t_n + \delta_n` through
     ``wdm_class.apply_variable_time_shift``, which applies a time-varying delay
     directly in the wavelet domain rather than returning to the time series.
+    The shift moves the amplitudes with the coefficients they multiply, so they
+    are taken at :math:`t'_n`, where each row lands: the response is
+    :math:`A(t)\,h(t + \delta(t))`, with only the waveform retarded. The delay
+    stays at :math:`t_n`, the output row it is applied for.
 
     Links are shifted together in ``apply_batch_shift``, which on a CPU is
     where the runtime of this path very nearly all sits - 98% of it at a year.
@@ -860,11 +979,17 @@ def one_arm_response_wdm(wdm_class,
 
     time_shift = compute_time_shifts(source_direction, receiver_position, tau)
 
+    landed = evaluate_at_landing_times(
+        jnp.stack(jnp.broadcast_arrays(
+            light_travel_time, projection_plus, projection_cross, tau,
+        )),
+        time_shift, wdm_class.dT,
+    )
+
     def shifted_response(dtype):
         def response(wavelet_plus, wavelet_cross):
             amplitude_plus, amplitude_cross = compute_detector_amplitudes(
-                light_travel_time, projection_plus, projection_cross, tau,
-                wavelet_freqs, dtype=dtype,
+                *landed, wavelet_freqs, dtype=dtype,
             )
 
             # Combine the polarisations at the same precision, or a float64

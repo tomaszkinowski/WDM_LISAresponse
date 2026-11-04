@@ -770,7 +770,8 @@ def interpolate_uniform_grid(samples,
                              grid_start : float,
                              grid_step : float,
                              query_times,
-                             num_taps : int = 12):
+                             num_taps : int = 12,
+                             extrapolate : bool = False):
     r"""
     Interpolate uniformly sampled series at arbitrary times.
 
@@ -804,10 +805,17 @@ def interpolate_uniform_grid(samples,
     as much and buys nothing real, saturating against float64 and, sooner,
     against the error the waveform samples already carry.
 
-    Taps falling off either end are clamped to the end sample; queries outside
-    the sampled span return zero. The two are deliberately separate, since
-    dropping out-of-range taps would leave the weights unnormalised and ramp a
-    delayed waveform to zero across a cell instead of stopping it.
+    By default, taps falling off either end are clamped to the end sample and
+    queries outside the sampled span return zero. The two are deliberately
+    separate, since dropping out-of-range taps would leave the weights
+    unnormalised and ramp a delayed waveform to zero across a cell instead of
+    stopping it. That is the right edge for a waveform, which stops at the end
+    of its record.
+
+    With ``extrapolate``, the stencil is moved inward near either end so all
+    its taps sit on samples, and queries outside the span are extrapolated by
+    the same polynomial - the right edge for a smooth quantity that continues
+    past the record, such as the detector geometry.
 
     Parameters
     ----------
@@ -824,6 +832,10 @@ def interpolate_uniform_grid(samples,
         Stencil width. Must be even, at least two, and at most
         ``MAX_INTERP_TAPS``; it is a compile-time constant since it sets the
         loop structure. Optional.
+    extrapolate : bool
+        Keep the stencil on the samples at the ends and extrapolate outside
+        the span, rather than clamping taps and returning zero there. Must be
+        a python bool; it sets the code path. Optional.
 
     Returns
     -------
@@ -848,16 +860,23 @@ def interpolate_uniform_grid(samples,
                 f"stencils are not better conditioned."
 
     num_samples = samples.shape[-1]
+    half = num_taps // 2
+    offsets = tuple(range(-half + 1, half + 1))
 
     coordinate = (query_times - grid_start) / grid_step
     base = jnp.floor(coordinate)
+    if extrapolate:
+        assert num_samples >= num_taps, \
+                f"extrapolate needs at least {num_taps=} samples, got " \
+                f"{num_samples=}."
+        # Slide the stencil inward so taps base-half+1 .. base+half all exist;
+        # the fraction then leaves [0, 1) and the same weights evaluate the
+        # polynomial off-centre, or beyond the span.
+        base = jnp.clip(base, half - 1, num_samples - 1 - half)
     fraction = coordinate - base
     index = base.astype(
         jnp.int64 if jax.config.read("jax_enable_x64") else jnp.int32
     )
-
-    half = num_taps // 2
-    offsets = tuple(range(-half + 1, half + 1))
 
     values = jnp.zeros_like(fraction)
     for node in offsets:
@@ -875,6 +894,8 @@ def interpolate_uniform_grid(samples,
         )
         values = values + (numerator / denominator) * taps
 
+    if extrapolate:
+        return values
     return jnp.where(
         (coordinate >= 0.0) & (coordinate <= num_samples - 1), values, 0.0,
     )
