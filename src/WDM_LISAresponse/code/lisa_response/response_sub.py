@@ -655,18 +655,30 @@ def evaluate_at_landing_times(row_values, time_shift, row_spacing):
 
     weights = landing_derivative_weights(num_taps, order)
     centre = num_taps // 2 - 1
+    num_head, num_tail = centre, num_taps - centre - 1
+    num_middle = num_rows - num_taps + 1
+    lead = (1,) * (row_values.ndim - 1)
 
-    # Row derivatives, shape (order + 1, ..., Nt): the first and last rows use
-    # the end stencils off-centre, the rest the centred one.
-    head = jnp.einsum("pkj,...j->k...p", weights[:centre],
-                      row_values[..., :num_taps])
-    body = sum(weights[centre, :, j, None]
-               * row_values[..., jnp.newaxis, j:num_rows - num_taps + 1 + j]
-               for j in range(num_taps))
-    tail = jnp.einsum("pkj,...j->k...p", weights[centre + 1:],
-                      row_values[..., -num_taps:])
-    derivatives = jnp.concatenate(
-        [head, jnp.moveaxis(body, -2, 0), tail], axis=-1)
+    # Tap j of every row and its weights, row derivatives of shape
+    # (order + 1, ..., Nt): the first and last rows use the end stencils
+    # off-centre, the rest the centred one. One product per tap, so no element
+    # depends on the batch shape.
+    derivatives = 0.0
+    for j in range(num_taps):
+        tap = jnp.concatenate([
+            jnp.repeat(row_values[..., j:j + 1], num_head, axis=-1),
+            row_values[..., j:j + num_middle],
+            jnp.repeat(row_values[..., num_middle - 1 + j:num_middle + j],
+                       num_tail, axis=-1),
+        ], axis=-1)
+        weight = jnp.concatenate([
+            weights[:centre, :, j].T,
+            jnp.broadcast_to(weights[centre, :, j, None],
+                             (order + 1, num_middle)),
+            weights[centre + 1:, :, j].T,
+        ], axis=-1)
+        derivatives = derivatives \
+            + weight.reshape((order + 1,) + lead + (num_rows,)) * tap
 
     step = -jnp.broadcast_to(time_shift, row_values.shape) / row_spacing
     landed = derivatives[order]
