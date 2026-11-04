@@ -217,9 +217,12 @@ def compute_bounds(nfs):
 
     orbits, start, signal_times, link = fig6.setup()
     freqs = dict(zip(("on", "off"), fig6.bound_frequencies(nfs)))
+    freqs["offsets"] = fig6.offset_frequencies(nfs)
     out = {kind: dict(Nf=np.asarray(nfs), f_on=freqs["on"], f_off=freqs["off"],
+                      f_offsets=freqs["offsets"],
                       on=np.full(freqs["on"].shape, np.nan),
-                      off=np.full(freqs["on"].shape, np.nan))
+                      off=np.full(freqs["on"].shape, np.nan),
+                      offsets=np.full(freqs["offsets"].shape, np.nan))
            for kind in VARIANTS}
     for j, Nf in enumerate(nfs):
         if np.all(np.isnan(freqs["on"][:, j])):
@@ -227,8 +230,10 @@ def compute_bounds(nfs):
         tick = time.perf_counter()
         info, wdm, response, tables, centre, cut = tiling(orbits, start, link, Nf)
         for i, params in enumerate(MONOCHROMATIC_PARAMS):
-            for which in ("on", "off"):
-                f = freqs[which][i, j]
+            points = [(which, (i, j)) for which in ("on", "off")]
+            points += [("offsets", (i, k, j)) for k in range(len(fig6.OFFSETS))]
+            for which, index in points:
+                f = freqs[which][index]
                 if np.isnan(f):
                     continue
                 _, hp, hc = waveforms.generate_windowed_waveform(
@@ -244,7 +249,7 @@ def compute_bounds(nfs):
                         GC_THETA, GC_PHI, hp, hc, link=link,
                         num_integral_points=NUM_INTEGRAL_POINTS)))), cut)
                 for kind in VARIANTS:
-                    out[kind][which][i, j] = utils.wdm_mismatch(
+                    out[kind][which][index] = utils.wdm_mismatch(
                         utils.apply_wdm_cut(ours[kind], cut), reference)["mismatch"]
         del response, wdm
         jax.clear_caches()
@@ -308,4 +313,4 @@ if __name__ == "__main__":
             results.setdefault(kind, []).append(loaded[kind])
     for kind in VARIANTS:
         fig6.plot(*results[kind], HERE / "figures" / "investigations"
-                  / f"fig6_{kind}.pdf")
+                  / f"fig6_{kind}.pdf", source_envelope=True)

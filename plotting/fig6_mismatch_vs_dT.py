@@ -327,7 +327,9 @@ def compute_bounds(nfs, freq_slice=None):
     return out
 
 
-def plot(res, bounds, path, freq_slice=None):
+def plot(res, bounds, path, freq_slice=None, source_envelope=False):
+    """``source_envelope`` raises the shading's top to the source where it lies
+    above off-bin (the investigations)."""
     plt.style.use(HERE / "paper.mplstyle")
     delta_t = res["Nf"] * DT
     assert np.array_equal(bounds["Nf"], res["Nf"])
@@ -357,7 +359,8 @@ def plot(res, bounds, path, freq_slice=None):
             # the least of on-bin, the offsets around it and the source itself
             lower = np.nanmin(np.vstack([on, bounds["offsets"][i], res[name]]), axis=0)
             lower = np.where(np.isnan(on), np.nan, lower)
-            ax.fill_between(delta_t, lower, off, where=~np.isnan(on), color=colour,
+            upper = np.fmax(off, res[name]) if source_envelope else off
+            ax.fill_between(delta_t, lower, upper, where=~np.isnan(on), color=colour,
                             alpha=0.18, lw=0, zorder=1)
             ax.plot(delta_t, res[name], color=colour, lw=0.5, marker="o", zorder=3,
                     **markers)
@@ -443,4 +446,5 @@ if __name__ == "__main__":
             path.parent.mkdir(exist_ok=True)
             np.savez(path, **caches[-1])
     plot(*caches, HERE / "figures" / ("investigations/fig6_mismatch_vs_dT_edge_bands.pdf"
-                                      if edge else "fig6_mismatch_vs_dT.pdf"), freq_slice)
+                                      if edge else "fig6_mismatch_vs_dT.pdf"), freq_slice,
+         source_envelope=edge)

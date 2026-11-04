@@ -20,6 +20,8 @@ the first-order delay-rate kernel for the rest's own, small, rate).
 
 The rates are central differences across rows of the response's own
 :math:`\delta_n` and :math:`A_{nm}`, the curvature the difference of the rate.
+:math:`A_{nm}` is taken at :math:`t_n - \delta_n` with the delay the shift
+carries, the per-link rest in the split variants.
 """
 import numpy as np
 import jax.numpy as jnp
@@ -60,6 +62,9 @@ def _grids(response, wdm, tables, theta, phi, wp, wc, link_index, delay_offset):
     delta = rs.compute_time_shifts(n_hat, response.receiver_position[idx], tau)[0, 0]
     if delay_offset is not None:
         delta = delta - jnp.asarray(delay_offset)
+    # the detector factors where each row lands, as in `one_arm_response_wdm`
+    ltt, proj_p, proj_c, tau = rs.evaluate_at_landing_times(
+        jnp.stack(jnp.broadcast_arrays(ltt, proj_p, proj_c, tau)), delta, wdm.dT)
     amp_p, amp_c = rs.compute_detector_amplitudes(ltt, proj_p, proj_c, tau,
                                                   response.wavelet_freqs)
     amp_p, amp_c = amp_p[0, 0], amp_c[0, 0]
@@ -70,7 +75,7 @@ def _grids(response, wdm, tables, theta, phi, wp, wc, link_index, delay_offset):
                 * apply_amplitude_rate(wdm, tables["amp"], wc))
     # the window-average sinc to first order about each band centre, with the
     # antenna amplitude 0.5 ltt F (the sinc divided back out) applied after
-    base = 0.5*ltt[0][:, jnp.newaxis]
+    base = 0.5*ltt[0, 0][:, jnp.newaxis]
     slope = sinc_slope(tau[0, 0], response.wavelet_freqs, wdm.dF)
     sinc_term = base*(proj_p[0, 0][:, jnp.newaxis]
                       * apply_sinc_rate(wdm, tables["sinc"], wp, slope)
