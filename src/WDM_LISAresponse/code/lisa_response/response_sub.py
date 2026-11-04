@@ -31,7 +31,8 @@ selector, interpolating a uniformly sampled series and budgeting memory -
 lives in ``utils.utils`` instead.
 """
 
-from functools import partial
+from fractions import Fraction
+from functools import lru_cache, partial
 
 import jax
 import jax.numpy as jnp
@@ -46,6 +47,12 @@ from ..utils.utils import interpolate_uniform_grid
 #: solve stalls at ~5e-11 s after the second sweep, so a fourth buys nothing -
 #: see the convergence note in ``solve_light_travel_time``.
 LTT_NUM_ITERATIONS = 3
+
+#: Rows in the stencil, and the Taylor order, of ``evaluate_at_landing_times``.
+#: The geometry turns by omega delta ~ 1e-4 over a delay, so order six leaves
+#: below 1e-30; it is set by the tests' faster series (one cycle per 50 rows).
+LANDING_NUM_TAPS = 12
+LANDING_TAYLOR_ORDER = 6
 
 
 def solve_light_travel_time(times,
@@ -614,10 +621,18 @@ def evaluate_at_landing_times(row_values, time_shift, row_spacing):
     quantity multiplied in before it is sampled there to arrive at the right
     time; see ``one_arm_response_wdm``.
 
-    ``interpolate_uniform_grid`` on the row grid, with ``extrapolate=True``:
-    the quantities are smooth on the orbital timescale and continue past the
-    record, so the stencil stays on the rows at the ends and extrapolates a
-    landing time off the record.
+    A Taylor step from each row,
+
+    .. math::
+
+        \tilde{q}_n = \sum_{k=0}^{K} \frac{(-\delta_n / \Delta T)^k}{k!}
+            \, q^{(k)}_n ,
+
+    with the row derivatives :math:`q^{(k)}_n` those of the Lagrange
+    interpolant through the ``LANDING_NUM_TAPS`` rows around :math:`n`, moved
+    inward at the ends, so a landing time off the record is extrapolated. The
+    stencils sit at fixed rows, so the step is static slices and no gather,
+    which XLA:CPU would otherwise carry into every pixel of the amplitudes.
 
     Parameters
     ----------
@@ -633,16 +648,58 @@ def evaluate_at_landing_times(row_values, time_shift, row_spacing):
     landed : jnp.ndarray
         :math:`q(t_n - \delta_n)`. Same shape as ``row_values``.
     """
-    time_shift = jnp.broadcast_to(time_shift, row_values.shape)
+    num_taps, order = LANDING_NUM_TAPS, LANDING_TAYLOR_ORDER
     num_rows = row_values.shape[-1]
+    assert num_rows >= num_taps, \
+                f"landing times need at least {num_taps} rows, got {num_rows=}."
 
-    landing = jnp.arange(num_rows) * row_spacing - time_shift
+    weights = landing_derivative_weights(num_taps, order)
+    centre = num_taps // 2 - 1
 
-    landed = interpolate_uniform_grid(
-        row_values.reshape(-1, num_rows), 0.0, row_spacing,
-        landing.reshape(-1, num_rows), extrapolate=True,
-    )
-    return landed.reshape(row_values.shape)
+    # Row derivatives, shape (order + 1, ..., Nt): the first and last rows use
+    # the end stencils off-centre, the rest the centred one.
+    head = jnp.einsum("pkj,...j->k...p", weights[:centre],
+                      row_values[..., :num_taps])
+    body = sum(weights[centre, :, j, None]
+               * row_values[..., jnp.newaxis, j:num_rows - num_taps + 1 + j]
+               for j in range(num_taps))
+    tail = jnp.einsum("pkj,...j->k...p", weights[centre + 1:],
+                      row_values[..., -num_taps:])
+    derivatives = jnp.concatenate(
+        [head, jnp.moveaxis(body, -2, 0), tail], axis=-1)
+
+    step = -jnp.broadcast_to(time_shift, row_values.shape) / row_spacing
+    landed = derivatives[order]
+    for k in range(order - 1, -1, -1):
+        landed = derivatives[k] + step / (k + 1) * landed
+    return landed
+
+
+@lru_cache
+def landing_derivative_weights(num_taps : int, order : int) -> np.ndarray:
+    r"""
+    Weights of the row derivatives of a ``num_taps``-row Lagrange stencil.
+
+    ``weights[p, k, j]`` is the weight of tap :math:`j` in the :math:`k`-th
+    derivative, in rows, of the interpolant at its own row :math:`p`, for
+    :math:`k = 0, \dots,` ``order``. Array shape=(num_taps, order + 1,
+    num_taps).
+    """
+    # In exact integers: the power basis over rows 0 .. num_taps - 1 is too
+    # ill-conditioned for float64 (1e-8 off the identity at k = 0).
+    weights = np.empty((num_taps, order + 1, num_taps))
+    for j in range(num_taps):
+        coeffs, denominator = [1], 1
+        for m in range(num_taps):
+            if m != j:
+                coeffs = [a - m * b for a, b in zip([0] + coeffs, coeffs + [0])]
+                denominator *= j - m
+        for k in range(order + 1):
+            for p in range(num_taps):
+                value = sum(a * p**i for i, a in enumerate(coeffs))
+                weights[p, k, j] = Fraction(value, denominator)
+            coeffs = [i * a for i, a in enumerate(coeffs)][1:]
+    return weights
 
 
 def compute_detector_amplitudes(light_travel_time,
