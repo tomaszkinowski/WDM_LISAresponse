@@ -11,6 +11,8 @@ repository:
 - full: the amplitude-rate term on the unshifted grid, then the shift to
   second order in the delay's rate and first in its curvature;
 - full_sinc: full plus the window-average sinc to first order;
+- amp_sinc_first: the amplitude-rate and sinc terms with the first-order
+  delay-rate shift (split_amp_sinc_first without the split);
 - split, split_amp, split_amp_sinc, split_amp_sinc_first: the common Roemer
   delay of the constellation centre applied to the waveform itself (tones
   analytically, the EMRI by spline), the plain production shift for the
@@ -19,11 +21,12 @@ repository:
 
 Tilings, signals, references, on-/off-bin frequencies, the cut (padding, taper
 and m = 0) and the plot are figure 6's own. ../prototypes/delay_rate_correction
-must be on PYTHONPATH. Run with no arguments to compute (or reuse the caches) and plot;
+must be on PYTHONPATH. Run with no arguments to compute the variants without caches and plot them all;
 ``--only NF`` runs one tiling and the bounds at it, prints, caches nothing.
 ``--part K/COUNT`` computes tilings K, K + COUNT, ... into cache/parts/ and
 stops, so COUNT processes can split the work; ``--merge COUNT`` assembles
-their caches and plots.
+their caches and plots. ``--kinds a,b`` restricts --only, --part and --merge
+to those variants.
 """
 
 import sys
@@ -82,9 +85,10 @@ def spline_warp(times, h_plus, h_cross):
     return lambda t: (sp(t), sc(t))
 
 
-def responses(response, wdm, tables, centre, theta, phi, h_plus, h_cross, link, warp):
+def responses(response, wdm, tables, centre, theta, phi, h_plus, h_cross, link, warp,
+              kinds=VARIANTS):
     """
-    Every variant of the wavelet response on one link: the corrected ones of
+    The variants `kinds` of the wavelet response on one link: the corrected ones of
     `response_corrections.responses`, and the split-delay ones, for which the
     waveform is evaluated (`warp`) at t + delta_R(t), delta_R = n.x_c/c the
     Roemer delay of the constellation centre `centre` (rows, metres).
@@ -95,7 +99,10 @@ def responses(response, wdm, tables, centre, theta, phi, h_plus, h_cross, link, 
 
     index = response.link_convention.index(link)
     out = corrected(response, wdm, tables, theta, phi, wdm.dwt(h_plus),
-                    wdm.dwt(h_cross), index)
+                    wdm.dwt(h_cross), index,
+                    kinds=[k for k in kinds if k in CORRECTED_VARIANTS])
+    if not any(k in SPLIT_VARIANTS for k in kinds):
+        return out
     n_hat = np.asarray(rs.compute_angular_geometry_wdm(
         jnp.atleast_1d(theta), jnp.atleast_1d(phi),
         response.light_travel_time[jnp.asarray([index])],
@@ -128,8 +135,8 @@ def tiling(orbits, start, link, Nf):
     return info, wdm, response, tables, centre, utils.wdm_cut_info(info)
 
 
-def compute(nfs):
-    """fig6.compute for every variant, sharing references and responses."""
+def compute(nfs, kinds=VARIANTS):
+    """fig6.compute for the variants `kinds`, sharing references and responses."""
     import jax
 
     import WDM
@@ -179,11 +186,11 @@ def compute(nfs):
 
     out = {kind: dict(Nf=np.asarray(nfs), kept_rows=np.zeros(len(nfs), dtype=int),
                       **{name: np.full(len(nfs), np.nan) for name in fig6.NAMES})
-           for kind in VARIANTS}
+           for kind in kinds}
     for j, Nf in enumerate(nfs):
         tick = time.perf_counter()
         info, wdm, response, tables, centre, cut = tiling(orbits, start, link, Nf)
-        for kind in VARIANTS:
+        for kind in kinds:
             out[kind]["kept_rows"][j] = cut["time_slice"].stop - cut["time_slice"].start
         for name, (hp, hc) in signals.items():
             hp, hc = padded(info, hp, hc)
@@ -191,25 +198,25 @@ def compute(nfs):
                     else spline_warp(np.asarray(response.t0 + wdm.times),
                                      np.asarray(hp), np.asarray(hc)))
             ours = responses(response, wdm, tables, centre, *sky[name], hp, hc,
-                             link, warp)
+                             link, warp, kinds)
             reference = utils.apply_wdm_cut(np.asarray(wdm.dwt(utils.apply_repadding(
                 references[name], ref_info["pad_left"], ref_info["pad_right"],
                 info["pad_left"], info["pad_right"]))), cut)
-            for kind in VARIANTS:
+            for kind in kinds:
                 out[kind][name][j] = utils.wdm_mismatch(
                     utils.apply_wdm_cut(ours[kind], cut), reference)["mismatch"]
         del response, wdm
         jax.clear_caches()
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s:  "
               + "  ".join(f"{name} " + "/".join(f"{out[kind][name][j]:.1e}"
-                                                 for kind in VARIANTS)
+                                                 for kind in kinds)
                           for name in fig6.NAMES)
               + f"   ({time.perf_counter() - tick:.0f} s)", flush=True)
     return out
 
 
-def compute_bounds(nfs):
-    """fig6.compute_bounds for every variant."""
+def compute_bounds(nfs, kinds=VARIANTS):
+    """fig6.compute_bounds for the variants `kinds`."""
     import jax
 
     from WDM_LISAresponse.code.utils import utils
@@ -223,7 +230,7 @@ def compute_bounds(nfs):
                       on=np.full(freqs["on"].shape, np.nan),
                       off=np.full(freqs["on"].shape, np.nan),
                       offsets=np.full(freqs["offsets"].shape, np.nan))
-           for kind in VARIANTS}
+           for kind in kinds}
     for j, Nf in enumerate(nfs):
         if np.all(np.isnan(freqs["on"][:, j])):
             continue
@@ -243,34 +250,35 @@ def compute_bounds(nfs):
                 _, hp, hc = utils.apply_zero_padding(signal_times, hp, hc,
                                                      info["pad_left"], info["pad_right"])
                 ours = responses(response, wdm, tables, centre, GC_THETA, GC_PHI,
-                                 hp, hc, link, tone_warp(dict(params, f=f), start))
+                                 hp, hc, link, tone_warp(dict(params, f=f), start),
+                                 kinds)
                 reference = utils.apply_wdm_cut(np.asarray(wdm.dwt(np.asarray(
                     response.one_arm_response_time_domain(
                         GC_THETA, GC_PHI, hp, hc, link=link,
                         num_integral_points=NUM_INTEGRAL_POINTS)))), cut)
-                for kind in VARIANTS:
+                for kind in kinds:
                     out[kind][which][index] = utils.wdm_mismatch(
                         utils.apply_wdm_cut(ours[kind], cut), reference)["mismatch"]
         del response, wdm
         jax.clear_caches()
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s bounds:  "
               + "  ".join(f"{name} off " + "/".join(f"{out[kind]['off'][i, j]:.1e}"
-                                                     for kind in VARIANTS)
+                                                     for kind in kinds)
                           for i, name in enumerate(fig6.TONES))
               + f"   ({time.perf_counter() - tick:.0f} s)", flush=True)
     return out
 
 
-def part_paths(index, count):
+def part_paths(index, count, kinds=VARIANTS):
     return {kind: tuple(HERE / "cache" / "parts"
                         / f"investigation_fig6_{kind}{suffix}_part{index}of{count}.npz"
                         for suffix in ("", "_bounds"))
-            for kind in VARIANTS}
+            for kind in kinds}
 
 
-def merge(count):
+def merge(count, kinds=VARIANTS):
     """Assemble the parts' caches, in tiling order, into the full caches."""
-    for kind in VARIANTS:
+    for kind in kinds:
         for which in (0, 1):
             parts = [dict(np.load(part_paths(i, count)[kind][which]))
                      for i in range(count)]
@@ -282,35 +290,35 @@ def merge(count):
 
 
 if __name__ == "__main__":
+    kinds = VARIANTS
+    if "--kinds" in sys.argv:
+        kinds = tuple(sys.argv[sys.argv.index("--kinds") + 1].split(","))
+        assert set(kinds) <= set(VARIANTS), kinds
     if "--only" in sys.argv:
         Nf = int(sys.argv[sys.argv.index("--only") + 1])
-        compute([Nf])
-        compute_bounds([Nf])
+        compute([Nf], kinds)
+        compute_bounds([Nf], kinds)
         sys.exit()
     if "--part" in sys.argv:
         # --part K/COUNT: tilings K, K + COUNT, ..., caches of its own, no plot
         index, count = map(int, sys.argv[sys.argv.index("--part") + 1].split("/"))
         nfs = fig6.NF[index::count]
-        paths = part_paths(index, count)
-        paths[VARIANTS[0]][0].parent.mkdir(parents=True, exist_ok=True)
+        paths = part_paths(index, count, kinds)
+        paths[kinds[0]][0].parent.mkdir(parents=True, exist_ok=True)
         for which, run in ((0, compute), (1, compute_bounds)):
-            out = run(nfs)
-            for kind in VARIANTS:
+            out = run(nfs, kinds)
+            for kind in kinds:
                 np.savez(paths[kind][which], **out[kind])
         sys.exit()
     if "--merge" in sys.argv:
-        merge(int(sys.argv[sys.argv.index("--merge") + 1]))
-    results = {}
+        merge(int(sys.argv[sys.argv.index("--merge") + 1]), kinds)
     for index, run in ((0, compute), (1, compute_bounds)):
-        paths = [CACHES[kind][index] for kind in VARIANTS]
-        if all(path.exists() for path in paths):
-            loaded = {kind: dict(np.load(CACHES[kind][index])) for kind in VARIANTS}
-        else:
-            loaded = run(fig6.NF)
-            for kind in VARIANTS:
-                np.savez(CACHES[kind][index], **loaded[kind])
-        for kind in VARIANTS:
-            results.setdefault(kind, []).append(loaded[kind])
+        missing = tuple(kind for kind in VARIANTS if not CACHES[kind][index].exists())
+        if missing:
+            out = run(fig6.NF, missing)
+            for kind in missing:
+                np.savez(CACHES[kind][index], **out[kind])
     for kind in VARIANTS:
-        fig6.plot(*results[kind], HERE / "figures" / "investigations"
-                  / f"fig6_{kind}.pdf", source_envelope=True)
+        fig6.plot(*(dict(np.load(path)) for path in CACHES[kind]),
+                  HERE / "figures" / "investigations" / f"fig6_{kind}.pdf",
+                  source_envelope=True)

@@ -10,7 +10,9 @@ Three variants from the same geometry and coefficients:
   (`amp_sinc_kernel`), then the shift to second order in the delay's rate and first
   in its curvature (`rate_kernel.apply_corrected_shift_2`);
 - ``full_sinc``   ``full`` plus the window-average sinc to first order about
-  each band centre (`amp_sinc_kernel.apply_sinc_rate`).
+  each band centre (`amp_sinc_kernel.apply_sinc_rate`);
+- ``amp_sinc_first``  the amplitude-rate and sinc terms with the first-order
+  delay-rate shift: ``split_amp_sinc_first`` without the split.
 
 `split_responses` gives the split-delay variants: the waveform already carries
 the common Roemer delay, the plain production shift only the per-link rest,
@@ -31,7 +33,7 @@ from amp_sinc_kernel import (amp_weights, apply_amplitude_rate, apply_sinc_rate,
 from rate_kernel import (apply_corrected_shift_2, apply_rate_corrected_shift,
                          build_rate_tables, build_rate_tables_2)
 
-VARIANTS = ("production", "first", "full", "full_sinc")
+VARIANTS = ("production", "first", "full", "full_sinc", "amp_sinc_first")
 SPLIT_VARIANTS = ("split", "split_amp", "split_amp_sinc", "split_amp_sinc_first")
 
 # Lag range of the amplitude-rate sum. Z falls to ~0.1 of its peak by l = 10;
@@ -109,9 +111,9 @@ def split_responses(response, wdm, tables, theta, phi, wp_warped, wc_warped,
 
 
 def responses(response, wdm, tables, theta, phi, wp, wc, link_index=0,
-              delay_offset=None):
+              delay_offset=None, kinds=VARIANTS):
     """
-    The variants, each an (Nt, Nf) numpy array.
+    The variants named in ``kinds``, each an (Nt, Nf) numpy array.
 
     ``delay_offset`` (shape (Nt,), seconds) is subtracted from the per-row
     delay before any shift: pass the part of the delay already applied to the
@@ -121,16 +123,19 @@ def responses(response, wdm, tables, theta, phi, wp, wc, link_index=0,
         response, wdm, tables, theta, phi, wp, wc, link_index, delay_offset)
     rate = jnp.gradient(delta, wdm.dT)
     curvature = jnp.gradient(rate, wdm.dT)
-    out = {}
-    out["production"] = wdm.apply_variable_time_shift(response.filter_tables,
-                                                      unshifted, delta)
-    out["first"] = apply_rate_corrected_shift(wdm, response.filter_tables,
-                                              tables["first"], unshifted, delta, rate)
-    out["full"] = apply_corrected_shift_2(wdm, response.filter_tables,
-                                          tables["second"], unshifted + amp_term,
-                                          delta, rate, curvature)
-    out["full_sinc"] = apply_corrected_shift_2(wdm, response.filter_tables,
-                                               tables["second"],
-                                               unshifted + amp_term + sinc_term,
-                                               delta, rate, curvature)
-    return {k: np.asarray(v) for k, v in out.items()}
+    filters = response.filter_tables
+    build = {
+        "production": lambda: wdm.apply_variable_time_shift(filters, unshifted, delta),
+        "first": lambda: apply_rate_corrected_shift(
+            wdm, filters, tables["first"], unshifted, delta, rate),
+        "full": lambda: apply_corrected_shift_2(
+            wdm, filters, tables["second"], unshifted + amp_term, delta, rate,
+            curvature),
+        "full_sinc": lambda: apply_corrected_shift_2(
+            wdm, filters, tables["second"], unshifted + amp_term + sinc_term, delta,
+            rate, curvature),
+        "amp_sinc_first": lambda: apply_rate_corrected_shift(
+            wdm, filters, tables["first"], unshifted + amp_term + sinc_term, delta,
+            rate),
+    }
+    return {k: np.asarray(build[k]()) for k in kinds}
