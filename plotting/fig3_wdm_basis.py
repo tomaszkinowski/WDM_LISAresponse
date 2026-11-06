@@ -102,3 +102,12 @@ for n, m, c in zip(N_VALS, M_VALS, PALETTE):
 
 plt.subplots_adjust(wspace=0.05, hspace=0.05, left=0.08, right=0.92, top=0.95, bottom=0.08)
 fig.savefig(HERE / "figures" / "fig3_wdm_basis.pdf")
+
+# Investigation: the same figure with the tiling axes in units of dT and dF.
+n_ticks = np.arange(0, wdm.Nt + 1, wdm.Nt // 4)
+m_ticks = np.arange(0, wdm.Nf + 1, wdm.Nf // 4)
+ax_tf.set_xticks(n_ticks * wdm.dT, [str(n) for n in n_ticks])
+ax_tf.set_yticks(m_ticks * wdm.dF, [str(m) for m in m_ticks])
+ax_tf.set_xlabel(r"Time $t/\Delta T$")
+ax_tf.set_ylabel(r"Frequency $f/\Delta F$")
+fig.savefig(HERE / "figures" / "investigations" / "fig3_wdm_basis_dimensionless.pdf")
