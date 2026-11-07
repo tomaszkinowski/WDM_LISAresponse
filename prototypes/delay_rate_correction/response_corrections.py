@@ -36,20 +36,13 @@ from rate_kernel import (apply_corrected_shift_2, apply_rate_corrected_shift,
 VARIANTS = ("production", "first", "full", "full_sinc", "amp_sinc_first")
 SPLIT_VARIANTS = ("split", "split_amp", "split_amp_sinc", "split_amp_sinc_first")
 
-# Lag range of the amplitude-rate sum. Z falls to ~0.1 of its peak by l = 10;
-# truncating there adds <= 1e-9 mismatch (check_amplitude.py at L_Z = 10, 15,
-# 25), below the 6.8e-9 on-bin floor, for 21 lags instead of 51.
-AMP_LAG_L = 10
-
-# Lag range of the first-order sinc sum: T1 falls to 3e-2 of its peak by l = 10.
-SINC_LAG_L = 10
-
 
 def build_tables(wdm, max_lag_L, num_interp_points):
+    """Every correction's lag table, all to the shift's own lag range max_lag_L."""
     return dict(first=build_rate_tables(wdm, max_lag_L, num_interp_points),
                 second=build_rate_tables_2(wdm, max_lag_L, num_interp_points),
-                amp=amp_weights(build_amp_table(wdm, AMP_LAG_L)),
-                sinc=amp_weights(build_sinc_table(wdm, SINC_LAG_L)))
+                amp=amp_weights(build_amp_table(wdm, max_lag_L)),
+                sinc=amp_weights(build_sinc_table(wdm, max_lag_L)))
 
 
 def _grids(response, wdm, tables, theta, phi, wp, wc, link_index, delay_offset):

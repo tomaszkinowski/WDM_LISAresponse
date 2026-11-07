@@ -320,5 +320,5 @@ if __name__ == "__main__":
                 np.savez(CACHES[kind][index], **out[kind])
     for kind in VARIANTS:
         fig6.plot(*(dict(np.load(path)) for path in CACHES[kind]),
-                  HERE / "figures" / "investigations" / f"fig6_{kind}.pdf",
+                  HERE / "figures" / "investigations" / f"fig6_{kind}_L{MAX_LAG_L}.pdf",
                   source_envelope=True)
