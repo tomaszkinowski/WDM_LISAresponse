@@ -177,7 +177,11 @@ def plot(data, statistic, path, label):
     ax.set_ylim(delta_t[0], delta_t[-1])
     ax.set_xlabel(r"$f$ [Hz]")
     ax.set_ylabel(r"$\Delta T$ [s]")
-    ax.secondary_yaxis("right", functions=(delta_f, delta_f)).set_ylabel(r"$\Delta F$ [Hz]")
+    right = ax.secondary_yaxis("right", functions=(delta_f, delta_f))
+    right.set_ylabel(r"$\Delta F$ [Hz]")
+    # outward ticks: inward ones vanish into the map
+    for axis in (ax, right):
+        axis.tick_params(which="both", direction="out")
     ticks = np.arange(LOG_RANGE[0], LOG_RANGE[1] + 1, 2)
     over = np.nanmax(log_mm) > LOG_RANGE[1]
     bar = fig.colorbar(mesh, ax=ax, ticks=ticks, location="top", pad=0.03, fraction=0.05,
