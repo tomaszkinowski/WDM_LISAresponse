@@ -1,5 +1,7 @@
 """Figure 5 measured: the mismatch of the split_amp_sinc_first response
-(investigation_fig6_delay_rate.py) over the (f, Delta T) plane, on link 1 -> 2.
+(investigation_fig6_delay_rate.py) over the (f, Delta T) plane, on link 1 -> 2;
+``--kind K`` maps another variant of that script instead (e.g. production), with
+its own cache and PDFs suffixed _K.
 
 The tilings are figure 6's. The frequency axis is split into F_CELLS log cells;
 at each tiling a cell's tones sit in the band m nearest its centre, at
@@ -14,7 +16,8 @@ below TAPS_SPLIT and 20 above: at 12 the reference's own error reaches 2e-9 at
 
 ../prototypes/delay_rate_correction must be on PYTHONPATH. Run with no arguments
 to plot from the cache; ``--part K/COUNT`` computes tilings K, K + COUNT, ...
-into cache/parts/ and stops; ``--merge COUNT`` assembles them and plots.
+into cache/parts/ and stops; ``--merge COUNT`` assembles them and plots. The colour
+bar sits on top, and the right axis is Delta F = 1/(2 Delta T).
 """
 
 import sys
@@ -31,7 +34,6 @@ from parameters import (DT, GC_PHI, GC_THETA, MONOCHROMATIC_PARAMS, N_SIGNAL,
                         NUM_INTEGRAL_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 
 HERE = Path(__file__).parent
-CACHE = HERE / "cache" / "investigation_fig5_mismatch_map.npz"
 KIND = "split_amp_sinc_first"
 
 F_EDGES = np.logspace(-4, -1.3, 14)                  # five cells per decade [Hz]
@@ -55,7 +57,16 @@ def cell_frequencies(nfs, centres=F_CELLS, r=R):
     return f
 
 
-def compute(nfs, centres=F_CELLS, r=R):
+def suffix(kind):
+    """File-name suffix: none for split_amp_sinc_first, the map's original variant."""
+    return "" if kind == KIND else f"_{kind}"
+
+
+def cache_path(kind=KIND):
+    return HERE / "cache" / f"investigation_fig5_mismatch_map{suffix(kind)}.npz"
+
+
+def compute(nfs, centres=F_CELLS, r=R, kind=KIND):
     """The mismatch of every cell's tones, shape (cells, r, tilings)."""
     import jax
 
@@ -83,7 +94,7 @@ def compute(nfs, centres=F_CELLS, r=R):
                                                      info["pad_left"], info["pad_right"])
                 ours = inv.responses(response, wdm, tables, centre, GC_THETA, GC_PHI,
                                      hp, hc, link, inv.tone_warp(params, start),
-                                     (KIND,))[KIND]
+                                     (kind,))[kind]
                 reference = utils.apply_wdm_cut(np.asarray(wdm.dwt(np.asarray(
                     response.one_arm_response_time_domain(
                         GC_THETA, GC_PHI, hp, hc, link=link,
@@ -101,18 +112,19 @@ def compute(nfs, centres=F_CELLS, r=R):
     return dict(Nf=np.asarray(nfs), f=freqs, mismatch=out, f_edges=F_EDGES, r=np.asarray(r))
 
 
-def part_path(index, count):
-    return HERE / "cache" / "parts" / f"investigation_fig5_mismatch_map_part{index}of{count}.npz"
+def part_path(index, count, kind=KIND):
+    return (HERE / "cache" / "parts"
+            / f"investigation_fig5_mismatch_map{suffix(kind)}_part{index}of{count}.npz")
 
 
-def merge(count):
-    parts = [dict(np.load(part_path(i, count))) for i in range(count)]
+def merge(count, kind=KIND):
+    parts = [dict(np.load(part_path(i, count, kind))) for i in range(count)]
     order = np.argsort(np.concatenate([p["Nf"] for p in parts]))
     merged = dict(parts[0])
     for key in ("Nf", "f", "mismatch"):
         merged[key] = np.concatenate([p[key] for p in parts], axis=-1)[..., order]
     assert np.array_equal(merged["Nf"], fig6.NF), merged["Nf"]
-    np.savez(CACHE, **merged)
+    np.savez(cache_path(kind), **merged)
 
 
 def dt_edges(nfs):
@@ -120,6 +132,12 @@ def dt_edges(nfs):
     dt = np.asarray(nfs) * DT
     mid = np.sqrt(dt[:-1] * dt[1:])
     return np.concatenate([[dt[0] ** 2 / mid[0]], mid, [dt[-1] ** 2 / mid[-1]]])
+
+
+def delta_f(delta_t):
+    """Delta F = 1 / (2 Delta T), its own inverse."""
+    with np.errstate(divide="ignore"):
+        return 0.5 / np.asarray(delta_t, dtype=float)
 
 
 def plot(data, statistic, path, label):
@@ -136,7 +154,7 @@ def plot(data, statistic, path, label):
 
     centres = np.sqrt(data["f_edges"][:-1] * data["f_edges"][1:])
     delta_t = data["Nf"] * DT
-    fig, ax = plt.subplots(figsize=(3.375, 2.6))
+    fig, ax = plt.subplots(figsize=(2.9, 2.9))
     ax.set_xscale("log")
     ax.set_yscale("log")
     mesh = ax.pcolormesh(centres, delta_t, filled.T, shading="gouraud", cmap="viridis",
@@ -159,24 +177,29 @@ def plot(data, statistic, path, label):
     ax.set_ylim(delta_t[0], delta_t[-1])
     ax.set_xlabel(r"$f$ [Hz]")
     ax.set_ylabel(r"$\Delta T$ [s]")
+    ax.secondary_yaxis("right", functions=(delta_f, delta_f)).set_ylabel(r"$\Delta F$ [Hz]")
     ticks = np.arange(LOG_RANGE[0], LOG_RANGE[1] + 1, 2)
-    bar = fig.colorbar(mesh, ax=ax, ticks=ticks, pad=0.02)
-    bar.ax.set_yticklabels([rf"$10^{{{t}}}$" for t in ticks])
+    over = np.nanmax(log_mm) > LOG_RANGE[1]
+    bar = fig.colorbar(mesh, ax=ax, ticks=ticks, location="top", pad=0.03, fraction=0.05,
+                       aspect=30, extend="max" if over else "neither")
+    bar.ax.set_xticklabels([rf"$10^{{{t}}}$" for t in ticks])
     bar.set_label(label)
     fig.savefig(path, dpi=300)
     print("wrote", path)
 
 
 if __name__ == "__main__":
+    kind = sys.argv[sys.argv.index("--kind") + 1] if "--kind" in sys.argv else KIND
     if "--part" in sys.argv:
         index, count = map(int, sys.argv[sys.argv.index("--part") + 1].split("/"))
-        part_path(index, count).parent.mkdir(parents=True, exist_ok=True)
-        np.savez(part_path(index, count), **compute(fig6.NF[index::count]))
+        path = part_path(index, count, kind)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, **compute(fig6.NF[index::count], kind=kind))
         sys.exit()
     if "--merge" in sys.argv:
-        merge(int(sys.argv[sys.argv.index("--merge") + 1]))
+        merge(int(sys.argv[sys.argv.index("--merge") + 1]), kind)
     plt.style.use(HERE / "paper.mplstyle")
-    data = dict(np.load(CACHE))
+    data = dict(np.load(cache_path(kind)))
     out = HERE / "figures" / "investigations"
-    plot(data, np.nanmedian, out / "fig5_mismatch_map.pdf", "median mismatch")
-    plot(data, np.nanmax, out / "fig5_mismatch_map_max.pdf", "largest mismatch")
+    plot(data, np.nanmedian, out / f"fig5_mismatch_map{suffix(kind)}.pdf", "median mismatch")
+    plot(data, np.nanmax, out / f"fig5_mismatch_map{suffix(kind)}_max.pdf", "largest mismatch")
