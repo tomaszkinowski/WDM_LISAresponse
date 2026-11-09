@@ -1,0 +1,134 @@
+Figure 5 mismatch maps: what was computed and how
+=================================================
+
+Script: plotting/investigation_fig5_mismatch_map.py (paper_figures branch).
+Each map shows a response model's mismatch against the time-domain reference over
+the (f, Delta T) plane that figure 5's validity regions describe.
+
+Files (this folder)
+-------------------
+  fig5_mismatch_map.pdf                    split_amp_sinc_first, median over each cell's tones
+  fig5_mismatch_map_max.pdf                split_amp_sinc_first, largest
+  fig5_mismatch_map_production.pdf         production response, median
+  fig5_mismatch_map_production_max.pdf     production response, largest
+  fig5_mismatch_map{,_max}_L10.pdf         split_amp_sinc_first with the older AMP_LAG_L = 10
+                                           (superseded; kept for comparison)
+Caches (plotting/cache/): investigation_fig5_mismatch_map.npz,
+investigation_fig5_mismatch_map_production.npz (+ _L10). Each stores, for every cell,
+tone and tiling, the tone frequency and its mismatch (arrays f, mismatch, shape
+(13 cells, 6 offsets, 17 tilings)), plus Nf, f_edges and r.
+
+Response models
+---------------
+  production            the package's one-arm wavelet response
+                        (response_sub.one_arm_response_wdm): one delay per row, the full
+                        +-436 s delay carried by the WDM time shift, amplitudes at the
+                        landing time t_n - delta_n.
+  split_amp_sinc_first  prototypes/delay_rate_correction (response_corrections.py):
+                        the constellation centre's Roemer delay n.x_c/c is applied to the
+                        waveform itself (tones analytically), so the shift carries only
+                        each link's rest delay (-6.6 to -1.7 s, rate <= 4.9e-7). Adds the
+                        first-order amplitude-rate and sinc terms and the first-order
+                        delay-rate kernel for the rest delay.
+
+Plane covered
+-------------
+Delta T: figure 6's 17 tilings, Nf = 2 round(logspace(2, 6, 17) / (2 dt)):
+  Nf      24   44   80  140  250  444  790 1406 2500 4446 7906 14058 25000 44456 79056 140586 250000
+  dT [s]  96  176  320  560 1000 1776 3160 5624  1e4 1.78e4 3.16e4 5.62e4 1e5 1.78e5 3.16e5 5.62e5 1e6
+  i.e. Delta T = 96 s to 1e6 s, four per decade; Delta F = 1/(2 Delta T) = 5.2e-3 Hz to 5e-7 Hz.
+f: 13 logarithmic cells, five per decade, edges logspace(-4, -1.3, 14) = 1e-4 Hz to 0.0501 Hz;
+  cell centres 1.27e-4, 2.05e-4, 3.31e-4, 5.33e-4, 8.60e-4, 1.39e-3, 2.24e-3, 3.61e-3, 5.83e-3,
+  9.40e-3, 1.52e-2, 2.45e-2, 3.95e-2 Hz. The plotted f axis runs between the outer cell centres.
+  The top is capped at 0.05 Hz by the reference (see below).
+
+Tones per cell
+--------------
+At each tiling, a cell's tones sit in the band m nearest the cell centre, at
+  f = (m + r) Delta F,  r = -5/12, -1/4, -1/12, +1/12, +1/4, +5/12,
+i.e. six offsets spread evenly across the band (not including the band centre r = 0 or
+the edge r = 1/2). Cells that share a band share their tones. 1092 distinct tones per
+model over all tilings.
+Blank (grey staircase) cells: a cell is left out at a tiling if any of its tones lies
+below 0.75 Delta F, the lower edge of band 1's Meyer window (band 1 minus the window's
+A fraction 0.25), where the signal leaks into the dropped m = 0 band. This blanks 39 of
+the 221 (cell, tiling) pairs: low f at fine Delta T.
+
+Source and detector
+-------------------
+  signal        monochromatic, circularly polarised, A_plus = A_cross = 1e-21, phi_0 = 0
+                (parameters.MONOCHROMATIC_PARAMS with f replaced)
+  sky           Galactic centre, theta = 95.6 deg, phi = 266.9 deg (SSB ecliptic)
+  sampling      dt = 4 s, N = 2**23 samples (about 388 days), Tukey taper alpha = 0.05
+  start         200 days after the start of the ESA trailing orbit file
+                (examples/esa-trailing-orbits.h5)
+  link          one link, 1 -> 2
+  WDM settings  max_lag_L = 25, num_interp_points P = 128; padding from
+                utils.wdm_padding_info for L = 25 and the taper
+
+Reference and comparison
+------------------------
+  reference     LISAresponse.one_arm_response_time_domain on the same signal, 12
+                Gauss-Legendre nodes per link integral, transformed with the same tiling's
+                dwt. The waveform is interpolated with 12-tap Lagrange below 0.03 Hz and 20
+                taps above: at 12 taps the reference's own error reaches 2e-9 at 0.05 Hz
+                (3e-4 at 0.09 Hz), while 20 taps hold it near 1e-12 up to 0.055 Hz. This
+                is why the cells stop at 0.05 Hz.
+  cut           both grids lose the padding rows, every row holding a tapered sample, and
+                the m = 0 band (utils.wdm_cut_info / apply_wdm_cut)
+  measure       utils.wdm_mismatch: 1 - |<w1, w2>| / sqrt(<w1, w1><w2, w2>) over the kept
+                pixels
+  statistic     each cell shows the median (or the largest) mismatch over its six tones
+
+How the maps are drawn
+----------------------
+  - log10 of the median / largest mismatch, viridis, Gouraud-shaded between cell centres
+    (f) and tilings (Delta T); colour range 1e-12 to 1e-2 with an arrow when values go
+    above it
+  - white contours at 1e-10, 1e-8, 1e-6, 1e-4
+  - light-grey staircase: the blank m = 0 leak cells, drawn on the cell edges (geometric
+    midpoints between tilings)
+  - colour bar on top; right axis Delta F = 1/(2 Delta T)
+
+Runs
+----
+All computed on calx038 (CPU, 4 processes of 5 cores each, tilings dealt round-robin
+with --part K/4) and then merged and plotted on the laptop (--merge 4).
+  split_amp_sinc_first  2026-11-06, 20:53-23:01. The shift, delay-rate and amplitude
+                        terms used L = 25, the sinc term L = 10 (the process loaded before
+                        the correction lags were tied to max_lag_L; sinc 10 vs 25 shows no
+                        measurable difference at 0.01/0.04 Hz and 1e3/1e4 s).
+  production            2026-11-09, 14:22-16:02 (--kind production).
+  Per tiling: 7-51 min (split) and 7-39 min (production), growing with Delta T; most
+  of it is the TD reference.
+
+Cross-checks against figure 6
+-----------------------------
+A map tone at r = +-1/4 coincides with a figure 6 offset tone (+-0.25 Delta F about the
+3e-4 / 3e-3 / 3e-2 Hz tones' band centres) when both land in the same band; 6 tones
+coincide exactly.
+  production vs the paper's fig6_bounds.npz (2026-10-28) and
+  investigation_fig6_production_bounds.npz (2026-11-04):  equal to 5e-12 in log10.
+  split_amp_sinc_first vs investigation_fig6_split_amp_sinc_first_bounds.npz
+  (2026-11-07, all lags L = 25):  within 10% (difference from the sinc lag, L = 10 here).
+Comparing each figure 6 +-0.25 tone with the map's same-offset tone in the cell that
+contains it (85 pairs per model, frequencies within 0.64-1.32x): split_amp_sinc_first
+agrees within a factor ~1.8; production within 2-3x, the largest gaps (up to 4.8x) at
+30 mHz and Delta T = 5.6e3-1e4 s, where its error grows ~30x between the 24 and 39 mHz
+cells.
+
+What the maps show (medians)
+----------------------------
+  production            floor 1-4e-10 over 1e3-1e4 s (7e-11 at the lowest f); rises at high f and fine Delta T
+                        (sinc at the band centre: 39 mHz 1e-8 at 1e3 s, 1e-6 at 96 s); at
+                        coarse Delta T a diagonal edge with Delta T ~ 1/f (figure 5's
+                        slowly-varying-delay slope): first above 1e-6 at ~1.8e5 s below
+                        2 mHz, 5.6e4 s at 6 mHz, 3.2e4 s at 15 mHz; 1e-5 at 1e4 s and 2e-2
+                        at 3.2e4 s for 39 mHz.
+  split_amp_sinc_first  1e-12 to 1e-10 over 1e3-1e4 s; Delta T^2-like rise at coarse
+                        Delta T, nearly independent of f (8e-12 at 1e4 s, 8e-11 at
+                        3.2e4 s, 2e-9 at 1e5 s at low f); ~1e-9 near 0.04 Hz at all
+                        Delta T. The largest-mismatch map is set by the |r| = 5/12 tones,
+                        an f-independent Delta T^4 band (5e-10 at 1e4 s, 5e-8 at 3.2e4 s,
+                        5e-6 at 1e5 s), so its contours run horizontally.
+  Both reach ~1e-2 at Delta T = 1e6 s at low f.
