@@ -92,7 +92,6 @@ def main():
 
     path = HERE / "figures" / "investigations" / "emri_spectrum.pdf"
     fig.savefig(path)
-    fig.savefig(path.with_suffix(".png"), dpi=200)
     print(f"wrote {path}")
 
 
