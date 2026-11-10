@@ -1,6 +1,6 @@
 """Runtime of the six one-arm links at the paper's parameters.
 
-The signal of figure 6 (2**23 samples at dt = 4 s, about 388 d, Tukey 0.05,
+The signal of figure 8 (2**23 samples at dt = 4 s, about 388 d, Tukey 0.05,
 200 d into the ESA orbit file), padded for Delta T = 1e4 s (Nf = 2500) with
 L = 25, P = 128. Every call takes a new sky position and a new waveform.
 
@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-import fig6_mismatch_vs_dT as fig6
+import fig8_mismatch_vs_dT as fig8
 from parameters import (DT, MAX_LAG_L, MONOCHROMATIC_PARAMS, N_SIGNAL,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 
@@ -46,7 +46,7 @@ def setup():
     from WDM_LISAresponse.code.utils import utils
     from WDM_LISAresponse.code.waveforms import waveforms
 
-    orbits, start, signal_times, _ = fig6.setup()
+    orbits, start, signal_times, _ = fig8.setup()
     info = utils.wdm_padding_info(
         N_SIGNAL, NF, max_lag_L=MAX_LAG_L,
         taper_samples=waveforms.tukey_taper_samples(N_SIGNAL, WINDOW_KWARGS["alpha"]))
@@ -62,8 +62,8 @@ def setup():
 
     t0 = start - info["pad_left"] * DT
     n = info["target_length"]
-    grid = SimpleNamespace(N=n, dt=DT, t0=t0, orbit_file=str(fig6.ORBIT_FILE),
-                           file_t0=float(read_orbit_file(str(fig6.ORBIT_FILE)).t0),
+    grid = SimpleNamespace(N=n, dt=DT, t0=t0, orbit_file=str(fig8.ORBIT_FILE),
+                           file_t0=float(read_orbit_file(str(fig8.ORBIT_FILE)).t0),
                            padded_times=t0 + DT * np.arange(n))
     return orbits, grid, waves
 
@@ -152,7 +152,7 @@ def run_flr(orbits, grid, waves, gpu):
     backend = "cuda12x" if gpu else "cpu"
 
     def build():
-        flr_orbits = Orbits(str(fig6.ORBIT_FILE), force_backend=backend)
+        flr_orbits = Orbits(str(fig8.ORBIT_FILE), force_backend=backend)
         flr_orbits.configure(linear_interp_setup=True)
         return pyResponseTDI(1.0 / DT, grid.N, orbits=flr_orbits,
                              tdi_orbits=flr_orbits, force_backend=backend)

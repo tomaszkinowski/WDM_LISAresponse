@@ -1,13 +1,13 @@
-"""Investigation beside figure 10: the EMRI (parameters.py) in first-generation
+"""Investigation beside figure 13: the EMRI (parameters.py) in first-generation
 Michelson TDI X, from the two external codes - lisagwresponse's links combined by
-pytdi, and fastlisaresponse with its own TDI - in figure 10's layout with the
+pytdi, and fastlisaresponse with its own TDI - in figure 13's layout with the
 source's h+ and hx over the zoom
-(figures/investigations/fig10_emri_tdi_gen1_signals_waveform.pdf).
+(figures/investigations/fig13_emri_tdi_gen1_signals_waveform.pdf).
 
 Our wavelet and time-domain TDI form second generation only, so neither appears.
-The grid, guard band, conversion and m = 0 treatment are figure 10's
+The grid, guard band, conversion and m = 0 treatment are figure 13's
 (_emri_comparison.py); the two codes' mismatch over the whole cut record is printed
-and written to figures/investigations/fig10_emri_tdi_gen1_mismatches.txt.
+and written to figures/investigations/fig13_emri_tdi_gen1_mismatches.txt.
 
 Run with no arguments to compute (or reuse the cache) and plot.
 """
@@ -69,6 +69,6 @@ if __name__ == "__main__":
             f"{float(res['mismatch']):.2e}, rel L2 {float(res['rel_L2']):.2e}")
     print(text)
     INVESTIGATIONS.mkdir(parents=True, exist_ok=True)
-    (INVESTIGATIONS / "fig10_emri_tdi_gen1_mismatches.txt").write_text(text + "\n")
-    emri.plot_signals(res, INVESTIGATIONS / "fig10_emri_tdi_gen1_signals_waveform.pdf",
+    (INVESTIGATIONS / "fig13_emri_tdi_gen1_mismatches.txt").write_text(text + "\n")
+    emri.plot_signals(res, INVESTIGATIONS / "fig13_emri_tdi_gen1_signals_waveform.pdf",
                       LABELS, "X_1", emri.waveform(N_SIGNAL), methods=METHODS)

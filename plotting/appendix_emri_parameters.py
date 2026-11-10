@@ -1,12 +1,12 @@
 """Appendix figures C1, D1 and D2: mismatch of the wavelet one-arm response
 against the time-domain reference for the EMRI (parameters.py) on link 1 -> 2, at
-Delta T = 1000 s, 3600 s and 36000 s (as in figure 8), as one setting changes:
+Delta T = 1000 s, 3600 s and 36000 s (tilings of figure 8), as one setting changes:
   C1  P, the number of interpolation points in the time-delay filter tables
   D1  A_frac, the Meyer window's flat-top fraction (B_frac = 1 - 2 A_frac)
   D2  d, the steepness of the Meyer window's transition
 One script for both appendices, so the three sweeps share each tiling's reference.
 Everything else is held at the paper's values (P = 128, A_frac = 0.25, d = 4,
-L = 25), with window and cut as in figure 6. The reference is a time series, so
+L = 25), with window and cut as in figure 8. The reference is a time series, so
 it is computed once per tiling and transformed with each setting's own WDM
 transform. The vertical line marks the value used everywhere else.
 
@@ -83,7 +83,7 @@ def compute(nfs, points):
     data = read_orbit_file(str(ORBIT_FILE))
     orbit_times = data.t0 + data.dt * np.arange(data.size)
     orbits = InterpolatedOrbits(orbit_times, data.positions, data.velocities)
-    # 200 d in, as in figure 6, so the figures see the same stretch of orbit.
+    # 200 d in, as in figure 8, so the figures see the same stretch of orbit.
     start = orbit_times[0] + 200 * 86400.0
     signal_times = start + DT * np.arange(N_SIGNAL)
     link = utils.Link(1, 2)

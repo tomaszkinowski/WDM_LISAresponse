@@ -1,17 +1,17 @@
-"""Investigation (not a paper figure): why the EMRI's mismatch in figure 6 climbs at
-fine tilings. Figure 6 samples Delta T four times a decade; this resamples
+"""Investigation (not a paper figure): why the EMRI's mismatch in figure 8 climbs at
+fine tilings. Figure 8 samples Delta T four times a decade; this resamples
 80-3000 s densely and records, at each tiling, besides the mismatch:
   m0        the fraction of the EMRI's WDM power (h_plus and h_cross) in the
             dropped m = 0 band
-  compared  the fraction of it in bands 2 to Nf - 2, those figure 6's
+  compared  the fraction of it in bands 2 to Nf - 2, those figure 8's
             --drop-edge-bands variant compares
   below     the fraction of its Fourier power below (1 - A_frac) Delta F, the
-            tones' leak criterion in figure 6
+            tones' leak criterion in figure 8
   off_bin   <sin^2(pi f / Delta F)>, weighted by its Fourier power: 0 if all the
             power sat on band centres, 1 if all of it sat halfway between them
 and f_quantile, the frequency with POWER_QUANTILE of the Fourier power below it,
-which figure 6 uses for the EMRI's shading. The first two test the m = 0 explanation, the third whether it is instead an
-on-/off-bin effect like the tones'. Everything else is as in figure 6, whose
+which figure 8 uses for the EMRI's shading. The first two test the m = 0 explanation, the third whether it is instead an
+on-/off-bin effect like the tones'. Everything else is as in figure 8, whose
 setup and reference grid this reuses.
 
 Run with no arguments to compute (or reuse the cache) and plot. ``--only NF`` runs
@@ -26,20 +26,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from _colours import DARK, HAIRLINE, INK, PALETTE
-from fig6_mismatch_vs_dT import (A_FRAC, CACHE as FIG6_CACHE, EDGE_FREQ_SLICE,
-                                 NF as FIG6_NF, REF_NF, REF_ROWS, setup)
+from fig8_mismatch_vs_dT import (A_FRAC, CACHE as FIG8_CACHE, EDGE_FREQ_SLICE,
+                                 NF as FIG8_NF, REF_NF, REF_ROWS, setup)
 from parameters import (DT, EMRI_PARAMS, MAX_LAG_L, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 
 HERE = Path(__file__).parent
 CACHE = HERE / "cache" / "investigation_emri_m0.npz"
 
-# 80-3000 s, densely, plus figure 6's tilings in that range so it can look up its
+# 80-3000 s, densely, plus figure 8's tilings in that range so it can look up its
 # own points here; Nf must be even.
 NF = np.unique(np.concatenate([
     2 * np.round(np.logspace(np.log10(80), np.log10(3000), 40) / (2 * DT)).astype(int),
-    FIG6_NF[FIG6_NF * DT <= 3000]]))
-# Figure 6 shades the EMRI below (1 - A_frac) Delta F of the frequency with this
+    FIG8_NF[FIG8_NF * DT <= 3000]]))
+# Figure 8 shades the EMRI below (1 - A_frac) Delta F of the frequency with this
 # fraction of its Fourier power below it, as a tone is shaded below its own f.
 POWER_QUANTILE = 0.01
 
@@ -74,7 +74,7 @@ def compute(nfs):
                                              info["pad_left"], info["pad_right"])
         return hp, hc
 
-    # One reference on figure 6's grid, moved onto each tiling.
+    # One reference on figure 8's grid, moved onto each tiling.
     tick = time.perf_counter()
     ref_info = utils.wdm_padding_info(N_SIGNAL, REF_NF, extra_rows_left=REF_ROWS,
                                       extra_rows_right=REF_ROWS)
@@ -132,16 +132,16 @@ def compute(nfs):
 def plot(res):
     plt.style.use(HERE / "paper.mplstyle")
     delta_t = res["Nf"] * DT
-    fig6 = dict(np.load(FIG6_CACHE))
-    keep = fig6["Nf"] * DT <= delta_t[-1] * 1.05
+    fig8 = dict(np.load(FIG8_CACHE))
+    keep = fig8["Nf"] * DT <= delta_t[-1] * 1.05
 
     fig, axes = plt.subplots(3, 1, figsize=(3.375, 6.0), sharex=True,
                              layout="constrained")
     ax = axes[0]
     ax.plot(delta_t, res["mismatch"], color=DARK, lw=0.8, marker="o", ms=2.2,
             mec="white", mew=0.3, label="dense sweep")
-    ax.plot(fig6["Nf"][keep] * DT, fig6["EMRI"][keep], ls="none", marker="D", ms=4,
-            mfc="none", mec=PALETTE[4], mew=0.8, label="figure 6")
+    ax.plot(fig8["Nf"][keep] * DT, fig8["EMRI"][keep], ls="none", marker="D", ms=4,
+            mfc="none", mec=PALETTE[4], mew=0.8, label="figure 8")
     ax.set(yscale="log", ylabel="mismatch")
     ax.legend(loc="upper right", fontsize="small", frameon=False)
 

@@ -18,7 +18,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "plotting"))
 
 import WDM
-import fig6_mismatch_vs_dT as fig6
+import fig8_mismatch_vs_dT as fig8
 from parameters import DT, GC_PHI, GC_THETA, MAX_LAG_L, N_SIGNAL, NUM_INTERP_POINTS
 from WDM_LISAresponse import LISAresponse
 from WDM.code.time_delay_filters import shift_gpu
@@ -32,7 +32,7 @@ block = jax.block_until_ready
 
 
 def main(nfs):
-    orbits, start, _, _ = fig6.setup()
+    orbits, start, _, _ = fig8.setup()
     for Nf in nfs:
         _, wdm, response, consts = build(Nf, orbits, start)
         nodes = fs.table_nodes(wdm, NUM_INTERP_POINTS)

@@ -1,4 +1,4 @@
-"""Investigation beside figure 10: why second-generation X shows high-frequency
+"""Investigation beside figure 13: why second-generation X shows high-frequency
 structure that first-generation X and a single link do not, on a toy signal.
 
 With frozen, equal arms, X1 = (1 - D^2) and X2 = (1 - D^4) X1, with D the one-way
@@ -8,13 +8,13 @@ pi f tau << 1. The derivative weights the n-th harmonic by n against the
 fundamental, so X1 carries n and X2 n^2.
 
 The signal is a sum of harmonics of F0 whose band powers match the EMRI link's
-(figure 9), so the delays and derivatives are exact and analytic. Left, over the
-same third of a day as figure 10's zoom: the signal, and X1 and X2 from the exact
+(figure 12), so the delays and derivatives are exact and analytic. Left, over the
+same third of a day as figure 13's zoom: the signal, and X1 and X2 from the exact
 delays (coloured) and in the small-angle limit g = tau (thin, dashed). Right: the exact
 transfer functions |1 - D^2| and |(1 - D^2)(1 - D^4)| against that limit's
 2 pi f tau, with the harmonics marked. The derivative form with the exact g is
 checked against the exact delays and printed. Written to
-figures/investigations/fig10_tdi_harmonics_toy.pdf.
+figures/investigations/fig13_tdi_harmonics_toy.pdf.
 """
 
 from pathlib import Path
@@ -117,7 +117,7 @@ def main():
         a.grid(color=HAIRLINE, lw=0.4)
         a.set_axisbelow(True)
 
-    path = HERE / "figures" / "investigations" / "fig10_tdi_harmonics_toy.pdf"
+    path = HERE / "figures" / "investigations" / "fig13_tdi_harmonics_toy.pdf"
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path)
     print(f"wrote {path}")

@@ -22,7 +22,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "plotting"))
 
 import WDM
-import fig6_mismatch_vs_dT as fig6
+import fig8_mismatch_vs_dT as fig8
 from parameters import (DT, GC_PHI, GC_THETA, MAX_LAG_L, MONOCHROMATIC_PARAMS,
                         N_SIGNAL, NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 from WDM_LISAresponse import LISAresponse
@@ -64,7 +64,7 @@ def mismatch(a, b):
 
 
 def save(out, nfs):
-    orbits, start, signal_times, _ = fig6.setup()
+    orbits, start, signal_times, _ = fig8.setup()
     for Nf in nfs:
         info, wdm, response, consts = build(Nf, orbits, start)
         params = dict(MONOCHROMATIC_PARAMS[1], f=(round(3e-3/wdm.dF) + 0.4)*wdm.dF)
@@ -86,7 +86,7 @@ def save(out, nfs):
 def load(src, nfs):
     import fast_split_gpu as fg
 
-    orbits, start, _, _ = fig6.setup()
+    orbits, start, _, _ = fig8.setup()
     print(f"jax {jax.__version__} on {jax.devices()[0]}", flush=True)
     for Nf in nfs:
         _, wdm, response, consts = build(Nf, orbits, start)

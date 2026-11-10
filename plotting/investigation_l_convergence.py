@@ -12,7 +12,7 @@ A steeper (large d) or narrower (large A_frac) transition is longer in time, so
 its filters reach further in lag and need more L before the mismatch settles.
 Every point uses one grid padded for the largest L, so only the kernel changes
 along a curve, and one time-domain reference per r, transformed with each
-window's own WDM transform. Everything else is as in figure 7. The vertical line
+window's own WDM transform. Everything else is as in figure 9. The vertical line
 marks L = 25. (An EMRI version of this sweep is cached as
 investigation_l_convergence_emri.npz.)
 
@@ -39,7 +39,7 @@ CACHE = HERE / "cache" / "investigation_l_convergence.npz"
 OUT = HERE / "figures" / "investigations"
 ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
-NF = 250                                        # Delta T = 1000 s, as in figure 7
+NF = 250                                        # Delta T = 1000 s, as in figure 9
 DELTA_F = 1 / (2 * NF * DT)
 F_GW = FREQUENCIES[2]                           # 30 mHz
 M_BIN = int(round(F_GW / DELTA_F))
@@ -81,7 +81,7 @@ def compute(rs, windows, lags):
     data = read_orbit_file(str(ORBIT_FILE))
     orbit_times = data.t0 + data.dt * np.arange(data.size)
     orbits = InterpolatedOrbits(orbit_times, data.positions, data.velocities)
-    # 200 d in, as in figure 6, so the figures see the same stretch of orbit.
+    # 200 d in, as in figure 8, so the figures see the same stretch of orbit.
     start = orbit_times[0] + 200 * 86400.0
     signal_times = start + DT * np.arange(N_SIGNAL)
     link = utils.Link(1, 2)

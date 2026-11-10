@@ -1,7 +1,7 @@
 r"""
 ``split_amp_sinc_first`` with the linearly interpolated filter tables against
 the same model with the polynomial filters (`fast_split.add_poly`), both
-against the time-domain response, on figure 6's link and tilings: tones at
+against the time-domain response, on figure 8's link and tilings: tones at
 3 and 30 mHz with in-band offsets r, towards the Galactic centre. Run on the
 desktop (full-year time-domain references).
 
@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "plotting"))
 
 from scipy.interpolate import make_interp_spline
 
-import fig6_mismatch_vs_dT as fig6
-import investigation_fig6_delay_rate as inv
+import fig8_mismatch_vs_dT as fig8
+import investigation_fig8_delay_rate as inv
 from parameters import (DT, GC_PHI, GC_THETA, MONOCHROMATIC_PARAMS, N_SIGNAL,
                         NUM_INTEGRAL_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 from WDM_LISAresponse.code.lisa_response import response_sub as rs
@@ -35,7 +35,7 @@ OFFSETS = (0.0, 0.25, 0.45)
 
 
 def main(nfs):
-    orbits, start, signal_times, link = fig6.setup()
+    orbits, start, signal_times, link = fig8.setup()
     for Nf in nfs:
         tick = time.perf_counter()
         info, wdm, response, tables, centre, cut = inv.tiling(orbits, start, link, Nf)
