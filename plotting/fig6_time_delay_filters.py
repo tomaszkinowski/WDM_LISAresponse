@@ -10,34 +10,32 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
+import jax
+
 from WDM.code.discrete_wavelet_transform.WDM import WDM_transform
-from WDM.code.time_delay_filters.filters import (time_delay_filter_Tl_reference,
-                                                 time_delay_filter_Tprimel_reference)
+from WDM.code.time_delay_filters.filters import filter_functions
 
 from _colours import PALETTE, HAIRLINE
+
+jax.config.update("jax_enable_x64", True)
 
 HERE = Path(__file__).parent
 plt.style.use(HERE / "paper.mplstyle")
 
+# The filters depend only on the window shape, so any tiling gives the same curves;
+# this one just supplies the default d and A_frac.
 wdm = WDM_transform(dt=1.0, Nf=16, N=512)
 
 # Each ell takes the next PALETTE slot, so at most five.
 ELLS = [-15, -5, 0, 5, 15]
-# The filters repeat every N*dt = 32 dT, so +-16 dT is exactly one period: every
-# ell in [-16, 16) peaks inside it and nothing is drawn twice.
 X_MAX = 16                  # plotted range of delta, in units of dT
 
-delta_vals = np.linspace(-X_MAX, X_MAX, 40 * X_MAX + 1) * wdm.dT
+x = np.linspace(-X_MAX, X_MAX, 40 * X_MAX + 1)          # delta / dT
 
-Tl = {ell: np.array([time_delay_filter_Tl_reference(ell, delta, wdm.freqs, wdm.window_FD,
-                                                    wdm.dT, wdm.df)
-                     for delta in delta_vals])
-      for ell in ELLS}
-Tprimel = {ell: np.array([time_delay_filter_Tprimel_reference(ell, delta, wdm.freqs,
-                                                              wdm.window_FD, wdm.dT, wdm.dF,
-                                                              wdm.N, wdm.df)
-                          for delta in delta_vals])
-           for ell in ELLS}
+# filter_functions takes l - delta/dT; index 0 is T', index 1 is T
+filters = {ell: np.asarray(filter_functions(ell - x, wdm.d, wdm.A_frac)) for ell in ELLS}
+Tl = {ell: f[1] for ell, f in filters.items()}
+Tprimel = {ell: f[0] for ell, f in filters.items()}
 
 fig, (ax_T, ax_Tp) = plt.subplots(nrows=2, sharex=True, figsize=(3.375, 3.375))
 fig.subplots_adjust(hspace=0)
@@ -45,7 +43,6 @@ fig.subplots_adjust(hspace=0)
 for ax in (ax_T, ax_Tp):
     ax.axvspan(-0.5, 0.5, color=HAIRLINE, lw=0, zorder=0)
 
-x = delta_vals / wdm.dT
 for ell, c in zip(ELLS, PALETTE):
     ax_T.plot(x, Tl[ell], c=c, label=rf"${ell}$")
     ax_Tp.plot(x, Tprimel[ell], c=c)

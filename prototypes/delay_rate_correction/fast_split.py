@@ -533,8 +533,8 @@ def poly_filters(wdm, max_lag_L, degree, bound=REST_BOUND, num_nodes=17):
     s = np.cos(np.pi*(np.arange(num_nodes) + 0.5)/num_nodes)
     x = bound*s
     lags = np.arange(-max_lag_L, max_lag_L + 1)
-    TT = np.asarray(build_filter_tables(jnp.asarray(lags), jnp.asarray(x), wdm.freqs,
-                                        wdm.window_FD, wdm.dT, wdm.dF, wdm.df))
+    TT = np.asarray(build_filter_tables(jnp.asarray(lags), jnp.asarray(x/wdm.dT),
+                                        wdm.d, wdm.A_frac))
     u, du = u_grid(wdm)
     lag_phase = np.exp(2j*np.pi*np.outer(lags*wdm.dT, u))
     x_phase = np.exp(-2j*np.pi*np.outer(u, x))
