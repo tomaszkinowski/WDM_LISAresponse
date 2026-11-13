@@ -38,7 +38,7 @@ jax.config.update("jax_enable_x64", True)
 from jax.scipy.special import betaln
 
 from WDM.code.discrete_wavelet_transform import WDM
-from elements_delay_rate import bookkeeping, spectral, u_grid, window_and_derivative
+from elements_delay_rate import bookkeeping, spectral, u_nodes, window_and_derivative
 from WDM.code.utils.Meyer import nu_d
 
 
@@ -59,11 +59,11 @@ def window_second_derivative(wdm, f):
 
 def filter_second(wdm, l, x, sigma):
     """U_2, V_2, W_2 at delay x."""
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
     d2hi = window_second_derivative(wdm, u + 0.5*sigma*wdm.dF)
     phase = np.exp(2j*np.pi*u*(l*wdm.dT - x))*lo*d2hi
-    return np.sum(phase)*du, np.sum(u*phase)*du, np.sum(u*u*phase)*du
+    return np.sum(phase*du), np.sum(u*phase*du), np.sum(u*u*phase*du)
 
 
 def closed(wdm, n, m, l, sigma, delta, kappa2, kappac):

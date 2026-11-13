@@ -82,21 +82,44 @@ def u_grid(wdm, num=40001):
     return u, u[1] - u[0]
 
 
+def u_nodes(wdm, max_abs_lambda=100, per_piece=64):
+    r"""
+    Gauss-Legendre nodes and weights in :math:`f` for integrals of
+    :math:`\tilde\Phi(f-\sigma\Delta F/2)` times :math:`\tilde\Phi` or its
+    derivatives at :math:`f+\sigma\Delta F/2`, :math:`\sigma\in\{-1,0,1\}`.
+
+    The pieces are split at every kink of those windows, so each integrand is
+    smooth on each piece, with enough nodes to resolve
+    :math:`e^{2\pi i f(\ell\Delta T-x)}` for :math:`|\ell-x/\Delta T|\le`
+    `max_abs_lambda`.
+    """
+    A, edge = float(wdm.A_frac), 1. - float(wdm.A_frac)
+    kinks = sorted({s + k for s in (-0.5, 0., 0.5) for k in (A, -A, edge, -edge)})
+    nodes, weights = [], []
+    for a, b in zip(kinks[:-1], kinks[1:]):
+        num = per_piece + int(np.ceil(0.5*np.pi*max_abs_lambda*(b - a)))
+        g, w = np.polynomial.legendre.leggauss(num)
+        nodes.append(0.5*(b - a)*g + 0.5*(b + a))
+        weights.append(0.5*(b - a)*w)
+    dF = float(wdm.dF)
+    return np.concatenate(nodes)*dF, np.concatenate(weights)*dF
+
+
 def filter_T(wdm, l, x, sigma):
     """T_l (sigma=0) or T'_l (sigma=+-1) at delay x, evaluated analytically."""
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
     hi, _ = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
-    return np.sum(np.exp(2j*np.pi*u*(l*wdm.dT - x))*lo*hi)*du
+    return np.sum(np.exp(2j*np.pi*u*(l*wdm.dT - x))*lo*hi*du)
 
 
 def filter_UV(wdm, l, x, sigma):
     """U^sigma_l(x) and V^sigma_l(x)."""
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
     _, dhi = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
-    phase = np.exp(2j*np.pi*u*(l*wdm.dT - x))*lo*dhi
-    return np.sum(phase)*du, np.sum(u*phase)*du
+    phase = np.exp(2j*np.pi*u*(l*wdm.dT - x))*lo*dhi*du
+    return np.sum(phase), np.sum(u*phase)
 
 
 def bookkeeping(wdm, n, m, l, sigma, delta):

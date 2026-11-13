@@ -45,7 +45,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from elements_delay_rate import u_grid, window_and_derivative
+from elements_delay_rate import u_grid, u_nodes, window_and_derivative
 
 
 def build_rate_tables(wdm, max_lag_L, num_interp_points):
@@ -58,7 +58,7 @@ def build_rate_tables(wdm, max_lag_L, num_interp_points):
     tables : jnp.ndarray
         shape=(3, 4, 2L+1, P), indexed [sigma+1, (U_r, U_i, V_r, V_i)].
     """
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lags_dT = np.arange(-max_lag_L, max_lag_L + 1)*wdm.dT
     x = np.linspace(-0.5*wdm.dT, 0.5*wdm.dT, num_interp_points)
     lag_phase = np.exp(2j*np.pi*np.outer(lags_dT, u))
@@ -68,8 +68,8 @@ def build_rate_tables(wdm, max_lag_L, num_interp_points):
     for i, sigma in enumerate((-1, 0, 1)):
         lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
         _, dhi = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
-        U = (lag_phase*(lo*dhi)) @ x_phase*du
-        V = (lag_phase*(u*lo*dhi)) @ x_phase*du
+        U = (lag_phase*(lo*dhi*du)) @ x_phase
+        V = (lag_phase*(u*lo*dhi*du)) @ x_phase
         tables[i] = np.stack([U.real, U.imag, V.real, V.imag])
     return jnp.asarray(tables)
 
@@ -207,7 +207,7 @@ def build_rate_tables_2(wdm, max_lag_L, num_interp_points):
     """
     from elements_second_order import window_second_derivative
 
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lags_dT = np.arange(-max_lag_L, max_lag_L + 1)*wdm.dT
     x = np.linspace(-0.5*wdm.dT, 0.5*wdm.dT, num_interp_points)
     lag_phase = np.exp(2j*np.pi*np.outer(lags_dT, u))
@@ -218,11 +218,11 @@ def build_rate_tables_2(wdm, max_lag_L, num_interp_points):
         lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
         _, dhi = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
         d2hi = window_second_derivative(wdm, u + 0.5*sigma*wdm.dF)
-        U = (lag_phase*(lo*dhi)) @ x_phase*du
-        V = (lag_phase*(u*lo*dhi)) @ x_phase*du
-        U2 = (lag_phase*(lo*d2hi)) @ x_phase*du
-        V2 = (lag_phase*(u*lo*d2hi)) @ x_phase*du
-        W2 = (lag_phase*(u*u*lo*d2hi)) @ x_phase*du
+        U = (lag_phase*(lo*dhi*du)) @ x_phase
+        V = (lag_phase*(u*lo*dhi*du)) @ x_phase
+        U2 = (lag_phase*(lo*d2hi*du)) @ x_phase
+        V2 = (lag_phase*(u*lo*d2hi*du)) @ x_phase
+        W2 = (lag_phase*(u*u*lo*d2hi*du)) @ x_phase
         tables[i] = np.stack([U.real, U.imag, V.real, V.imag, U2.real, U2.imag,
                               V2.real, V2.imag, W2.real, W2.imag])
     return jnp.asarray(tables)

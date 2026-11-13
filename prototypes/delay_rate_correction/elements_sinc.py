@@ -31,14 +31,14 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 from WDM.code.discrete_wavelet_transform import WDM
-from elements_delay_rate import bookkeeping, u_grid, window_and_derivative
+from elements_delay_rate import bookkeeping, u_nodes, window_and_derivative
 
 
 def T1(wdm, l, sigma):
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
     hi, _ = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
-    return np.sum(u*np.exp(2j*np.pi*u*l*wdm.dT)*lo*hi)*du
+    return np.sum(u*np.exp(2j*np.pi*u*l*wdm.dT)*lo*hi*du)
 
 
 def direct(wdm, n, m, l, sigma):

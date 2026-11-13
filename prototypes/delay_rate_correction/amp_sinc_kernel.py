@@ -23,7 +23,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from elements_delay_rate import u_grid, window_and_derivative
+from elements_delay_rate import u_nodes, window_and_derivative
 
 
 def build_amp_table(wdm, max_lag_L):
@@ -31,13 +31,13 @@ def build_amp_table(wdm, max_lag_L):
     :math:`\overline{\kappa U^\sigma_l(0)}` for :math:`\sigma=-1,0,1` and
     :math:`|l|\le L`, shape (3, 2L+1) complex.
     """
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lags_dT = np.arange(-max_lag_L, max_lag_L + 1)*wdm.dT
     out = np.empty((3, len(lags_dT)), complex)
     for i, sigma in enumerate((-1, 0, 1)):
         lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
         _, dhi = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
-        U = np.exp(2j*np.pi*np.outer(lags_dT, u)) @ (lo*dhi)*du
+        U = np.exp(2j*np.pi*np.outer(lags_dT, u)) @ (lo*dhi*du)
         out[i] = np.conj(-1j/(2*np.pi)*U)
     return out
 
@@ -111,13 +111,13 @@ def build_sinc_table(wdm, max_lag_L):
     :math:`\overline{T^{(1)\sigma}_l}`, the first-order sinc elements of
     `elements_sinc.py`, shape (3, 2L+1) complex; pass to `amp_weights`.
     """
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lags_dT = np.arange(-max_lag_L, max_lag_L + 1)*wdm.dT
     out = np.empty((3, len(lags_dT)), complex)
     for i, sigma in enumerate((-1, 0, 1)):
         lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
         hi, _ = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
-        out[i] = np.conj(np.exp(2j*np.pi*np.outer(lags_dT, u)) @ (u*lo*hi)*du)
+        out[i] = np.conj(np.exp(2j*np.pi*np.outer(lags_dT, u)) @ (u*lo*hi*du))
     return out
 
 

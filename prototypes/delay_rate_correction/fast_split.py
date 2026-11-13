@@ -528,22 +528,22 @@ def poly_filters(wdm, max_lag_L, degree, bound=REST_BOUND, num_nodes=17):
     (T, T', then sigma = -1, 0, 1 times U_r, U_i, V_r, V_i) before the rate.
     """
     from WDM.code.time_delay_filters.filters import build_filter_tables
-    from elements_delay_rate import u_grid, window_and_derivative
+    from elements_delay_rate import u_nodes, window_and_derivative
 
     s = np.cos(np.pi*(np.arange(num_nodes) + 0.5)/num_nodes)
     x = bound*s
     lags = np.arange(-max_lag_L, max_lag_L + 1)
     TT = np.asarray(build_filter_tables(jnp.asarray(lags), jnp.asarray(x/wdm.dT),
                                         wdm.d, wdm.A_frac))
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lag_phase = np.exp(2j*np.pi*np.outer(lags*wdm.dT, u))
     x_phase = np.exp(-2j*np.pi*np.outer(u, x))
     rate = []
     for sigma in (-1, 0, 1):
         lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
         _, dhi = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
-        U = (lag_phase*(lo*dhi)) @ x_phase*du
-        V = (lag_phase*(u*lo*dhi)) @ x_phase*du
+        U = (lag_phase*(lo*dhi*du)) @ x_phase
+        V = (lag_phase*(u*lo*dhi*du)) @ x_phase
         rate += [U.real, U.imag, V.real, V.imag]
     values = np.concatenate([TT[::-1], np.stack(rate)])         # (14, 2L+1, nodes)
     vander = np.vander(s, degree + 1)

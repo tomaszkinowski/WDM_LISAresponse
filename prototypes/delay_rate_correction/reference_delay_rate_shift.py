@@ -29,7 +29,7 @@ import numpy as np
 import jax.numpy as jnp
 
 import oracle_local_delay as s
-from elements_delay_rate import u_grid, window_and_derivative
+from elements_delay_rate import u_nodes, window_and_derivative
 
 
 CASES = [(6, 0.0), (6, 0.49), (20, 0.0), (20, 0.4), (20, 0.49),
@@ -41,7 +41,7 @@ def build_UV_tables(wdm, max_lag_L, num_interp_points):
     :math:`U^\sigma_l(x)`, :math:`V^\sigma_l(x)` for :math:`\sigma=-1,0,1`,
     shape (3, 2L+1, P) complex each, on :math:`x\in[-\Delta T/2,\Delta T/2]`.
     """
-    u, du = u_grid(wdm)
+    u, du = u_nodes(wdm)
     lags_dT = np.arange(-max_lag_L, max_lag_L + 1)*wdm.dT
     x = np.linspace(-0.5*wdm.dT, 0.5*wdm.dT, num_interp_points)
 
@@ -53,8 +53,8 @@ def build_UV_tables(wdm, max_lag_L, num_interp_points):
     for i, sigma in enumerate((-1, 0, 1)):
         lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
         _, dhi = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
-        U[i] = (lag_phase*(lo*dhi)) @ x_phase*du
-        V[i] = (lag_phase*(u*lo*dhi)) @ x_phase*du
+        U[i] = (lag_phase*(lo*dhi*du)) @ x_phase
+        V[i] = (lag_phase*(u*lo*dhi*du)) @ x_phase
     return U, V, x
 
 
