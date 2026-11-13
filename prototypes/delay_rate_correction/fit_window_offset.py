@@ -27,20 +27,21 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 from WDM.code.discrete_wavelet_transform import WDM
-from elements_delay_rate import u_grid, window_and_derivative
+from elements_delay_rate import u_nodes, window_and_derivative
 
 RATE_MAX = 9.9e-5
 
 
 def G_table(wdm, sigma, lags, x, eps):
-    u, du = u_grid(wdm, num=20001)
-    lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
     out = np.empty((len(eps), len(lags), len(x)), complex)
-    lag_phase = np.exp(2j*np.pi*np.outer(lags*wdm.dT, u))
-    x_phase = np.exp(-2j*np.pi*np.outer(u, x))
     for k, e in enumerate(eps):
+        # the offset window moves its kinks, so each offset gets its own nodes
+        u, du = u_nodes(wdm, offset=e)
+        lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
         hi, _ = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF + e)
-        out[k] = (lag_phase*(lo*hi)) @ x_phase*du
+        lag_phase = np.exp(2j*np.pi*np.outer(lags*wdm.dT, u))
+        x_phase = np.exp(-2j*np.pi*np.outer(u, x))
+        out[k] = (lag_phase*(lo*hi*du)) @ x_phase
     return out
 
 

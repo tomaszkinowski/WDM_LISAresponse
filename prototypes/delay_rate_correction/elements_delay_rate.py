@@ -76,25 +76,23 @@ def window_and_derivative(wdm, f):
     return Phi, 2*np.pi*dPhi_domega
 
 
-def u_grid(wdm, num=40001):
-    edge = float(wdm.A + wdm.B)/(2*np.pi) + float(wdm.dF)
-    u = np.linspace(-edge, edge, num)
-    return u, u[1] - u[0]
-
-
-def u_nodes(wdm, max_abs_lambda=100, per_piece=64):
+def u_nodes(wdm, max_abs_lambda=100, per_piece=64, offset=0.0):
     r"""
     Gauss-Legendre nodes and weights in :math:`f` for integrals of
     :math:`\tilde\Phi(f-\sigma\Delta F/2)` times :math:`\tilde\Phi` or its
-    derivatives at :math:`f+\sigma\Delta F/2`, :math:`\sigma\in\{-1,0,1\}`.
+    derivatives at :math:`f+\sigma\Delta F/2+` `offset`,
+    :math:`\sigma\in\{-1,0,1\}`.
 
-    The pieces are split at every kink of those windows, so each integrand is
-    smooth on each piece, with enough nodes to resolve
-    :math:`e^{2\pi i f(\ell\Delta T-x)}` for :math:`|\ell-x/\Delta T|\le`
-    `max_abs_lambda`.
+    The pieces are split at every kink of those windows, with and without the
+    offset, so each integrand is smooth on each piece, with enough nodes to
+    resolve :math:`e^{2\pi i f(\ell\Delta T-x)}` for
+    :math:`|\ell-x/\Delta T|\le` `max_abs_lambda`.
     """
     A, edge = float(wdm.A_frac), 1. - float(wdm.A_frac)
-    kinks = sorted({s + k for s in (-0.5, 0., 0.5) for k in (A, -A, edge, -edge)})
+    # Phi(u + s + offset) has its kinks at u = k - s - offset; s runs over both signs
+    shift = float(offset)/float(wdm.dF)
+    kinks = sorted({s + k - o for s in (-0.5, 0., 0.5) for k in (A, -A, edge, -edge)
+                    for o in (0., shift)})
     nodes, weights = [], []
     for a, b in zip(kinks[:-1], kinks[1:]):
         num = per_piece + int(np.ceil(0.5*np.pi*max_abs_lambda*(b - a)))

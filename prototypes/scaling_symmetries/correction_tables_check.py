@@ -1,6 +1,6 @@
 """Are the delay-rate / amplitude / sinc / second-order correction tables a power of
 dF times a universal function of x = l - delta/dT, and how accurate is the
-40001-point u_grid sum against Gauss-Legendre in bin units?"""
+prototype builders against Gauss-Legendre in bin units?"""
 import sys, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "delay_rate_correction"))
@@ -77,8 +77,8 @@ t0 = time.perf_counter(); P1 = prototype_tables(w1); tp = time.perf_counter() - 
 t0 = time.perf_counter(); G1 = gl_tables(w1); tg = time.perf_counter() - t0
 G1hi = gl_tables(w1, q=160); P2 = prototype_tables(w2)
 ratio = float(w1.dF/w2.dF)
-print(f"build: u_grid {tp:.2f} s, Gauss-Legendre {tg:.2f} s (L={L}, P={P})")
-print(f"{'table':<10}{'GL q64 vs q160':>16}{'u_grid vs GL':>16}{'scaling k':>11}{'universal resid':>17}")
+print(f"build: prototype {tp:.2f} s, Gauss-Legendre {tg:.2f} s (L={L}, P={P})")
+print(f"{'table':<10}{'GL q64 vs q160':>16}{'proto vs GL':>16}{'scaling k':>11}{'universal resid':>17}")
 for key in P1:
     scale = np.abs(G1hi[key]).max()
     conv = np.abs(G1[key] - G1hi[key]).max()/scale

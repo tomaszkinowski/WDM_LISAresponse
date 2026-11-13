@@ -45,7 +45,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from elements_delay_rate import u_grid, u_nodes, window_and_derivative
+from elements_delay_rate import u_nodes, window_and_derivative
 
 
 def build_rate_tables(wdm, max_lag_L, num_interp_points):
@@ -378,22 +378,23 @@ def build_fit_tables(wdm, max_lag_L, num_interp_points, eps_max, degree,
         the coefficients of :math:`(\varepsilon/\varepsilon_{\max})^k`.
     """
     num_nodes = num_nodes or 4*degree
-    u, du = u_grid(wdm, num=20001)
     lags_dT = np.arange(-max_lag_L, max_lag_L + 1)*wdm.dT
     x = np.linspace(-0.5*wdm.dT, 0.5*wdm.dT, num_interp_points)
-    lag_phase = np.exp(2j*np.pi*np.outer(lags_dT, u))
-    x_phase = np.exp(-2j*np.pi*np.outer(u, x))
     z = np.cos(np.pi*(np.arange(num_nodes) + 0.5)/num_nodes)
     V = np.vander(z, degree + 1, increasing=True)[:, 1:]
 
     tables = np.empty((3, 2*degree, len(lags_dT), num_interp_points))
     for i, sigma in enumerate((-1, 0, 1)):
-        lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
-        hi0, _ = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
         diffs = np.empty((num_nodes, len(lags_dT)*num_interp_points), complex)
         for k, zk in enumerate(z):
+            # the offset window moves its kinks, so each offset gets its own nodes
+            u, du = u_nodes(wdm, offset=zk*eps_max)
+            lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
+            hi0, _ = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
             hi, _ = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF + zk*eps_max)
-            diffs[k] = ((lag_phase*(lo*(hi - hi0))) @ x_phase*du).ravel()
+            lag_phase = np.exp(2j*np.pi*np.outer(lags_dT, u))
+            x_phase = np.exp(-2j*np.pi*np.outer(u, x))
+            diffs[k] = ((lag_phase*(lo*(hi - hi0)*du)) @ x_phase).ravel()
         coef, *_ = np.linalg.lstsq(V, diffs, rcond=None)
         coef = coef.reshape(degree, len(lags_dT), num_interp_points)
         tables[i, 0::2], tables[i, 1::2] = coef.real, coef.imag
