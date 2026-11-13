@@ -366,8 +366,8 @@ def wdm_cut_info(pad_info : dict,
         Additional rows to drop at each end, beyond the padding and the
         taper. Optional.
     drop_m0 : bool
-        Drop the :math:`m=0` band, which ``WDM_transform`` computes wrongly
-        unless it was built with ``calc_m0=True``. Optional.
+        Drop the :math:`m=0` band, which the WDM time shift does not cover.
+        Optional.
 
     Returns
     -------

@@ -398,12 +398,8 @@ class LISAresponse:
             ``"time"`` is a real series on the ``times`` grid, shape (..., N);
             ``"wdm"`` is its wavelet coefficients ``wdm_class.dwt(h)``, shape
             (..., Nt, Nf). The response model is a time-domain one, so
-            ``"wdm"`` input is inverted with ``wdm_class.idwt`` first, and that
-            round trip - not the response - sets the accuracy of this option:
-            raise ``wdm_class`` :math:`q` towards :math:`N_t/2`, and set
-            ``calc_m0=True`` if any power sits in the lowest frequency band,
-            where the default is wrong at the tens of percent level. Passing
-            the time series is exact and costs nothing. Optional.
+            ``"wdm"`` input is inverted with ``wdm_class.idwt`` first.
+            Optional.
         out_domain : str
             Domain the coefficients are returned in, ``"time"`` or ``"wdm"``,
             with the same conventions. ``"wdm"`` applies ``wdm_class.dwt`` to

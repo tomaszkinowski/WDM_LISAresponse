@@ -159,8 +159,8 @@ def test_extra_rows_trim_further_at_both_ends():
 def test_the_frequency_slice_follows_the_flags(kwargs, expected):
     """m=0 is dropped by default, and kept when asked.
 
-    The lowest band is wrong unless the transform was built with
-    ``calc_m0=True``, so dropping it is the safe default.
+    The WDM time shift does not cover the lowest band, so dropping it is the
+    safe default.
     """
     info = wdm_padding_info(1024, NF, max_lag_L=25)
 
