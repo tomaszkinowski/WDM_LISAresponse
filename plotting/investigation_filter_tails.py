@@ -11,10 +11,7 @@ curve at ELL_GUIDE where it is still above the numerical floor (~1e-16). A_frac
 leaves the power law alone but widens the core: a narrow transition in frequency
 is long in time. The vertical line marks L = 25, the kernel's cutoff.
 
-The filters are evaluated from their defining sums, as
-time_delay_filter_Tl_reference and time_delay_filter_Tprimel_reference do, but
-for every lag at once. They depend only on the window, in units of dT, so a small
-grid (Nf = 16) serves; Nt = 1024 keeps the periodic copies far from ell <= 300.
+The filters come from filter_functions, which depends only on the window shape.
 """
 
 from pathlib import Path
@@ -29,7 +26,6 @@ from parameters import MAX_LAG_L
 HERE = Path(__file__).parent
 OUT = HERE / "figures" / "investigations"
 
-NF, NT = 16, 1024
 ELLS = np.arange(1, 301)
 N_DELTA = 21
 ELL_GUIDE = 60                                  # where each guide line meets its curve
@@ -46,22 +42,14 @@ SWEEPS = {
 
 def filter_tails(A_frac, d):
     """max over delta of |T_ell| and |T'_ell| for every lag in ELLS."""
-    from WDM.code.discrete_wavelet_transform.WDM import WDM_transform
+    import jax
+    jax.config.update("jax_enable_x64", True)
+    from WDM.code.time_delay_filters.filters import filter_functions
 
-    wdm = WDM_transform(dt=1.0, Nf=NF, N=NF * NT, d=d, A_frac=A_frac)
-    freqs, window = np.asarray(wdm.freqs), np.asarray(wdm.window_FD)
-    df, dT = float(wdm.df), float(wdm.dT)
-    # T'_ell pairs the windows of bands half a band either side, as the reference does.
-    shift = int(0.5 * float(wdm.dF) / df)
-    index = np.arange(len(freqs))
-    pair = window[(index - shift) % len(freqs)] * window[(index + shift) % len(freqs)]
-
-    T, T_prime = np.zeros(len(ELLS)), np.zeros(len(ELLS))
-    for delta in np.linspace(-0.5, 0.5, N_DELTA, endpoint=False) * dT:
-        phase = np.exp(2j * np.pi * np.outer(ELLS * dT - delta, freqs))
-        T = np.maximum(T, np.abs((phase @ window ** 2).real * df))
-        T_prime = np.maximum(T_prime, np.abs((phase @ pair).real * df))
-    return T, T_prime
+    # x = ell - delta/dT over delays -dT/2 <= delta < dT/2; index 0 is T', 1 is T
+    shifts = np.linspace(-0.5, 0.5, N_DELTA, endpoint=False)
+    filters = np.abs(np.asarray(filter_functions(ELLS[:, None] - shifts[None, :], d, A_frac)))
+    return filters[1].max(axis=1), filters[0].max(axis=1)
 
 
 def plot(sweep):
