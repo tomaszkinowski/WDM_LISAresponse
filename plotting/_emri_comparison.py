@@ -34,7 +34,7 @@ ROOT = HERE.parent
 ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
 NF = 2500                                       # Delta T = 1e4 s
-ZOOM_DAY = 200.0                                # zoom start, days after the signal starts
+ZOOM_DAY = 240.0                                # zoom start, days after the signal starts
 ZOOM_DAYS = 1 / 3
 WAVEFORM_CACHE = HERE / "cache" / "emri_waveform.npz"
 

@@ -31,11 +31,12 @@ def cut_span(nf=emri.NF):
     return rows.start * nf - info["pad_left"], rows.stop * nf - info["pad_left"]
 
 
-def main():
+def draw(h_plus, h_cross, path):
+    """The figure for a whole-record h+ and hx (unpadded, from the signal's start)."""
     plt.style.use(HERE / "paper.mplstyle")
     nf = emri.NF
     first, stop = cut_span(nf)
-    wave = dict(zip(NAMES, (h[first:stop] for h in emri.waveform(N_SIGNAL))))
+    wave = dict(zip(NAMES, (h[first:stop] for h in (h_plus, h_cross))))
     t = DT * np.arange(first, stop) / 86400.0
     scale = 10.0 ** np.floor(np.log10(max(np.max(np.abs(h)) for h in wave.values())))
 
@@ -80,9 +81,13 @@ def main():
                         ncols=2, fontsize="small", frameon=False, handlelength=1.8)
     for handle in legend.legend_handles:
         handle.set_linewidth(1.5)
-    path = HERE / "figures" / "fig7_emri_polarisations.pdf"
     fig.savefig(path)
+    plt.close(fig)
     print(f"wrote {path}")
+
+
+def main():
+    draw(*emri.waveform(N_SIGNAL), HERE / "figures" / "fig7_emri_polarisations.pdf")
 
 
 if __name__ == "__main__":
