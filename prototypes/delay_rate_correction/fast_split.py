@@ -5,9 +5,11 @@ The model is `response_corrections.split_responses`' ``split_amp_sinc_first``:
 the waveform arrives already evaluated at :math:`t+\delta_R(t)`, with
 :math:`\delta_R=\hat n\cdot x_c/c` the Roemer delay of the constellation
 centre, and each link adds the amplitude-rate and sinc terms to its unshifted
-grid and shifts the rest :math:`\delta_n-\delta_R(t_n)` with the first-order
-delay-rate kernel. The input is the transforms of that warped waveform, as
-production's input is the transforms of the plain one.
+grid and shifts the rest with the first-order delay-rate kernel. The rest is
+the delay that composes with the warp to :math:`\delta_n`,
+:math:`(\delta_n-\delta_R(t_n))/(1+\dot\delta_R(t_n))`. The input is the
+transforms of that warped waveform, as production's input is the transforms
+of the plain one.
 
 What changes is only the arrangement:
 
@@ -156,7 +158,11 @@ def _geometry(wdm, consts, theta, phi):
     proj_p, proj_c, tau, n_hat = rs.compute_angular_geometry_wdm(
         theta, phi, consts["ltt"], consts["link_direction"])
     delta = rs.compute_time_shifts(n_hat, consts["receiver_position"], tau)
-    rest = (delta - roemer_rows(theta[0], phi[0], consts["centre"]))[0]
+    # Shifting h(t + delta_R(t)) by the rest gives h(t + rest + delta_R(t + rest)), so the
+    # rest solves rest + delta_R(t_n + rest) = delta_n; to first order in the rest (the
+    # next order is ~1e-9 s) that is rest = (delta_n - delta_R(t_n))/(1 + delta_R'(t_n)).
+    roemer = roemer_rows(theta[0], phi[0], consts["centre"])
+    rest = ((delta - roemer)/(1 + jnp.gradient(roemer, wdm.dT)))[0]
     ltt, proj_p, proj_c, tau = landing_sliced(
         jnp.stack(jnp.broadcast_arrays(consts["ltt"], proj_p, proj_c, tau)),
         rest, wdm.dT)[:, 0]

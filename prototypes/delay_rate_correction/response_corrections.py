@@ -45,8 +45,11 @@ def build_tables(wdm, max_lag_L, num_interp_points):
                 sinc=amp_weights(build_sinc_table(wdm, max_lag_L)))
 
 
-def _grids(response, wdm, tables, theta, phi, wp, wc, link_index, delay_offset):
-    """The per-row delay, the plain unshifted grid and its two corrections."""
+def _grids(response, wdm, tables, theta, phi, wp, wc, link_index, delay_offset,
+           compose=False):
+    """The per-row delay, the plain unshifted grid and its two corrections. With
+    ``compose``, the delay left after ``delay_offset`` is the one that composes with a
+    warp by the offset to the full delay (`split_responses`)."""
     from WDM_LISAresponse.code.lisa_response import response_sub as rs
 
     idx = jnp.asarray([link_index])
@@ -57,6 +60,9 @@ def _grids(response, wdm, tables, theta, phi, wp, wc, link_index, delay_offset):
     delta = rs.compute_time_shifts(n_hat, response.receiver_position[idx], tau)[0, 0]
     if delay_offset is not None:
         delta = delta - jnp.asarray(delay_offset)
+        if compose:
+            # rest + offset(t_n + rest) = delta_n, to first order in the rest
+            delta = delta/(1 + jnp.gradient(jnp.asarray(delay_offset), wdm.dT))
     # the detector factors where each row lands, as in `one_arm_response_wdm`
     ltt, proj_p, proj_c, tau = rs.evaluate_at_landing_times(
         jnp.stack(jnp.broadcast_arrays(ltt, proj_p, proj_c, tau)), delta, wdm.dT)
@@ -85,12 +91,13 @@ def split_responses(response, wdm, tables, theta, phi, wp_warped, wc_warped,
     The split-delay variants, each an (Nt, Nf) numpy array.
 
     ``wp_warped``, ``wc_warped`` are the transforms of the waveform evaluated at
-    :math:`t+\delta_R(t)`; ``roemer_rows`` is :math:`\delta_R(t_n)`, taken off
-    the per-row delay so the plain shift carries only the per-link rest.
+    :math:`t+\delta_R(t)`; ``roemer_rows`` is :math:`\delta_R(t_n)`. The shifts
+    carry the per-link rest, which composes with the warp to the full delay:
+    :math:`\mathrm{rest}_n+\delta_R(t_n+\mathrm{rest}_n)=\delta_n`.
     """
     delta, unshifted, amp_term, sinc_term = _grids(
         response, wdm, tables, theta, phi, wp_warped, wc_warped, link_index,
-        roemer_rows)
+        roemer_rows, compose=True)
     shift = lambda grid: np.asarray(
         wdm.apply_variable_time_shift(response.filter_tables, grid, delta))
     full = unshifted + amp_term + sinc_term

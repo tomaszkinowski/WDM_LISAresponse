@@ -33,14 +33,14 @@ def main():
     ax.axvspan(*fig8.DT_BAND, color=PALETTE[3], alpha=0.3, lw=0, zorder=0.5)
     markers = dict(marker="o", ms=2.5, mec="white", mew=0.4)
     hollow = dict(ls="none", marker="o", ms=2.5, mfc="white", mew=0.7, zorder=5)
-    series = ((production["EMRI"], MUTED, 0.8, "production"),
-              (corrected["EMRI"], DARK, 1.2, "corrected"))
+    series = ((production["EMRI"], MUTED, 0.8, r"0$^{\mathrm{th}}$-order response"),
+              (corrected["EMRI"], DARK, 1.2, r"1$^{\mathrm{st}}$-order response"))
     for values, colour, lw, _ in series:
         ax.plot(delta_t, values, color=colour, lw=lw, zorder=4, **markers)
         ax.plot(delta_t[leaks], values[leaks], mec=colour, **hollow)
 
     ax.set(xscale="log", yscale="log", xlim=(delta_t[0] / 1.3, delta_t[-1] * 1.3),
-           xlabel=r"$\Delta T = N_f\,\delta t$ [s]", ylabel="mismatch")
+           xlabel=r"$\Delta T$ [s]", ylabel="mismatch")
     ax.grid(color=HAIRLINE, lw=0.4)
     ax.set_axisbelow(True)
     top = ax.secondary_xaxis("top", functions=(lambda x: 5e2 / np.asarray(x, float),
@@ -51,7 +51,7 @@ def main():
                for _, colour, lw, _ in series]
     handles.append(Line2D([], [], mec=INK, **hollow))
     labels = [label for *_, label in series] + [r"power leaks into $m = 0$"]
-    fig.legend(handles, labels, loc="outside lower center", fontsize="small", ncols=3,
+    fig.legend(handles, labels, loc="outside lower center", fontsize="small", ncols=2,
                handlelength=1.4, handletextpad=0.5, columnspacing=0.9, frameon=False)
 
     path = HERE / "figures" / "fig_new_emri_mismatch_corrected.pdf"

@@ -123,7 +123,7 @@ def compute(lags):
     return out
 
 
-def plot(res):
+def plot(res, path=HERE / "figures" / "fig11_lag_truncation.pdf"):
     plt.style.use(HERE / "paper.mplstyle")
     values = np.concatenate([res[name] for name in NAMES])
     bottom = np.nanmin(values) / 3
@@ -144,9 +144,9 @@ def plot(res):
     ax.grid(color=HAIRLINE, lw=0.4)
     ax.set_axisbelow(True)
 
-    (HERE / "figures").mkdir(exist_ok=True)
-    fig.savefig(HERE / "figures" / "fig11_lag_truncation.pdf")
-    print(f"wrote {HERE / 'figures' / 'fig11_lag_truncation.pdf'}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path)
+    print(f"wrote {path}")
 
 
 if __name__ == "__main__":

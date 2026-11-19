@@ -1,6 +1,6 @@
 """What figures 12 and 13 share: the EMRI on figure 8's grid, the four codes compared
 on it, the printed mismatches, and the figure drawn for each quantity - the whole
-record and a third-of-a-day zoom. Investigations, in figures/investigations/: the same
+record and a quarter-day zoom. Investigations, in figures/investigations/: the same
 with the source's h+ and hx over the zoom added, and the residuals over the zoom.
 
 The four are our wavelet response (WDM), our time-domain reference (TD),
@@ -35,7 +35,7 @@ ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
 NF = 2500                                       # Delta T = 1e4 s
 ZOOM_DAY = 240.0                                # zoom start, days after the signal starts
-ZOOM_DAYS = 1 / 3
+ZOOM_DAYS = 0.25
 WAVEFORM_CACHE = HERE / "cache" / "emri_waveform.npz"
 
 METHODS = ("WDM", "TD", "GWR", "FLR")
@@ -238,7 +238,7 @@ def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=Z
 
     zoom_span = (zoom_day, zoom_day + ZOOM_DAYS)
     window = (t >= zoom_span[0]) & (t < zoom_span[1])
-    # A third of a day holds ~70 cycles, so thin solid lines: dashes and a wide underlay would
+    # A quarter of a day holds ~50 cycles, so thin solid lines: dashes and a wide underlay would
     # only fill the band in.
     names = [labels[name] for name in methods]
     label = (" and ".join(names) if len(names) == 2
@@ -335,7 +335,7 @@ def plot_residuals(res, path, labels, zoom_day=ZOOM_DAY):
     print(f"wrote {path}")
 
 
-def main(compute, stem, names, labels, quantity, symbol, residual=None):
+def main(compute, stem, names, labels, quantity, symbol, residual=None, variant=None):
     """The command line both figures share. ``stem`` (e.g. fig12_emri_link) names the
     cache and the mismatch file; ``names`` the figure's file and the residuals' file.
     The figure goes to figures/, and to figures/investigations/ again with the
@@ -345,24 +345,30 @@ def main(compute, stem, names, labels, quantity, symbol, residual=None):
     No arguments: compute (or reuse the cache) at Nf = NF and plot. ``--short``: 2**19
     samples (24 d), printed and drawn into figures/investigations/ without caching.
     ``--nf NF``: the whole record at another tiling, cached and drawn as an
-    investigation."""
+    investigation. ``variant`` (e.g. "corrected") suffixes the cache and every file
+    with it, the figure and the mismatches still going to figures/."""
     investigations = HERE / "figures" / "investigations"
+    tag = f"_{variant}" if variant else ""
     if "--short" in sys.argv:
         res = compute(2 ** 19, NF)
         print(summary(res, labels, quantity))
         wave = waveform(2 ** 19)
-        plot_signals(res, investigations / f"{names[0]}_waveform_short.pdf", labels,
+        plot_signals(res, investigations / f"{names[0]}_waveform{tag}_short.pdf", labels,
                      symbol, wave, residual, zoom_day=10.0)
-        plot_residuals(res, investigations / f"{names[1]}_short.pdf", labels,
+        plot_residuals(res, investigations / f"{names[1]}{tag}_short.pdf", labels,
                        zoom_day=10.0)
         return
 
+    figure = stem.split("_")[0]
     nf, cache = NF, HERE / "cache" / f"{stem}_comparison.npz"
     figures, suffix = HERE / "figures", ""
+    if variant:
+        cache = HERE / "cache" / f"investigation_{figure}{tag}.npz"
+        suffix = tag
     if "--nf" in sys.argv:
         nf = int(sys.argv[sys.argv.index("--nf") + 1])
-        cache = HERE / "cache" / f"investigation_{stem.split('_')[0]}_nf{nf}.npz"
-        figures, suffix = investigations, f"_nf{nf}"
+        cache = HERE / "cache" / f"investigation_{figure}{tag}_nf{nf}.npz"
+        figures, suffix = investigations, f"{tag}_nf{nf}"
 
     if cache.exists():
         res = dict(np.load(cache))
