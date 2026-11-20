@@ -29,7 +29,7 @@ def main():
     delta_t = corrected["Nf"] * DT
     leaks = delta_t < fig8.emri_shade_edge()
 
-    fig, ax = plt.subplots(figsize=(3.375, 2.5), layout="constrained")
+    fig, ax = plt.subplots(figsize=(3.375, 2.66), layout="constrained")
     ax.axvspan(*fig8.DT_BAND, color=PALETTE[3], alpha=0.3, lw=0, zorder=0.5)
     markers = dict(marker="o", ms=2.5, mec="white", mew=0.4)
     hollow = dict(ls="none", marker="o", ms=2.5, mfc="white", mew=0.7, zorder=5)

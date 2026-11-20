@@ -205,12 +205,12 @@ def zoom_ticks(ax):
 
 
 def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=ZOOM_DAY,
-                 methods=METHODS):
+                 methods=METHODS, gain=None):
     """The whole record over a zoom of ZOOM_DAYS, drawn once (the first of
     ``methods``) for all of them, which coincide at this scale; with ``wave``, a third panel of the source's h+ and hx over the same zoom.
     ``symbol`` is the quantity's LaTeX symbol. ``residual``, a pair of codes,
-    overlays their difference on the zoom, magnified by the power of ten that brings
-    it to the signal's size."""
+    overlays their difference on the zoom, magnified by ``gain`` (default: the power
+    of ten that brings it to the signal's size)."""
     plt.style.use(HERE / "paper.mplstyle")
     nf = int(res["Nf"])
     shown = methods[0]
@@ -248,8 +248,9 @@ def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=Z
     if residual is not None:
         a, b = residual
         difference = (res[a] - res[b])[window]
-        gain = 10.0 ** np.floor(np.log10(np.max(np.abs(res[a][window]))
-                                         / np.max(np.abs(difference))))
+        if gain is None:
+            gain = 10.0 ** np.floor(np.log10(np.max(np.abs(res[a][window]))
+                                             / np.max(np.abs(difference))))
         handles += zoom.plot(
             t[window], gain * difference / scale, color=RESIDUAL_COLOUR, lw=0.4, zorder=6,
             label=rf"({labels[a]} $-$ {labels[b]}) $\times 10^{{{int(np.log10(gain))}}}$")
@@ -335,12 +336,13 @@ def plot_residuals(res, path, labels, zoom_day=ZOOM_DAY):
     print(f"wrote {path}")
 
 
-def main(compute, stem, names, labels, quantity, symbol, residual=None, variant=None):
+def main(compute, stem, names, labels, quantity, symbol, residual=None, variant=None,
+         gain=None):
     """The command line both figures share. ``stem`` (e.g. fig12_emri_link) names the
     cache and the mismatch file; ``names`` the figure's file and the residuals' file.
     The figure goes to figures/, and to figures/investigations/ again with the
     waveform panel (``_waveform``) beside the residuals. ``residual`` is passed to
-    plot_signals.
+    plot_signals, as is ``gain``.
 
     No arguments: compute (or reuse the cache) at Nf = NF and plot. ``--short``: 2**19
     samples (24 d), printed and drawn into figures/investigations/ without caching.
@@ -354,7 +356,7 @@ def main(compute, stem, names, labels, quantity, symbol, residual=None, variant=
         print(summary(res, labels, quantity))
         wave = waveform(2 ** 19)
         plot_signals(res, investigations / f"{names[0]}_waveform{tag}_short.pdf", labels,
-                     symbol, wave, residual, zoom_day=10.0)
+                     symbol, wave, residual, zoom_day=10.0, gain=gain)
         plot_residuals(res, investigations / f"{names[1]}{tag}_short.pdf", labels,
                        zoom_day=10.0)
         return
@@ -381,7 +383,7 @@ def main(compute, stem, names, labels, quantity, symbol, residual=None, variant=
     figures.mkdir(parents=True, exist_ok=True)
     (figures / f"{stem}_mismatches{suffix}.txt").write_text(text + "\n")
     plot_signals(res, figures / f"{names[0]}{suffix}.pdf", labels, symbol,
-                 residual=residual)
+                 residual=residual, gain=gain)
     plot_signals(res, investigations / f"{names[0]}_waveform{suffix}.pdf", labels, symbol,
-                 waveform(N_SIGNAL), residual)
+                 waveform(N_SIGNAL), residual, gain=gain)
     plot_residuals(res, investigations / f"{names[1]}{suffix}.pdf", labels)

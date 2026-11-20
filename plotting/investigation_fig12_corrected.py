@@ -81,4 +81,4 @@ if __name__ == "__main__":
     emri.main(compute, "fig12_emri_link",
               ("fig12_emri_link_signals", "fig12_emri_link_residuals"),
               LABELS, "link 1 -> 2", r"\delta\ell_{1\to2}", residual=("WDM", "GWR"),
-              variant="corrected")
+              variant="corrected", gain=1e3)
