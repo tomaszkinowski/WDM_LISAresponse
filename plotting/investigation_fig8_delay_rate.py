@@ -1,8 +1,7 @@
 """Figure 14 with the prototype response corrections.
 
 Figure 14 (fig14_mismatch_vs_dT_zeroth_order.py) recomputed several ways from the same
-responses, via prototypes/delay_rate_correction/response_corrections.py in this
-repository:
+responses, via first_order/response_corrections.py:
 
 - production: the wavelet response as figure 14 computes it, on the current
   WDM_GW_wavelets (which fixes the T' filter half-bin offset when Nt = 2 mod 4,
@@ -21,8 +20,7 @@ repository:
 
 Tilings, signals, references, on-/off-bin frequencies, the cut (padding, taper
 and m = 0) and the plot are figure 14's own; fig9_mismatch_vs_dT.py
-redraws the split_amp_sinc_first variant as figure 9. ../prototypes/delay_rate_correction
-must be on PYTHONPATH. Run with no arguments to compute the variants without caches and plot them all;
+redraws the split_amp_sinc_first variant as figure 9. Run with no arguments to compute the variants without caches and plot them all;
 ``--only NF`` runs one tiling and the bounds at it, prints, caches nothing.
 ``--part K/COUNT`` computes tilings K, K + COUNT, ... into cache/parts/ and
 stops, so COUNT processes can split the work; ``--merge COUNT`` assembles
@@ -41,7 +39,7 @@ from parameters import (DT, EMRI_PARAMS, GC_PHI, GC_THETA, MAX_LAG_L,
                         MONOCHROMATIC_PARAMS, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 
-from response_corrections import (SPLIT_VARIANTS, VARIANTS as CORRECTED_VARIANTS,
+from first_order.response_corrections import (SPLIT_VARIANTS, VARIANTS as CORRECTED_VARIANTS,
                                   build_tables, responses as corrected,
                                   split_responses)
 

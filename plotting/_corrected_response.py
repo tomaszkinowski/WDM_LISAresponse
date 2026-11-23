@@ -1,20 +1,19 @@
 """The corrected wavelet response (split_amp_sinc_first) for the investigation scripts,
-in the jitted every-link form of prototypes/delay_rate_correction/fast_split.py
+in the jitted every-link form of first_order/fast_split.py
 (float64, interpolated tables).
 
 The waveform goes in already evaluated at t + delta_R(t), delta_R the Roemer delay of
 the constellation centre, as figure 9 does it: tones analytically (tone_warp), the
 EMRI by quintic spline (spline_warp). The lag range and interpolation points of every
 correction table are those of the response's own filter tables.
-../prototypes/delay_rate_correction must be on PYTHONPATH.
 """
 
 import numpy as np
 
-import fast_split as fs
-from amp_sinc_kernel import amp_weights, build_amp_table, build_sinc_table
+from first_order import fast_split as fs
+from first_order.amp_sinc_kernel import amp_weights, build_amp_table, build_sinc_table
 from investigation_fig8_delay_rate import spline_warp, tone_warp  # noqa: F401
-from rate_kernel import build_rate_tables
+from first_order.rate_kernel import build_rate_tables
 
 
 def constants(response, wdm):

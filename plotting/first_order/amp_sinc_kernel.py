@@ -23,7 +23,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from elements_delay_rate import u_nodes, window_and_derivative
+from .elements_delay_rate import u_nodes, window_and_derivative
 
 
 def build_amp_table(wdm, max_lag_L):

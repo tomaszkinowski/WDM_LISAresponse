@@ -534,7 +534,7 @@ def poly_filters(wdm, max_lag_L, degree, bound=REST_BOUND, num_nodes=17):
     (T, T', then sigma = -1, 0, 1 times U_r, U_i, V_r, V_i) before the rate.
     """
     from WDM.code.time_delay_filters.filters import build_filter_tables
-    from elements_delay_rate import u_nodes, window_and_derivative
+    from .elements_delay_rate import u_nodes, window_and_derivative
 
     s = np.cos(np.pi*(np.arange(num_nodes) + 0.5)/num_nodes)
     x = bound*s

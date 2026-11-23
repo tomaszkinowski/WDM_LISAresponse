@@ -16,7 +16,7 @@ below TAPS_SPLIT and 20 above: at 12 the reference's own error reaches 2e-9 at
 0.05 Hz and 3e-4 at 0.09 Hz (dt = 4 s), while 20 taps hold it near 1e-12 up to
 0.055 Hz, so the cells stop at 0.05 Hz.
 
-../prototypes/delay_rate_correction must be on PYTHONPATH. Run with no arguments
+Run with no arguments
 to plot from the cache; ``--part K/COUNT`` computes tilings K, K + COUNT, ...
 into cache/parts/ and stops; ``--merge COUNT`` assembles them and plots. The colour
 bar sits on top, and the right axis is Delta F = 1/(2 Delta T).

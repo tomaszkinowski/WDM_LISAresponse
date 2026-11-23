@@ -18,7 +18,7 @@ investigation_fig12_zeroth_order.py.
 Run with no arguments to compute (or reuse the cache) and plot. ``--short`` runs
 2**19 samples (24 d), prints the mismatches and draws into figures/investigations/
 without caching. ``--nf NF`` runs the whole record at another tiling, cached and
-drawn as an investigation. ../prototypes/delay_rate_correction must be on PYTHONPATH.
+drawn as an investigation.
 """
 
 import time

@@ -38,7 +38,7 @@ jax.config.update("jax_enable_x64", True)
 from jax.scipy.special import betaln
 
 from WDM.code.discrete_wavelet_transform import WDM
-from elements_delay_rate import bookkeeping, spectral, u_nodes, window_and_derivative
+from .elements_delay_rate import bookkeeping, spectral, u_nodes, window_and_derivative
 from WDM.code.utils.Meyer import nu_d
 
 

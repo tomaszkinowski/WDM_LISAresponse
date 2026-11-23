@@ -6,7 +6,6 @@ zeroth-order version, fig16_lag_truncation_zeroth_order.py).
 
 Writes figures/fig11_lag_truncation.pdf; cache cache/fig11_lag_truncation.npz.
 ``--only L`` runs one L, prints it and caches nothing.
-../prototypes/delay_rate_correction must be on PYTHONPATH.
 """
 
 import sys

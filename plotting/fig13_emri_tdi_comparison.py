@@ -16,7 +16,7 @@ and written to figures/fig13_emri_tdi_mismatches.txt. Cache
 cache/fig13_emri_tdi_comparison.npz; the three other codes' X are cached apart
 (cache/investigation_fig13_references_nfNF.npz). The zeroth-order version is
 investigation_fig13_zeroth_order.py. Options as figure 12's (``--short``,
-``--nf NF``). ../prototypes/delay_rate_correction must be on PYTHONPATH.
+``--nf NF``).
 """
 
 import time

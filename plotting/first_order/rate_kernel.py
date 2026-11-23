@@ -45,7 +45,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from elements_delay_rate import u_nodes, window_and_derivative
+from .elements_delay_rate import u_nodes, window_and_derivative
 
 
 def build_rate_tables(wdm, max_lag_L, num_interp_points):
@@ -205,7 +205,7 @@ def build_rate_tables_2(wdm, max_lag_L, num_interp_points):
     grid, shape (3, 10, 2L+1, P), indexed [sigma+1, (U_r, U_i, V_r, V_i,
     U2_r, U2_i, V2_r, V2_i, W2_r, W2_i)].
     """
-    from elements_second_order import window_second_derivative
+    from .elements_second_order import window_second_derivative
 
     u, du = u_nodes(wdm)
     lags_dT = np.arange(-max_lag_L, max_lag_L + 1)*wdm.dT

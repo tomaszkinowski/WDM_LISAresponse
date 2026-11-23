@@ -28,9 +28,9 @@ carries, the per-link rest in the split variants.
 import numpy as np
 import jax.numpy as jnp
 
-from amp_sinc_kernel import (amp_weights, apply_amplitude_rate, apply_sinc_rate,
+from .amp_sinc_kernel import (amp_weights, apply_amplitude_rate, apply_sinc_rate,
                         build_amp_table, build_sinc_table, sinc_slope)
-from rate_kernel import (apply_corrected_shift_2, apply_rate_corrected_shift,
+from .rate_kernel import (apply_corrected_shift_2, apply_rate_corrected_shift,
                          build_rate_tables, build_rate_tables_2)
 
 VARIANTS = ("production", "first", "full", "full_sinc", "amp_sinc_first")
