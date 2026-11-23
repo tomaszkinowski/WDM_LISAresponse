@@ -44,7 +44,7 @@ _VENDORED = ("libstdc++.6.dylib",)
 #: Seconds at each end of their record that are not valid, their ``t_buffer``.
 T_BUFFER = 10000.0
 
-#: Second-generation Michelson channels by default, as ``tdi.TDIgen2`` forms.
+#: Second-generation Michelson channels, as ``tdi.TDIgen2`` forms.
 TDI_GENERATION = "2nd generation"
 TDI_CHANNELS = "XYZ"
 
@@ -132,8 +132,7 @@ def dead_samples(cfg) -> int:
     return int(np.ceil(T_BUFFER / cfg.dt))
 
 
-def run(response_class, orbits, cfg, h_plus, h_cross, theta, phi,
-        tdi: str = TDI_GENERATION) -> tuple:
+def run(response_class, orbits, cfg, h_plus, h_cross, theta, phi) -> tuple:
     r"""Link responses and TDI channels from ``fastlisaresponse``, on our grid.
 
     Parameters
@@ -148,8 +147,6 @@ def run(response_class, orbits, cfg, h_plus, h_cross, theta, phi,
         The padded record our response was given. Array shape=(cfg.N,).
     theta, phi : float
         Source direction, in our convention.
-    tdi : str
-        ``"1st generation"`` or ``"2nd generation"``. Optional.
 
     Returns
     -------
@@ -167,7 +164,7 @@ def run(response_class, orbits, cfg, h_plus, h_cross, theta, phi,
                 f"{list(LINK_LABELS)}."
 
     model = response_class(1.0 / cfg.dt, cfg.N, orbits=orbits,
-                           tdi=tdi, tdi_chan=TDI_CHANNELS)
+                           tdi=TDI_GENERATION, tdi_chan=TDI_CHANNELS)
 
     assert model.num_pts == cfg.N, \
                 f"fastlisaresponse cut the record to {model.num_pts} samples; " \
