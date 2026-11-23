@@ -65,3 +65,4 @@ examples/exact_shift_results/
 # Numerical caches. The plotting scripts recompute any that are missing; the
 # full-year series behind figures 12 and 13 run to hundreds of MB each.
 *.npz
+plotting/cache/
