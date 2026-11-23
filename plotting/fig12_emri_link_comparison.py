@@ -8,7 +8,7 @@ figures/fig12_emri_link_signals.pdf.
 The mismatches over the whole cut record, for the caption, are printed and written
 to figures/fig12_emri_link_mismatches.txt. Cache cache/fig12_emri_link_comparison.npz;
 the three other codes' grids are cached apart
-(cache/investigation_fig12_references_nfNF.npz), so a rerun after a change to the
+(cache/fig12_references_nfNF.npz), so a rerun after a change to the
 wavelet response recomputes only that. What the four share, and how the external
 codes are converted, is in _emri_comparison.py.
 
@@ -22,20 +22,11 @@ import time
 import numpy as np
 
 import _emri_comparison as emri
+from _cache import load_or_compute
 from parameters import N_SIGNAL, NUM_INTEGRAL_POINTS
 
 LABELS = dict(WDM="WDM response", TD="time-domain reference", GWR="lisagwresponse",
               FLR="fastlisaresponse")
-
-
-def cached(path, compute):
-    """compute(), a dict of arrays, cached at ``path`` (None: not cached)."""
-    if path is not None and path.exists():
-        return dict(np.load(path))
-    out = compute()
-    if path is not None:
-        np.savez(path, **out)
-    return out
 
 
 def compute(n_signal, nf):
@@ -68,14 +59,14 @@ def compute(n_signal, nf):
         return dict(TD=td, GWR=np.asarray(gwr[row]), FLR=np.asarray(flr[row]))
 
     full = n_signal == N_SIGNAL
-    ref = cached(emri.HERE / "cache" / f"investigation_fig12_references_nf{nf}.npz"
-                 if full else None, references)
+    ref = load_or_compute(emri.HERE / "cache" / f"fig12_references_nf{nf}.npz"
+                          if full else None, references)
 
     tick = time.perf_counter()
     times = np.asarray(s.response.t0 + s.wdm.times)
     consts = model.constants(s.response, s.wdm)
     wp, wc = model.warped_transforms(s.response, s.wdm, consts, s.theta, s.phi,
-                                         model.spline_warp(times, s.h_plus, s.h_cross))
+                                     model.spline_warp(times, s.h_plus, s.h_cross))
     wdm_grid = model.links(s.wdm, consts, s.theta, s.phi, wp, wc)[0]
     print(f"WDM response ({time.perf_counter() - tick:.0f} s)", flush=True)
 

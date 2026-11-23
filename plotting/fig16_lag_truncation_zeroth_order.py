@@ -26,6 +26,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from _colours import DARK, HAIRLINE, MUTED, PALETTE
+from _cache import load_or_compute
 from parameters import (DT, EMRI_PARAMS, FREQUENCIES, GC_PHI, GC_THETA, MAX_LAG_L,
                         MONOCHROMATIC_PARAMS, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -153,10 +154,5 @@ if __name__ == "__main__":
     if "--only" in sys.argv:
         compute([int(sys.argv[sys.argv.index("--only") + 1])])
         sys.exit()
-    if CACHE.exists():
-        results = dict(np.load(CACHE))
-    else:
-        results = compute(LAGS)
-        CACHE.parent.mkdir(exist_ok=True)
-        np.savez(CACHE, **results)
+    results = load_or_compute(CACHE, lambda: compute(LAGS))
     plot(results)

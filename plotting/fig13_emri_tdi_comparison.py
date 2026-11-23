@@ -12,7 +12,7 @@ As figure 12, except that the guard band is twice as wide: TDI shifts the signal
 second time. The mismatches over the whole cut record, for the caption, are printed
 and written to figures/fig13_emri_tdi_mismatches.txt. Cache
 cache/fig13_emri_tdi_comparison.npz; the three other codes' X are cached apart
-(cache/investigation_fig13_references_nfNF.npz). ``--short`` as in figure 12.
+(cache/fig13_references_nfNF.npz). ``--short`` as in figure 12.
 """
 
 import time
@@ -20,7 +20,7 @@ import time
 import numpy as np
 
 import _emri_comparison as emri
-from fig12_emri_link_comparison import cached
+from _cache import load_or_compute
 from parameters import MAX_LAG_L, N_SIGNAL, NUM_INTEGRAL_POINTS
 
 LABELS = dict(WDM="WDM response", TD="time-domain reference",
@@ -61,14 +61,14 @@ def compute(n_signal, nf):
         return dict(TD=td, GWR=np.asarray(gwr), FLR=np.asarray(flr[0]))
 
     full = n_signal == N_SIGNAL
-    ref = cached(emri.HERE / "cache" / f"investigation_fig13_references_nf{nf}.npz"
-                 if full else None, references)
+    ref = load_or_compute(emri.HERE / "cache" / f"fig13_references_nf{nf}.npz"
+                          if full else None, references)
 
     tick = time.perf_counter()
     times = np.asarray(s.response.t0 + s.wdm.times)
     consts = model.constants(s.response, s.wdm)
     wp, wc = model.warped_transforms(s.response, s.wdm, consts, s.theta, s.phi,
-                                         model.spline_warp(times, s.h_plus, s.h_cross))
+                                     model.spline_warp(times, s.h_plus, s.h_cross))
     links = model.links(s.wdm, consts, s.theta, s.phi, wp, wc)
     x = np.asarray(TDIgen2(s.response, channels=("X",))(links)[0])
     print(f"WDM links and TDI ({time.perf_counter() - tick:.0f} s)", flush=True)

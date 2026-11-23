@@ -15,8 +15,9 @@ below TAPS_SPLIT and 20 above: at 12 the reference's own error reaches 2e-9 at
 0.055 Hz, so the cells stop at 0.05 Hz.
 
 Run with no arguments
-to plot from the cache; ``--part K/COUNT`` computes tilings K, K + COUNT, ...
-into cache/parts/ and stops; ``--merge COUNT`` assembles them and plots. The colour
+for both panels, each computed first if it is not cached; ``--kind K`` for one.
+``--part K/COUNT`` computes tilings K, K + COUNT, ... of one kind into cache/parts/
+and stops; ``--merge COUNT`` assembles them and plots. The colour
 bar sits on top, and the right axis is Delta F = 1/(2 Delta T).
 """
 
@@ -29,6 +30,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import fig14_mismatch_vs_dT_zeroth_order as fig14
+from _cache import load_or_compute
 from _colours import HAIRLINE
 from parameters import (DT, GC_PHI, GC_THETA, MONOCHROMATIC_PARAMS, N_SIGNAL,
                         NUM_INTEGRAL_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -195,8 +197,9 @@ def plot(data, statistic, path, label):
 
 
 if __name__ == "__main__":
-    kind = sys.argv[sys.argv.index("--kind") + 1] if "--kind" in sys.argv else KIND
-    assert kind in KINDS, f"--kind is one of {KINDS}"
+    kinds = (sys.argv[sys.argv.index("--kind") + 1],) if "--kind" in sys.argv else KINDS
+    assert set(kinds) <= set(KINDS), f"--kind is one of {KINDS}"
+    kind = kinds[0] if "--kind" in sys.argv else KIND     # for --part and --merge
     if "--part" in sys.argv:
         index, count = map(int, sys.argv[sys.argv.index("--part") + 1].split("/"))
         path = part_path(index, count, kind)
@@ -205,7 +208,9 @@ if __name__ == "__main__":
         sys.exit()
     if "--merge" in sys.argv:
         merge(int(sys.argv[sys.argv.index("--merge") + 1]), kind)
+        kinds = (kind,)
     plt.style.use(HERE / "paper.mplstyle")
-    data = dict(np.load(cache_path(kind)))
-    plot(data, np.nanmedian, HERE / "figures" / f"fig10_mismatch_map{suffix(kind)}.pdf",
-         "median mismatch")
+    for kind in kinds:
+        data = load_or_compute(cache_path(kind), lambda: compute(fig14.NF, kind=kind))
+        plot(data, np.nanmedian, HERE / "figures" / f"fig10_mismatch_map{suffix(kind)}.pdf",
+             "median mismatch")

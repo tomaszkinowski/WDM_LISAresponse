@@ -41,28 +41,33 @@ def scaled_phi(d):
     return np.sqrt(2.) * np.trapezoid(integrand, u_half, axis=1)
 
 
-fig, (ax_f, ax_t) = plt.subplots(nrows=2, figsize=(3.375, 3.2))   # one journal column
+def main():
+    fig, (ax_f, ax_t) = plt.subplots(nrows=2, figsize=(3.375, 3.2))   # one journal column
 
-for d, c, ls in zip(D_VALS, PALETTE, LINESTYLES):
-    ax_f.plot(u, Meyer(u, d=d, A=A_FRAC, B=B_FRAC), c=c, ls=ls)
-    ax_t.plot(tau, scaled_phi(d), c=c, ls=ls, label=rf"$d={d}$")
+    for d, c, ls in zip(D_VALS, PALETTE, LINESTYLES):
+        ax_f.plot(u, Meyer(u, d=d, A=A_FRAC, B=B_FRAC), c=c, ls=ls)
+        ax_t.plot(tau, scaled_phi(d), c=c, ls=ls, label=rf"$d={d}$")
 
-ax_f.set_xlim(-1., 1.)
-ax_f.set_xticks(np.arange(-1., 1.01, 0.25))
-ax_f.xaxis.set_major_formatter(lambda x, _: rf"${x:g}$")
-ax_f.set_ylim(0., 1.05)
-ax_f.set_xlabel(r"$f/\Delta F$")
-ax_f.set_ylabel(r"$\sqrt{\Delta F}\,\Phi(f)$")
+    ax_f.set_xlim(-1., 1.)
+    ax_f.set_xticks(np.arange(-1., 1.01, 0.25))
+    ax_f.xaxis.set_major_formatter(lambda x, _: rf"${x:g}$")
+    ax_f.set_ylim(0., 1.05)
+    ax_f.set_xlabel(r"$f/\Delta F$")
+    ax_f.set_ylabel(r"$\sqrt{\Delta F}\,\Phi(f)$")
 
-ax_t.set_xlim(-TAU_MAX, TAU_MAX)
-ax_t.set_xticks(np.arange(-15, 16, 5))
-ax_t.set_xlabel(r"$t/\Delta T$")
-ax_t.set_ylabel(r"$\sqrt{\Delta T}\,\phi(t)$")
-ax_t.legend(loc="upper right")
+    ax_t.set_xlim(-TAU_MAX, TAU_MAX)
+    ax_t.set_xticks(np.arange(-15, 16, 5))
+    ax_t.set_xlabel(r"$t/\Delta T$")
+    ax_t.set_ylabel(r"$\sqrt{\Delta T}\,\phi(t)$")
+    ax_t.legend(loc="upper right")
 
-for ax in (ax_f, ax_t):
-    ax.grid(color=HAIRLINE, lw=0.5)
-    ax.set_axisbelow(True)
+    for ax in (ax_f, ax_t):
+        ax.grid(color=HAIRLINE, lw=0.5)
+        ax.set_axisbelow(True)
 
-fig.tight_layout(h_pad=0.6)
-fig.savefig(HERE / "figures" / "fig5_meyer_window.pdf")
+    fig.tight_layout(h_pad=0.6)
+    fig.savefig(HERE / "figures" / "fig5_meyer_window.pdf")
+
+
+if __name__ == "__main__":
+    main()

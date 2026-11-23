@@ -47,6 +47,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import FixedLocator, NullFormatter
 
 from _colours import DARK, HAIRLINE, INK, PALETTE
+from _cache import load_or_compute
 from parameters import (DT, EMRI_PARAMS, FREQUENCIES, GC_PHI, GC_THETA, MAX_LAG_L,
                         MONOCHROMATIC_PARAMS, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -127,10 +128,7 @@ def emri_shade_edge():
     EMRI_M0_LIMIT of its WDM power lies in m = 0, interpolated in log Delta T between
     the dense sweep's tilings, at the first one past the limit. The sweep is computed
     and cached on first use."""
-    if not EMRI_SWEEP_CACHE.exists():
-        EMRI_SWEEP_CACHE.parent.mkdir(exist_ok=True)
-        np.savez(EMRI_SWEEP_CACHE, **emri_m0_sweep())
-    sweep = dict(np.load(EMRI_SWEEP_CACHE))
+    sweep = load_or_compute(EMRI_SWEEP_CACHE, emri_m0_sweep)
     fraction, limit = -sweep["m0"], -EMRI_M0_LIMIT
     delta_t = np.log(sweep["Nf"] * DT)
     j = np.flatnonzero(fraction >= limit)[0]
@@ -456,14 +454,7 @@ def main(cache, bounds_cache, figure, model=zeroth_order, source_envelope=False)
             assert np.array_equal(merged["Nf"], NF), merged["Nf"]
             np.savez(path, **merged)
 
-    caches = []
-    for path, run in targets:
-        if path.exists():
-            caches.append(dict(np.load(path)))
-        else:
-            caches.append(run(NF, model))
-            path.parent.mkdir(exist_ok=True)
-            np.savez(path, **caches[-1])
+    caches = [load_or_compute(path, lambda run=run: run(NF, model)) for path, run in targets]
     plot(*caches, figure, source_envelope=source_envelope)
 
 

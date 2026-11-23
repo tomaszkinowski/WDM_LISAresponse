@@ -4,7 +4,8 @@ function of the tiling Delta T - with figure 14's zeroth-order response for the 
 EMRI behind it, muted. Hollow markers, the 3600-36000 s band and the Delta F axis
 are figure 14's.
 
-Plots the caches fig14_mismatch_vs_dT_zeroth_order.py and fig9_mismatch_vs_dT.py write.
+Plots the caches fig14_mismatch_vs_dT_zeroth_order.py and fig9_mismatch_vs_dT.py write,
+computing either first if it is missing (hours: those are the two full sweeps).
 """
 
 from pathlib import Path
@@ -15,6 +16,7 @@ from matplotlib.lines import Line2D
 
 import fig14_mismatch_vs_dT_zeroth_order as fig14
 import fig9_mismatch_vs_dT as fig9
+from _cache import load_or_compute
 from _colours import DARK, HAIRLINE, INK, MUTED, PALETTE
 from parameters import DT
 
@@ -25,7 +27,12 @@ PRODUCTION = fig14.CACHE
 
 def main():
     plt.style.use(HERE / "paper.mplstyle")
-    corrected, production = dict(np.load(CORRECTED)), dict(np.load(PRODUCTION))
+    def first_order_sweep():
+        from first_order.model import one_link
+        return fig14.compute(fig14.NF, model=one_link)
+
+    corrected = load_or_compute(CORRECTED, first_order_sweep)
+    production = load_or_compute(PRODUCTION, lambda: fig14.compute(fig14.NF))
     assert np.array_equal(corrected["Nf"], production["Nf"])
     delta_t = corrected["Nf"] * DT
     leaks = delta_t < fig14.emri_shade_edge()

@@ -25,6 +25,7 @@ from matplotlib.patches import ConnectionPatch
 from matplotlib.ticker import FormatStrFormatter, MultipleLocator
 
 from _colours import DARK, HAIRLINE, INK, PALETTE
+from _cache import load_or_compute
 from parameters import (DT, EMRI_PARAMS, MAX_LAG_L, N_SIGNAL, NUM_INTERP_POINTS,
                         WINDOW_FUNCTION, WINDOW_KWARGS)
 
@@ -72,11 +73,8 @@ def waveform(n_signal):
     """generate(n_signal), cached for the whole record."""
     if n_signal != N_SIGNAL:
         return generate(n_signal)
-    if not WAVEFORM_CACHE.exists():
-        h_plus, h_cross = generate(n_signal)
-        WAVEFORM_CACHE.parent.mkdir(exist_ok=True)
-        np.savez(WAVEFORM_CACHE, h_plus=h_plus, h_cross=h_cross)
-    cached = np.load(WAVEFORM_CACHE)
+    cached = load_or_compute(WAVEFORM_CACHE, lambda: dict(
+        zip(("h_plus", "h_cross"), (np.asarray(h) for h in generate(n_signal)))))
     return cached["h_plus"], cached["h_cross"]
 
 
@@ -281,13 +279,8 @@ def main(compute, stem, name, labels, quantity, symbol, residual=None, gain=None
         print(summary(compute(2 ** 19, NF), labels, quantity))
         return
 
-    cache = HERE / "cache" / f"{stem}_comparison.npz"
-    if cache.exists():
-        res = dict(np.load(cache))
-    else:
-        res = compute(N_SIGNAL, NF)
-        cache.parent.mkdir(exist_ok=True)
-        np.savez(cache, **res)
+    res = load_or_compute(HERE / "cache" / f"{stem}_comparison.npz",
+                          lambda: compute(N_SIGNAL, NF))
     text = summary(res, labels, quantity)
     print(text)
     figures = HERE / "figures"

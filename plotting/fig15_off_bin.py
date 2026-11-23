@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 from _colours import HAIRLINE, INK, MUTED, PALETTE
+from _cache import load_or_compute
 from parameters import (A_CROSS, A_PLUS, DT, FREQUENCIES, GC_PHI, GC_THETA, MAX_LAG_L,
                         N_SIGNAL, NUM_INTEGRAL_POINTS, NUM_INTERP_POINTS, PHI_0,
                         WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -147,10 +148,5 @@ if __name__ == "__main__":
     if "--only" in sys.argv:
         compute([float(sys.argv[sys.argv.index("--only") + 1])])
         sys.exit()
-    if CACHE.exists():
-        results = dict(np.load(CACHE))
-    else:
-        results = compute(R)
-        CACHE.parent.mkdir(exist_ok=True)
-        np.savez(CACHE, **results)
+    results = load_or_compute(CACHE, lambda: compute(R))
     plot(results)

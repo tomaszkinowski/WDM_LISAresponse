@@ -129,4 +129,5 @@ def draw(path, rate=DELAY_RATE, delay_label="Slowly-varying delay", split_after=
     print("wrote", path)
 
 
-draw(HERE / "figures" / "fig3_validity_regions.pdf")
+if __name__ == "__main__":
+    draw(HERE / "figures" / "fig3_validity_regions.pdf")
