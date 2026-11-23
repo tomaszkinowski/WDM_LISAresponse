@@ -118,6 +118,7 @@ correction tables. The zeroth-order response is the package's
 | fastlisaresponse 5.11 s and lisagwresponse 27.9 s, CPU (Sec. VI) | `numbers_runtime.py flr`, `numbers_runtime.py gwr` | `runtime_flr_cpu.txt`, `runtime_gwr_cpu.txt` |
 | fastlisaresponse on an NVIDIA RTX A400, 2.84 s (Sec. VI) | `numbers_runtime.py flr --gpu`, with fastlisaresponse's CUDA 12 build | `runtime_flr_cuda12x.txt` |
 | WDM response on an NVIDIA RTX A400, 0.0567 s, first call 3.66 s (Sec. VI, preliminary) | **not computable with this branch's code**: measured with the GPU backend under development (branch `feature/gpu-shift-backend` of both repositories) | `runtime_zeroth_order_gpu.txt` (the measurement, kept for the record) |
+| the EMRI's derived parameters in Table I: time to plunge, p and e at the end of the record | `numbers_emri_parameters.py` | `emri_parameters.txt` |
 | the EMRI's dominant power, f = 2–5 mHz (App. C) | `numbers_emri_power.py` | `emri_power.txt` |
 | filter interpolation at P = 128 (App. B) | `numbers_interpolation.py` | `interpolation.txt` |
 

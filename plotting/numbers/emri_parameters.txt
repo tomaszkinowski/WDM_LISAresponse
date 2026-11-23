@@ -1,0 +1,4 @@
+record: 388.36 d
+time to plunge after the end of the record: 0.502 yr
+semi-latus rectum at the end of the record: 6.0188 GM/c^2
+eccentricity at the end of the record: 0.1906

@@ -48,6 +48,7 @@ FIGURES = [
 ]
 # The CPU runtimes; the GPU ones (README) need a GPU and its builds.
 NUMBERS = [
+    ("numbers_emri_parameters.py", []),
     ("numbers_emri_power.py", []),
     ("numbers_interpolation.py", []),
     ("numbers_runtime.py", ["zeroth"]),
