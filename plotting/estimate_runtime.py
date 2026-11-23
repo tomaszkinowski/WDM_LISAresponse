@@ -24,10 +24,12 @@ CALIBRATION = [("numbers_interpolation.py", ["--short"]),
 
 def calibrate():
     """Wall time of the calibration runs, in seconds."""
+    env = dict(os.environ)
+    env.setdefault("JAX_PLATFORMS", "cpu")             # as make_figures.py runs them
     tick = time.perf_counter()
     for script, args in CALIBRATION:
         subprocess.run([sys.executable, script, *args], cwd=HERE, check=True,
-                       stdout=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, env=env)
     return time.perf_counter() - tick
 
 

@@ -111,11 +111,17 @@ correction tables. The zeroth-order response is the package's
 
 ## Numbers in the text
 
-| Number | Script | Output |
+| Number | Script | Output (in `numbers/`) |
 |---|---|---|
-| response runtime on the CPU (Sec. II) | `numbers_runtime.py zeroth`, `first`, `first --float32` | `numbers/runtime_<label>.txt` |
-| the EMRI's dominant power, f = 2–5 mHz (App. C) | `numbers_emri_power.py` | `numbers/emri_power.txt` |
-| filter interpolation at P = 128 (App. B) | `numbers_interpolation.py` | `numbers/interpolation.txt` |
+| first-order response, CPU, ~360 ms (Sec. II) | `numbers_runtime.py first --float32` (and `first` for float64) | `runtime_first_order_f32_cpu.txt` |
+| zeroth-order response, CPU: 3.56 s first call, 0.539 s after (Sec. VI) | `numbers_runtime.py zeroth` | `runtime_zeroth_order_cpu.txt` |
+| fastlisaresponse 5.11 s and lisagwresponse 27.9 s, CPU (Sec. VI) | `numbers_runtime.py flr`, `numbers_runtime.py gwr` | `runtime_flr_cpu.txt`, `runtime_gwr_cpu.txt` |
+| fastlisaresponse on an NVIDIA RTX A400, 2.84 s (Sec. VI) | `numbers_runtime.py flr --gpu`, with fastlisaresponse's CUDA 12 build | `runtime_flr_cuda12x.txt` |
+| WDM response on an NVIDIA RTX A400, 0.0567 s, first call 3.66 s (Sec. VI, preliminary) | **not computable with this branch's code**: measured with the GPU backend under development (branch `feature/gpu-shift-backend` of both repositories) | `runtime_zeroth_order_gpu.txt` (the measurement, kept for the record) |
+| the EMRI's dominant power, f = 2–5 mHz (App. C) | `numbers_emri_power.py` | `emri_power.txt` |
+| filter interpolation at P = 128 (App. B) | `numbers_interpolation.py` | `interpolation.txt` |
 
-`make_figures.py --numbers` runs them after the figures. The runtimes depend on
-the machine; the files in `numbers/` record the hardware they were measured on.
+`make_figures.py --numbers` runs the CPU ones after the figures. The runtimes depend
+on the machine; each file records the hardware and the code it was measured with.
+The fastlisaresponse GPU row needs a GPU and its CUDA 12 build. The WDM GPU row is a
+record of a preliminary measurement, not something this branch can reproduce.

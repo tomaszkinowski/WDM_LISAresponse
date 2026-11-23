@@ -11,7 +11,8 @@ and peak memory.
 
 Each script computes what is not cached and draws from the cache otherwise, so a
 second run only redraws. Any script can also be run on its own. With --parts, each
-part holds its own copy of the full-year signals: allow ~5 GiB per part.
+part holds its own copy of the full-year signals: allow ~5 GiB per part. JAX runs on
+the CPU, as for the paper, unless JAX_PLATFORMS is set.
 """
 
 import os
@@ -45,12 +46,15 @@ FIGURES = [
     (15, "fig15_off_bin.py", []),
     (16, "fig16_lag_truncation_zeroth_order.py", []),
 ]
+# The CPU runtimes; the GPU ones (README) need a GPU and its builds.
 NUMBERS = [
     ("numbers_emri_power.py", []),
     ("numbers_interpolation.py", []),
     ("numbers_runtime.py", ["zeroth"]),
     ("numbers_runtime.py", ["first"]),
     ("numbers_runtime.py", ["first", "--float32"]),
+    ("numbers_runtime.py", ["flr"]),
+    ("numbers_runtime.py", ["gwr"]),
 ]
 
 # Runs a script as __main__ and leaves its peak memory (bytes) in MAKE_FIGURES_PEAK.
@@ -83,8 +87,11 @@ def sweep_caches(script, args):
 
 
 def start(script, args, peak_file):
+    # an absolute path, so the script's own __file__ (and every path built on it) is
     env = dict(os.environ, MAKE_FIGURES_PEAK=peak_file)
-    return subprocess.Popen([PY, "-c", WRAPPER, script, *args], cwd=HERE, env=env)
+    env.setdefault("JAX_PLATFORMS", "cpu")
+    return subprocess.Popen([PY, "-c", WRAPPER, str((HERE / script).resolve()), *args],
+                            cwd=HERE, env=env)
 
 
 def run(script, args, parts):
