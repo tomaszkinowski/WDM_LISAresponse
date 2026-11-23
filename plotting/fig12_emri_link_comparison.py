@@ -2,23 +2,19 @@
 codes - the first-order wavelet response split_amp_sinc_first
 (first_order/model.py), the time-domain reference one_arm_response_time_domain,
 lisagwresponse and fastlisaresponse: the whole record, and a quarter-day zoom with
-the wavelet-minus-lisagwresponse residual overlaid (x 1e3). In
-figures/investigations/: the same with the source's h+ and hx over the zoom
-(fig12_emri_link_signals_waveform.pdf), and the residuals of every pair over the
-zoom (fig12_emri_link_residuals.pdf).
+the wavelet-minus-lisagwresponse residual overlaid (x 1e3), in
+figures/fig12_emri_link_signals.pdf.
 
 The mismatches over the whole cut record, for the caption, are printed and written
 to figures/fig12_emri_link_mismatches.txt. Cache cache/fig12_emri_link_comparison.npz;
 the three other codes' grids are cached apart
 (cache/investigation_fig12_references_nfNF.npz), so a rerun after a change to the
 wavelet response recomputes only that. What the four share, and how the external
-codes are converted, is in _emri_comparison.py. The zeroth-order version is
-investigation_fig12_zeroth_order.py.
+codes are converted, is in _emri_comparison.py.
 
 Run with no arguments to compute (or reuse the cache) and plot. ``--short`` runs
-2**19 samples (24 d), prints the mismatches and draws into figures/investigations/
-without caching. ``--nf NF`` runs the whole record at another tiling, cached and
-drawn as an investigation.
+2**19 samples (24 d) and prints the mismatches, caching and drawing nothing - a
+quick check of the pipeline.
 """
 
 import time
@@ -88,6 +84,5 @@ def compute(n_signal, nf):
 
 
 if __name__ == "__main__":
-    emri.main(compute, "fig12_emri_link",
-              ("fig12_emri_link_signals", "fig12_emri_link_residuals"),
-              LABELS, "link 1 -> 2", r"\delta\ell_{1\to2}", residual=("WDM", "GWR"), gain=1e3)
+    emri.main(compute, "fig12_emri_link", "fig12_emri_link_signals", LABELS,
+              "link 1 -> 2", r"\delta\ell_{1\to2}", residual=("WDM", "GWR"), gain=1e3)

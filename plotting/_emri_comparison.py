@@ -1,7 +1,6 @@
 """What figures 12 and 13 share: the EMRI on figure 14's grid, the four codes compared
 on it, the printed mismatches, and the figure drawn for each quantity - the whole
-record and a quarter-day zoom. Investigations, in figures/investigations/: the same
-with the source's h+ and hx over the zoom added, and the residuals over the zoom.
+record and a quarter-day zoom.
 
 The four are our wavelet response (WDM), our time-domain reference (TD),
 lisagwresponse (GWR) and fastlisaresponse (FLR). The external codes return the
@@ -25,7 +24,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import ConnectionPatch
 from matplotlib.ticker import FormatStrFormatter, MultipleLocator
 
-from _colours import DARK, HAIRLINE, INK, MUTED, PALETTE
+from _colours import DARK, HAIRLINE, INK, PALETTE
 from parameters import (DT, EMRI_PARAMS, MAX_LAG_L, N_SIGNAL, NUM_INTERP_POINTS,
                         WINDOW_FUNCTION, WINDOW_KWARGS)
 
@@ -44,11 +43,7 @@ METHODS = ("WDM", "TD", "GWR", "FLR")
 RESIDUAL_COLOUR = PALETTE[0]
 SIGNAL_COLOUR = DARK
 POLARISATION_COLOURS = dict(plus=PALETTE[1], cross=PALETTE[2])
-# lisagwresponse is drawn wide underneath, so the others stay visible on top of it.
-STYLES = dict(WDM=dict(color=DARK, lw=1.2, zorder=3),
-              TD=dict(color=PALETTE[4], lw=1.2, ls=(0, (3, 1.5)), zorder=4),
-              GWR=dict(color=PALETTE[3], lw=3.0, zorder=2),
-              FLR=dict(color=MUTED, lw=1.2, ls=(0, (1, 1.2)), zorder=5))
+
 
 
 def signal_start():
@@ -204,10 +199,10 @@ def zoom_ticks(ax):
     ax.xaxis.set_major_formatter(FormatStrFormatter("%.1f"))
 
 
-def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=ZOOM_DAY,
+def plot_signals(res, path, labels, symbol, residual=None, zoom_day=ZOOM_DAY,
                  methods=METHODS, gain=None):
     """The whole record over a zoom of ZOOM_DAYS, drawn once (the first of
-    ``methods``) for all of them, which coincide at this scale; with ``wave``, a third panel of the source's h+ and hx over the same zoom.
+    ``methods``) for all of them, which coincide at this scale.
     ``symbol`` is the quantity's LaTeX symbol. ``residual``, a pair of codes,
     overlays their difference on the zoom, magnified by ``gain`` (default: the power
     of ten that brings it to the signal's size)."""
@@ -217,13 +212,8 @@ def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=Z
     t = (res["t_first"] + DT * np.arange(len(res[shown]))) / 86400.0
     scale = 10.0 ** np.floor(np.log10(np.max(np.abs(res[shown]))))
 
-    if wave is None:
-        fig, (top, zoom) = plt.subplots(2, 1, figsize=(3.375, 3.6), layout="constrained",
-                                        height_ratios=(1, 1.7))
-    else:
-        fig, (top, zoom, source) = plt.subplots(3, 1, figsize=(3.375, 4.8),
-                                                layout="constrained",
-                                                height_ratios=(1, 1.7, 1.3))
+    fig, (top, zoom) = plt.subplots(2, 1, figsize=(3.375, 3.6), layout="constrained",
+                                    height_ratios=(1, 1.7))
 
     # Each row's extent. The axis sits on top, so the lines down to the zoom cross
     # no labels.
@@ -258,25 +248,7 @@ def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=Z
              ylabel=rf"${symbol}$ [$10^{{{int(np.log10(scale))}}}$ s]")
     zoom_ticks(zoom)
     top.set_ylabel(zoom.get_ylabel())
-    axes = [top, zoom]
-
-    if wave is not None:
-        # The source over the same span, on the signal's own clock (the response sees
-        # it up to ~500 s earlier or later, the light travel time across the orbit).
-        t_wave = DT * np.arange(len(wave[0])) / 86400.0
-        in_zoom = (t_wave >= zoom_span[0]) & (t_wave < zoom_span[1])
-        strain = 10.0 ** np.floor(np.log10(max(np.max(np.abs(h[in_zoom])) for h in wave)))
-        for h, kind, tex in zip(wave, ("plus", "cross"), (r"$h_+$", r"$h_\times$")):
-            handles += source.plot(t_wave[in_zoom], h[in_zoom] / strain, lw=0.4,
-                                   color=POLARISATION_COLOURS[kind], label=tex)
-        source.set(xlim=zoom_span, xlabel=r"$t$ [days]",
-                   ylabel=rf"strain [$10^{{{int(np.log10(strain))}}}$]")
-        source.sharex(zoom)
-        zoom.set_xlabel("")
-        zoom.tick_params(labelbottom=False)
-        axes.append(source)
-
-    for ax in axes:
+    for ax in (top, zoom):
         ax.grid(color=HAIRLINE, lw=0.4)
         ax.set_axisbelow(True)
 
@@ -297,93 +269,28 @@ def plot_signals(res, path, labels, symbol, wave=None, residual=None, zoom_day=Z
     print(f"wrote {path}")
 
 
-# What each residual panel compares, and against what: the time-domain reference
-# split in two, as the external codes' residual is far below the wavelet response's.
-PANELS = (("TD", ("WDM",)), ("TD", ("GWR", "FLR")), ("WDM", ("TD", "GWR", "FLR")))
-
-
-def plot_residuals(res, path, labels, zoom_day=ZOOM_DAY):
-    """The residuals over the zoom, in seconds, each panel on its own scale: the
-    wavelet response and then the external codes against the time-domain reference,
-    and the other three against the wavelet response."""
-    plt.style.use(HERE / "paper.mplstyle")
-    t = (res["t_first"] + DT * np.arange(len(res["WDM"]))) / 86400.0
-    zoom_span = (zoom_day, zoom_day + ZOOM_DAYS)
-    window = (t >= zoom_span[0]) & (t < zoom_span[1])
-
-    fig, axes = plt.subplots(len(PANELS), 1, figsize=(3.375, 5.2), sharex=True,
-                             layout="constrained")
-    for ax, (reference, names) in zip(axes, PANELS):
-        residuals = {name: (res[name] - res[reference])[window] for name in names}
-        largest = max(np.max(np.abs(r)) for r in residuals.values())
-        scale = 10.0 ** np.floor(np.log10(largest))
-        for name, residual in residuals.items():
-            ax.plot(t[window], residual / scale, **STYLES[name])
-        ax.set_title(f"against the {labels[reference]}", loc="left", fontsize="small",
-                     color=INK)
-        ax.set_ylabel(rf"residual [$10^{{{int(np.log10(scale))}}}$ s]")
-        ax.grid(color=HAIRLINE, lw=0.4)
-        ax.set_axisbelow(True)
-
-    axes[-1].set(xlim=zoom_span, xlabel=r"$t$ [days]")
-    zoom_ticks(axes[-1])
-    handles = [plt.Line2D([], [], **STYLES[name]) for name in METHODS]
-    fig.legend(handles, [labels[name] for name in METHODS], loc="outside lower center",
-               ncols=2, fontsize="small", frameon=False, handlelength=2.2,
-               columnspacing=1.0)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path)
-    print(f"wrote {path}")
-
-
-def main(compute, stem, names, labels, quantity, symbol, residual=None, variant=None,
-         gain=None):
+def main(compute, stem, name, labels, quantity, symbol, residual=None, gain=None):
     """The command line both figures share. ``stem`` (e.g. fig12_emri_link) names the
-    cache and the mismatch file; ``names`` the figure's file and the residuals' file.
-    The figure goes to figures/, and to figures/investigations/ again with the
-    waveform panel (``_waveform``) beside the residuals. ``residual`` is passed to
-    plot_signals, as is ``gain``.
+    cache and the mismatch file, ``name`` the figure's file; ``residual`` and ``gain``
+    are passed to plot_signals.
 
-    No arguments: compute (or reuse the cache) at Nf = NF and plot. ``--short``: 2**19
-    samples (24 d), printed and drawn into figures/investigations/ without caching.
-    ``--nf NF``: the whole record at another tiling, cached and drawn as an
-    investigation. ``variant`` (e.g. "zeroth_order") suffixes the cache and every file
-    with it, the figure and the mismatches still going to figures/."""
-    investigations = HERE / "figures" / "investigations"
-    tag = f"_{variant}" if variant else ""
+    No arguments: compute (or reuse the cache) at Nf = NF, write the mismatches and
+    plot. ``--short``: 2**19 samples (24 d), the mismatches printed and nothing cached
+    or drawn - a quick check of the whole pipeline."""
     if "--short" in sys.argv:
-        res = compute(2 ** 19, NF)
-        print(summary(res, labels, quantity))
-        wave = waveform(2 ** 19)
-        plot_signals(res, investigations / f"{names[0]}_waveform{tag}_short.pdf", labels,
-                     symbol, wave, residual, zoom_day=10.0, gain=gain)
-        plot_residuals(res, investigations / f"{names[1]}{tag}_short.pdf", labels,
-                       zoom_day=10.0)
+        print(summary(compute(2 ** 19, NF), labels, quantity))
         return
 
-    figure = stem.split("_")[0]
-    nf, cache = NF, HERE / "cache" / f"{stem}_comparison.npz"
-    figures, suffix = HERE / "figures", ""
-    if variant:
-        cache = HERE / "cache" / f"investigation_{figure}{tag}.npz"
-        suffix = tag
-    if "--nf" in sys.argv:
-        nf = int(sys.argv[sys.argv.index("--nf") + 1])
-        cache = HERE / "cache" / f"investigation_{figure}{tag}_nf{nf}.npz"
-        figures, suffix = investigations, f"{tag}_nf{nf}"
-
+    cache = HERE / "cache" / f"{stem}_comparison.npz"
     if cache.exists():
         res = dict(np.load(cache))
     else:
-        res = compute(N_SIGNAL, nf)
+        res = compute(N_SIGNAL, NF)
         cache.parent.mkdir(exist_ok=True)
         np.savez(cache, **res)
     text = summary(res, labels, quantity)
     print(text)
-    figures.mkdir(parents=True, exist_ok=True)
-    (figures / f"{stem}_mismatches{suffix}.txt").write_text(text + "\n")
-    plot_signals(res, figures / f"{names[0]}{suffix}.pdf", labels, symbol,
-                 residual=residual, gain=gain)
-    plot_signals(res, investigations / f"{names[0]}_waveform{suffix}.pdf", labels, symbol,
-                 waveform(N_SIGNAL), residual, gain=gain)
-    plot_residuals(res, investigations / f"{names[1]}{suffix}.pdf", labels)
+    figures = HERE / "figures"
+    figures.mkdir(exist_ok=True)
+    (figures / f"{stem}_mismatches.txt").write_text(text + "\n")
+    plot_signals(res, figures / f"{name}.pdf", labels, symbol, residual=residual, gain=gain)

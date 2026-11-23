@@ -6,17 +6,13 @@ at Delta T = 1e4 s, from four codes:
   - lisagwresponse's links, combined by pytdi
   - fastlisaresponse, links and TDI both its own
 
-X over the whole record and a quarter-day zoom. In figures/investigations/: the same
-with the source's h+ and hx over the zoom (fig13_emri_tdi_signals_waveform.pdf),
-and the residuals of every pair over the zoom (fig13_emri_tdi_residuals.pdf).
+X over the whole record and a quarter-day zoom, in figures/fig13_emri_tdi_signals.pdf.
 
 As figure 12, except that the guard band is twice as wide: TDI shifts the signal a
 second time. The mismatches over the whole cut record, for the caption, are printed
 and written to figures/fig13_emri_tdi_mismatches.txt. Cache
 cache/fig13_emri_tdi_comparison.npz; the three other codes' X are cached apart
-(cache/investigation_fig13_references_nfNF.npz). The zeroth-order version is
-investigation_fig13_zeroth_order.py. Options as figure 12's (``--short``,
-``--nf NF``).
+(cache/investigation_fig13_references_nfNF.npz). ``--short`` as in figure 12.
 """
 
 import time
@@ -81,6 +77,5 @@ def compute(n_signal, nf):
 
 
 if __name__ == "__main__":
-    emri.main(compute, "fig13_emri_tdi",
-              ("fig13_emri_tdi_signals", "fig13_emri_tdi_residuals"),
-              LABELS, "second-generation X", "X_2")
+    emri.main(compute, "fig13_emri_tdi", "fig13_emri_tdi_signals", LABELS,
+              "second-generation X", "X_2")

@@ -17,7 +17,6 @@ BENCH_CODE (environment) is recorded as the code version.
 """
 
 import os
-import platform
 import resource
 import subprocess
 import sys
@@ -218,8 +217,7 @@ def write(code, platform_name, device_kind, rows, notes, grid):
                  flr="fastlisaresponse (six links, time domain)")[code]
     lines = [title, "",
              f"date        {datetime.now().isoformat(timespec='seconds')}",
-             f"host        {platform.node()}",
-             f"cpu         {cpu_model()}, {os.cpu_count()} logical cores",
+             f"cpu        {cpu_model()}, {os.cpu_count()} logical cores",
              f"device      {platform_name}" + (f" ({device_kind})" if device_kind else ""),
              f"packages    {versions(code)}",
              f"code        {os.environ.get('BENCH_CODE', 'unrecorded')}",

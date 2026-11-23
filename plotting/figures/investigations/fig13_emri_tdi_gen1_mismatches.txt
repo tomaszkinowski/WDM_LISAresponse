@@ -1,2 +1,0 @@
-Nf = 2500, Delta T = 10000 s, first-generation X, whole cut record
-fastlisaresponse against lisagwresponse + pytdi: mismatch 7.32e-13, rel L2 1.23e-06

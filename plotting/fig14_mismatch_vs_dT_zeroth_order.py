@@ -34,10 +34,7 @@ Run with no arguments to compute (or reuse the caches) and plot. ``--only NF``
 runs one tiling, prints it and caches nothing - for checking time and memory;
 ``--only-bounds NF`` does the same for the on- and off-bin points.
 ``--part K/COUNT`` computes tilings K, K + COUNT, ... into cache/parts/ and stops,
-so COUNT processes can split the work; ``--merge COUNT`` assembles them. With
-``--drop-edge-bands`` everything compares bands 2 to Nf - 2 only (m = 0, 1 and
-Nf - 1 dropped), with caches of its own, and the plot goes to
-figures/investigations/fig14_mismatch_vs_dT_zeroth_order_edge_bands.pdf.
+so COUNT processes can split the work; ``--merge COUNT`` assembles them.
 """
 
 import sys
@@ -59,12 +56,6 @@ ROOT = HERE.parent
 CACHE = HERE / "cache" / "fig14_mismatch_vs_dT_zeroth_order.npz"
 BOUNDS_CACHE = HERE / "cache" / "fig14_bounds.npz"
 
-# --drop-edge-bands: the investigation variant, comparing bands 2 to Nf - 2 only.
-# The shift cannot get m = 1 right once a signal reaches m = 0 (it has no regular
-# lower neighbour there), and wraps m = 0 into m = Nf - 1.
-EDGE_FREQ_SLICE = slice(2, -1)
-EDGE_CACHE = HERE / "cache" / "fig14_mismatch_vs_dT_zeroth_order_edge_bands.npz"
-EDGE_BOUNDS_CACHE = HERE / "cache" / "fig14_bounds_edge_bands.npz"
 ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
 # 1e2 to 1e6 s, four tilings per decade; Nf must be even.
@@ -91,31 +82,21 @@ EMRI_SWEEP_NF = np.unique(np.concatenate([
     2 * np.round(np.logspace(np.log10(80), np.log10(3000), 40) / (2 * DT)).astype(int),
     NF[NF * DT <= 3000]]))
 EMRI_M0_LIMIT = 0.01
-# With the edge bands dropped, the EMRI is hollow where less than this fraction of
-# its WDM power lies in the compared bands (emri_shade_edge).
-EMRI_COMPARED_LIMIT = 0.5
 
 TONES = tuple(f"{f * 1e3:g} mHz" for f in FREQUENCIES)
 NAMES = TONES + ("EMRI",)
 COLOURS = dict(zip(NAMES, PALETTE[:3] + [DARK]))
 
 
-def lowest_band(freq_slice=None):
-    """The lowest band compared: 1 by default (m = 0 dropped), or freq_slice's."""
-    return 1 if freq_slice is None else freq_slice.start
-
-
-def leak_edge(freq_slice=None):
-    """Below this frequency, in units of Delta F, a signal leaks into a dropped low
-    band: the lower edge of the lowest compared band's neighbour's Meyer window,
-    (lowest - A_frac) Delta F - 0.75 Delta F by default, 1.75 with m = 1 dropped."""
-    return lowest_band(freq_slice) - A_FRAC
+def leak_edge():
+    """Below this frequency, in units of Delta F, a signal leaks into the dropped m = 0
+    band: the lower edge of band 1's Meyer window, (1 - A_frac) Delta F."""
+    return 1 - A_FRAC
 
 
 def emri_m0_sweep(nfs=EMRI_SWEEP_NF):
     """The fraction of the EMRI's WDM power (h_plus and h_cross) in the dropped m = 0
-    band (m0) and in bands 2 to Nf - 2 (compared), at each tiling, on figure 14's
-    padded grids."""
+    band, at each tiling, on figure 14's padded grids."""
     import jax
 
     import WDM
@@ -126,8 +107,7 @@ def emri_m0_sweep(nfs=EMRI_SWEEP_NF):
     _, _, signal_times, _ = setup()
     h_plus, h_cross = (np.asarray(h) for h in emri.waveform(N_SIGNAL))
     taper = waveforms.tukey_taper_samples(N_SIGNAL, WINDOW_KWARGS["alpha"])
-    out = dict(Nf=np.asarray(nfs), m0=np.full(len(nfs), np.nan),
-               compared=np.full(len(nfs), np.nan))
+    out = dict(Nf=np.asarray(nfs), m0=np.full(len(nfs), np.nan))
     for j, Nf in enumerate(nfs):
         info = utils.wdm_padding_info(N_SIGNAL, int(Nf), max_lag_L=MAX_LAG_L,
                                       taper_samples=taper)
@@ -136,45 +116,37 @@ def emri_m0_sweep(nfs=EMRI_SWEEP_NF):
                                              info["pad_left"], info["pad_right"])
         power = np.asarray(wdm.dwt(hp)) ** 2 + np.asarray(wdm.dwt(hc)) ** 2
         out["m0"][j] = power[:, 0].sum() / power.sum()
-        out["compared"][j] = power[:, EDGE_FREQ_SLICE].sum() / power.sum()
         # each tiling compiles for its own shapes; let the compiled code go
         del wdm, power
         jax.clear_caches()
     return out
 
 
-def emri_shade_edge(freq_slice=None):
-    """The Delta T below which the EMRI is drawn hollow. By default, where more than
-    1% of its WDM power lies in m = 0. With edge bands dropped, the leak no longer
-    shows in the mismatch (the dropped bands' error is not compared), so the hollow
-    points mark coverage instead: where less than half its WDM power lies in the
-    compared bands. Both are interpolated in log Delta T between the dense sweep's
-    tilings, at the first one past the limit. The sweep is computed and cached on
-    first use."""
+def emri_shade_edge():
+    """The Delta T below which the EMRI is drawn hollow: where more than
+    EMRI_M0_LIMIT of its WDM power lies in m = 0, interpolated in log Delta T between
+    the dense sweep's tilings, at the first one past the limit. The sweep is computed
+    and cached on first use."""
     if not EMRI_SWEEP_CACHE.exists():
         EMRI_SWEEP_CACHE.parent.mkdir(exist_ok=True)
         np.savez(EMRI_SWEEP_CACHE, **emri_m0_sweep())
     sweep = dict(np.load(EMRI_SWEEP_CACHE))
-    if freq_slice is None:
-        fraction, limit = -sweep["m0"], -EMRI_M0_LIMIT
-    else:
-        fraction, limit = sweep["compared"], EMRI_COMPARED_LIMIT
+    fraction, limit = -sweep["m0"], -EMRI_M0_LIMIT
     delta_t = np.log(sweep["Nf"] * DT)
     j = np.flatnonzero(fraction >= limit)[0]
     return float(np.exp(np.interp(limit, fraction[[j - 1, j]], delta_t[[j - 1, j]])))
 
 
-def bound_frequencies(nfs, freq_slice=None):
+def bound_frequencies(nfs):
     """Each tone's nearest on-bin (r = 0) and off-bin (r = 1/2) frequencies at every
-    tiling, NaN where the tone leaks into a dropped band. Arrays of shape
+    tiling, NaN where the tone leaks into m = 0. Arrays of shape
     (tones, tilings)."""
     delta_f = 1 / (2 * np.asarray(nfs) * DT)
     on, off = np.full((2, len(TONES), len(delta_f)), np.nan)
     for i, f in enumerate(FREQUENCIES):
-        ok = f >= leak_edge(freq_slice) * delta_f
+        ok = f >= leak_edge() * delta_f
         on[i, ok] = np.round(f / delta_f[ok]) * delta_f[ok]
-        off[i, ok] = (np.maximum(np.floor(f / delta_f[ok]), lowest_band(freq_slice))
-                      + 0.5) * delta_f[ok]
+        off[i, ok] = (np.maximum(np.floor(f / delta_f[ok]), 1) + 0.5) * delta_f[ok]
     return on, off
 
 
@@ -183,13 +155,13 @@ def bound_frequencies(nfs, freq_slice=None):
 OFFSETS = (-0.25, -0.1, -0.05, 0.05, 0.1, 0.25)
 
 
-def offset_frequencies(nfs, freq_slice=None):
+def offset_frequencies(nfs):
     """Each tone at OFFSETS around its nearest band centre, NaN where that leaks
-    into a dropped band. Array of shape (tones, offsets, tilings)."""
-    on, _ = bound_frequencies(nfs, freq_slice)
+    into m = 0. Array of shape (tones, offsets, tilings)."""
+    on, _ = bound_frequencies(nfs)
     delta_f = 1 / (2 * np.asarray(nfs) * DT)
     shifted = on[:, None, :] + np.asarray(OFFSETS)[None, :, None] * delta_f
-    shifted[shifted < leak_edge(freq_slice) * delta_f] = np.nan
+    shifted[shifted < leak_edge() * delta_f] = np.nan
     return shifted
 
 
@@ -216,7 +188,7 @@ def zeroth_order(response, wdm, link, start, n_signal):
     return respond
 
 
-def tiling(orbits, start, link, Nf, freq_slice=None):
+def tiling(orbits, start, link, Nf):
     """One tiling's padding info, WDM transform, response on `link` and cut."""
     import WDM
     from WDM_LISAresponse import LISAresponse
@@ -230,13 +202,10 @@ def tiling(orbits, start, link, Nf, freq_slice=None):
     response = LISAresponse(wdm, orbits, t0=start - info["pad_left"] * DT,
                             max_lag_L=MAX_LAG_L, num_interp_points=NUM_INTERP_POINTS,
                             link_convention=(link,))
-    cut = utils.wdm_cut_info(info)
-    if freq_slice is not None:
-        cut["freq_slice"] = freq_slice
-    return info, wdm, response, cut
+    return info, wdm, response, utils.wdm_cut_info(info)
 
 
-def compute(nfs, freq_slice=None, model=zeroth_order):
+def compute(nfs, model=zeroth_order):
     import jax
 
     import WDM
@@ -292,7 +261,7 @@ def compute(nfs, freq_slice=None, model=zeroth_order):
                **{name: np.full(len(nfs), np.nan) for name in NAMES})
     for j, Nf in enumerate(nfs):
         tick = time.perf_counter()
-        info, wdm, response, cut = tiling(orbits, start, link, Nf, freq_slice)
+        info, wdm, response, cut = tiling(orbits, start, link, Nf)
         respond = model(response, wdm, link, start, N_SIGNAL)
         out["kept_rows"][j] = cut["time_slice"].stop - cut["time_slice"].start
 
@@ -317,7 +286,7 @@ def compute(nfs, freq_slice=None, model=zeroth_order):
     return out
 
 
-def compute_bounds(nfs, freq_slice=None, model=zeroth_order):
+def compute_bounds(nfs, model=zeroth_order):
     """Mismatch of each tone moved to its on- and off-bin frequency, and to OFFSETS
     around its band centre, at every tiling. With a different frequency at every
     tiling, each reference is computed on that tiling's grid directly, as in
@@ -328,8 +297,8 @@ def compute_bounds(nfs, freq_slice=None, model=zeroth_order):
     from WDM_LISAresponse.code.waveforms import waveforms
 
     orbits, start, signal_times, link = setup()
-    freqs = dict(zip(("on", "off"), bound_frequencies(nfs, freq_slice)))
-    freqs["offsets"] = offset_frequencies(nfs, freq_slice)
+    freqs = dict(zip(("on", "off"), bound_frequencies(nfs)))
+    freqs["offsets"] = offset_frequencies(nfs)
     out = dict(Nf=np.asarray(nfs), f_on=freqs["on"], f_off=freqs["off"],
                f_offsets=freqs["offsets"],
                on=np.full(freqs["on"].shape, np.nan),
@@ -339,7 +308,7 @@ def compute_bounds(nfs, freq_slice=None, model=zeroth_order):
         if np.all(np.isnan(freqs["on"][:, j])):
             continue
         tick = time.perf_counter()
-        info, wdm, response, cut = tiling(orbits, start, link, Nf, freq_slice)
+        info, wdm, response, cut = tiling(orbits, start, link, Nf)
         respond = model(response, wdm, link, start, N_SIGNAL)
 
         def mismatch(params, f):
@@ -378,9 +347,9 @@ def compute_bounds(nfs, freq_slice=None, model=zeroth_order):
     return out
 
 
-def plot(res, bounds, path, freq_slice=None, source_envelope=False):
+def plot(res, bounds, path, source_envelope=False):
     """``source_envelope`` raises the shading's top to the source where it lies
-    above off-bin (the investigations)."""
+    above off-bin (figure 9)."""
     plt.style.use(HERE / "paper.mplstyle")
     delta_t = res["Nf"] * DT
     assert np.array_equal(bounds["Nf"], res["Nf"])
@@ -401,7 +370,7 @@ def plot(res, bounds, path, freq_slice=None, source_envelope=False):
         if name == "EMRI":
             ax.plot(delta_t, res[name], color=colour, lw=1.2, marker="o", zorder=4,
                     **markers)
-            leaks = delta_t < emri_shade_edge(freq_slice)
+            leaks = delta_t < emri_shade_edge()
             ax.plot(delta_t[leaks], res[name][leaks], marker="o", ms=2.5, mec=colour,
                     **hollow)
         else:
@@ -415,7 +384,7 @@ def plot(res, bounds, path, freq_slice=None, source_envelope=False):
                             alpha=0.18, lw=0, zorder=1)
             ax.plot(delta_t, res[name], color=colour, lw=0.5, marker="o", zorder=3,
                     **markers)
-            leaks = FREQUENCIES[i] < leak_edge(freq_slice) / (2 * delta_t)
+            leaks = FREQUENCIES[i] < leak_edge() / (2 * delta_t)
             ax.plot(delta_t[leaks], res[name][leaks], marker="o", ms=2.5, mec=colour,
                     **hollow)
         # Bottom right is empty in every panel: fine tilings are where the error is.
@@ -446,8 +415,7 @@ def plot(res, bounds, path, freq_slice=None, source_envelope=False):
     # on- to off-bin shading and the 3600-36000 s band are left to the caption.
     handles = [Line2D([], [], color=INK, lw=0.5, marker="o", **markers),
                Line2D([], [], marker="o", ms=2.5, mec=INK, **hollow)]
-    dropped = "m = 0" if lowest_band(freq_slice) == 1 else rf"m \le {lowest_band(freq_slice) - 1}"
-    labels = ["source", rf"power leaks into ${dropped}$"]
+    labels = ["source", r"power leaks into $m = 0$"]
     fig.legend(handles, labels, loc="outside lower center", fontsize="small", ncols=2,
                handlelength=1.4, handletextpad=0.5, columnspacing=0.9, frameon=False)
 
@@ -457,17 +425,15 @@ def plot(res, bounds, path, freq_slice=None, source_envelope=False):
     print(f"wrote {path}")
 
 
-def main(cache, bounds_cache, figure, model=zeroth_order, freq_slice=None,
-         source_envelope=False):
+def main(cache, bounds_cache, figure, model=zeroth_order, source_envelope=False):
     """The command line, for `model` with its caches: ``--only NF``,
     ``--only-bounds NF``, ``--part K/COUNT``, ``--merge COUNT``, or (no arguments)
     compute what is missing and plot to `figure`."""
     if "--only" in sys.argv:
-        compute([int(sys.argv[sys.argv.index("--only") + 1])], freq_slice, model)
+        compute([int(sys.argv[sys.argv.index("--only") + 1])], model)
         sys.exit()
     if "--only-bounds" in sys.argv:
-        compute_bounds([int(sys.argv[sys.argv.index("--only-bounds") + 1])], freq_slice,
-                       model)
+        compute_bounds([int(sys.argv[sys.argv.index("--only-bounds") + 1])], model)
         sys.exit()
     targets = ((cache, compute), (bounds_cache, compute_bounds))
 
@@ -478,8 +444,7 @@ def main(cache, bounds_cache, figure, model=zeroth_order, freq_slice=None,
         index, count = map(int, sys.argv[sys.argv.index("--part") + 1].split("/"))
         for path, run in targets:
             part_path(path, index, count).parent.mkdir(parents=True, exist_ok=True)
-            np.savez(part_path(path, index, count),
-                     **run(NF[index::count], freq_slice, model))
+            np.savez(part_path(path, index, count), **run(NF[index::count], model))
         sys.exit()
     if "--merge" in sys.argv:
         count = int(sys.argv[sys.argv.index("--merge") + 1])
@@ -496,16 +461,11 @@ def main(cache, bounds_cache, figure, model=zeroth_order, freq_slice=None,
         if path.exists():
             caches.append(dict(np.load(path)))
         else:
-            caches.append(run(NF, freq_slice, model))
+            caches.append(run(NF, model))
             path.parent.mkdir(exist_ok=True)
             np.savez(path, **caches[-1])
-    plot(*caches, figure, freq_slice, source_envelope=source_envelope)
+    plot(*caches, figure, source_envelope=source_envelope)
 
 
 if __name__ == "__main__":
-    if "--drop-edge-bands" in sys.argv:
-        main(EDGE_CACHE, EDGE_BOUNDS_CACHE, HERE / "figures" / "investigations"
-             / "fig14_mismatch_vs_dT_zeroth_order_edge_bands.pdf",
-             freq_slice=EDGE_FREQ_SLICE, source_envelope=True)
-    else:
-        main(CACHE, BOUNDS_CACHE, HERE / "figures" / "fig14_mismatch_vs_dT_zeroth_order.pdf")
+    main(CACHE, BOUNDS_CACHE, HERE / "figures" / "fig14_mismatch_vs_dT_zeroth_order.pdf")

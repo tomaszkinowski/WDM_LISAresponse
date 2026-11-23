@@ -1,7 +1,6 @@
 fastlisaresponse (six links, time domain)
 
 date        2026-11-04T14:07:01
-host        calx038.ast.cam.ac.uk
 cpu         Intel(R) Core(TM) Ultra 7 265K, 20 logical cores
 device      cuda12x (NVIDIA RTX A400)
 packages    fastlisaresponse 1.2.1a0, numpy 2.3.4

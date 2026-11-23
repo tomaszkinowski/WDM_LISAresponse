@@ -1,5 +1,6 @@
 """Figure 6: three WDM wavelets in the time domain (top), the frequency domain
-(right), and the tiles they occupy in the time-frequency plane (centre).
+(right), and the tiles they occupy in the time-frequency plane (centre), with
+the tiling axes in units of Delta T and Delta F.
 
 Ported from cell 11 of WDM_GW_wavelets/examples/plotting_the_mother_wavelet.ipynb.
 """
@@ -85,10 +86,12 @@ for f in f_ticks:
     ax_tf.axhline(f, color=HAIRLINE, lw=0.5)
 ax_tf.set_xlim(0, wdm.T)
 ax_tf.set_ylim(0, wdm.f_Ny)
-ax_tf.set_xticks(np.linspace(0, wdm.T, 5))
-ax_tf.set_yticks(np.linspace(0, wdm.f_Ny, 5))
-ax_tf.set_xlabel(r"Time $t$ [seconds]")
-ax_tf.set_ylabel(r"Frequency $f$ [Hertz]")
+n_ticks = np.arange(0, wdm.Nt + 1, wdm.Nt // 4)
+m_ticks = np.arange(0, wdm.Nf + 1, wdm.Nf // 4)
+ax_tf.set_xticks(n_ticks * wdm.dT, [str(n) for n in n_ticks])
+ax_tf.set_yticks(m_ticks * wdm.dF, [str(m) for m in m_ticks])
+ax_tf.set_xlabel(r"Time $t/\Delta T$")
+ax_tf.set_ylabel(r"Frequency $f/\Delta F$")
 
 for n, m, c in zip(N_VALS, M_VALS, PALETTE):
     boxes = tile_boxes(n, m)
@@ -102,12 +105,3 @@ for n, m, c in zip(N_VALS, M_VALS, PALETTE):
 
 plt.subplots_adjust(wspace=0.05, hspace=0.05, left=0.08, right=0.92, top=0.95, bottom=0.08)
 fig.savefig(HERE / "figures" / "fig6_wdm_basis.pdf")
-
-# The same figure with the tiling axes in units of dT and dF.
-n_ticks = np.arange(0, wdm.Nt + 1, wdm.Nt // 4)
-m_ticks = np.arange(0, wdm.Nf + 1, wdm.Nf // 4)
-ax_tf.set_xticks(n_ticks * wdm.dT, [str(n) for n in n_ticks])
-ax_tf.set_yticks(m_ticks * wdm.dF, [str(m) for m in m_ticks])
-ax_tf.set_xlabel(r"Time $t/\Delta T$")
-ax_tf.set_ylabel(r"Frequency $f/\Delta F$")
-fig.savefig(HERE / "figures" / "fig6_wdm_basis_dimensionless.pdf")
