@@ -111,4 +111,4 @@ if __name__ == "__main__":
         results = compute(fig11.LAGS)
         CACHE.parent.mkdir(exist_ok=True)
         np.savez(CACHE, **results)
-    fig11.plot(results, FIGURE)
+    fig11.plot(results, FIGURE, legend_loc="upper right")
