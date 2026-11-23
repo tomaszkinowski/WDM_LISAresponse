@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath('../../src'))
 project = 'WDM_LISAresponse'
 copyright = '2025, Christopher J. Moore'
 author = 'Christopher J. Moore'
-release = '0.0.1'
+release = '1.0.0'
 
 # -- General configuration ---------------------------------------------------
 extensions = [
