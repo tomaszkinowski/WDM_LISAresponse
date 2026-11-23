@@ -1,0 +1,6 @@
+plus   peak |FFT|^2 at 3.392 mHz, peak dP/dln f at 3.565 mHz, median 3.541 mHz, 5-95 % 1.901-6.382 mHz
+       0-1 mHz: 0.000  1-2 mHz: 0.060  2-3 mHz: 0.229  3-5 mHz: 0.565  5-10 mHz: 0.143  10-inf mHz: 0.003
+  0.67-13.75 mHz  power 1.000  peak 3.392 mHz
+cross  peak |FFT|^2 at 3.383 mHz, peak dP/dln f at 3.565 mHz, median 3.530 mHz, 5-95 % 1.813-6.442 mHz
+       0-1 mHz: 0.002  1-2 mHz: 0.072  2-3 mHz: 0.228  3-5 mHz: 0.547  5-10 mHz: 0.149  10-inf mHz: 0.003
+  0.67-13.75 mHz  power 1.000  peak 3.383 mHz
