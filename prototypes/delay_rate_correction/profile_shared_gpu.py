@@ -17,7 +17,7 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "plotting"))
 
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 from parameters import GC_PHI, GC_THETA
 from WDM_LISAresponse.code.lisa_response import response_sub as rs
 
@@ -30,7 +30,7 @@ block = jax.block_until_ready
 
 
 def main(nfs):
-    orbits, start, _, _ = fig8.setup()
+    orbits, start, _, _ = fig14.setup()
     for Nf in nfs:
         _, wdm, response, consts = build(Nf, orbits, start)
         rng = np.random.default_rng(0)

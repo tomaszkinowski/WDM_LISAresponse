@@ -1,14 +1,24 @@
-"""Figure 12 with the corrected wavelet response: the EMRI on link 1 -> 2 at
-Delta T = 1e4 s, with split_amp_sinc_first (_corrected_response.py) in place of
-production one_arm_response. The time-domain reference, lisagwresponse and
-fastlisaresponse are figure 12's own.
+"""Figure 12: the EMRI (parameters.py) on link 1 -> 2 at Delta T = 1e4 s, from four
+codes - the first-order wavelet response split_amp_sinc_first
+(_corrected_response.py), the time-domain reference one_arm_response_time_domain,
+lisagwresponse and fastlisaresponse: the whole record, and a quarter-day zoom with
+the wavelet-minus-lisagwresponse residual overlaid (x 1e3). In
+figures/investigations/: the same with the source's h+ and hx over the zoom
+(fig12_emri_link_signals_waveform.pdf), and the residuals of every pair over the
+zoom (fig12_emri_link_residuals.pdf).
 
-Writes figures/fig12_emri_link_signals_corrected.pdf and fig12_emri_link_mismatches_corrected.txt,
-and figures/investigations/fig12_emri_link_{signals_waveform,residuals}_corrected.pdf; cache
-cache/investigation_fig12_corrected.npz. The three other codes' grids are cached
-apart (cache/investigation_fig12_references_nfNF.npz), so a rerun after a change to
-the correction recomputes only the wavelet response. Options as figure 12's
-(``--short``, ``--nf NF``). ../prototypes/delay_rate_correction must be on PYTHONPATH.
+The mismatches over the whole cut record, for the caption, are printed and written
+to figures/fig12_emri_link_mismatches.txt. Cache cache/fig12_emri_link_comparison.npz;
+the three other codes' grids are cached apart
+(cache/investigation_fig12_references_nfNF.npz), so a rerun after a change to the
+wavelet response recomputes only that. What the four share, and how the external
+codes are converted, is in _emri_comparison.py. The zeroth-order version is
+investigation_fig12_zeroth_order.py.
+
+Run with no arguments to compute (or reuse the cache) and plot. ``--short`` runs
+2**19 samples (24 d), prints the mismatches and draws into figures/investigations/
+without caching. ``--nf NF`` runs the whole record at another tiling, cached and
+drawn as an investigation. ../prototypes/delay_rate_correction must be on PYTHONPATH.
 """
 
 import time
@@ -16,10 +26,10 @@ import time
 import numpy as np
 
 import _emri_comparison as emri
-from fig12_emri_link_comparison import LABELS as PAPER_LABELS
 from parameters import N_SIGNAL, NUM_INTEGRAL_POINTS
 
-LABELS = PAPER_LABELS
+LABELS = dict(WDM="WDM response", TD="time-domain reference", GWR="lisagwresponse",
+              FLR="fastlisaresponse")
 
 
 def cached(path, compute):
@@ -71,7 +81,7 @@ def compute(n_signal, nf):
     wp, wc = corrected.warped_transforms(s.response, s.wdm, consts, s.theta, s.phi,
                                          corrected.spline_warp(times, s.h_plus, s.h_cross))
     wdm_grid = corrected.links(s.wdm, consts, s.theta, s.phi, wp, wc)[0]
-    print(f"corrected WDM response ({time.perf_counter() - tick:.0f} s)", flush=True)
+    print(f"WDM response ({time.perf_counter() - tick:.0f} s)", flush=True)
 
     return emri.finish(s, dict(WDM=wdm_grid, TD=ref["TD"]),
                        dict(GWR=ref["GWR"], FLR=ref["FLR"]))
@@ -80,5 +90,4 @@ def compute(n_signal, nf):
 if __name__ == "__main__":
     emri.main(compute, "fig12_emri_link",
               ("fig12_emri_link_signals", "fig12_emri_link_residuals"),
-              LABELS, "link 1 -> 2", r"\delta\ell_{1\to2}", residual=("WDM", "GWR"),
-              variant="corrected", gain=1e3)
+              LABELS, "link 1 -> 2", r"\delta\ell_{1\to2}", residual=("WDM", "GWR"), gain=1e3)

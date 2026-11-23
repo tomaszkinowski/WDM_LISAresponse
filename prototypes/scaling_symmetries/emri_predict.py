@@ -1,7 +1,7 @@
 import sys; sys.path.insert(0,'.'); sys.path.insert(0,str(__import__('pathlib').Path(__file__).parent))
 import numpy as np
 from scipy.integrate import quad
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 from parameters import VIRGO_THETA as th, VIRGO_PHI as ph, DT, N_SIGNAL
 from cr import Phi
 h=1e-6; dPhi=lambda x:(Phi(x+h)-Phi(x-h))/(2*h)
@@ -10,7 +10,7 @@ print(f"<S>_r = int Phi'^2 dx = {Sbar:.4f}  (bin units)")
 e=np.load('cache/emri_waveform.npz'); hp=e['h_plus']; hc=e['h_cross']
 P=np.abs(np.fft.rfft(hp))**2+np.abs(np.fft.rfft(hc))**2; fr=np.fft.rfftfreq(hp.size,DT)
 f2=np.sum(P*fr**2)/np.sum(P); print(f"EMRI power-weighted rms f = {np.sqrt(f2)*1e3:.3f} mHz")
-orbits,start,_,link=fig8.setup(); c=299792458.0
+orbits,start,_,link=fig14.setup(); c=299792458.0
 t=start+np.linspace(0,DT*N_SIGNAL,40000)
 u=np.array([np.cos(th)*np.cos(ph),np.cos(th)*np.sin(ph),-np.sin(th)]); v=np.array([np.sin(ph),-np.cos(ph),0]); n=np.array([np.sin(th)*np.cos(ph),np.sin(th)*np.sin(ph),np.cos(th)])
 x1=orbits.compute_position(t,[1])[:,0,:]; x2=orbits.compute_position(t,[2])[:,0,:]

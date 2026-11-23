@@ -1,4 +1,4 @@
-"""Figure 4: the Meyer window in the frequency domain (top) and the time domain
+"""Figure 5: the Meyer window in the frequency domain (top) and the time domain
 (bottom) for three steepness parameters d.
 
 Both panels are dimensionless: sqrt(dF) Phi(f) = M(f/dF) against f/dF, and
@@ -65,4 +65,4 @@ for ax in (ax_f, ax_t):
     ax.set_axisbelow(True)
 
 fig.tight_layout(h_pad=0.6)
-fig.savefig(HERE / "figures" / "fig4_meyer_window.pdf")
+fig.savefig(HERE / "figures" / "fig5_meyer_window.pdf")

@@ -1,9 +1,9 @@
 import sys; sys.path.insert(0,'.'); sys.path.insert(0,str(__import__('pathlib').Path(__file__).parent))
 import numpy as np
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 from parameters import GC_THETA, GC_PHI, DT, N_SIGNAL
 from cr import Phi
-orbits,start,_,link=fig8.setup()
+orbits,start,_,link=fig14.setup()
 t=start+np.linspace(0,DT*N_SIGNAL,40000); c=299792458.0
 th,ph=GC_THETA,GC_PHI
 u=np.array([np.cos(th)*np.cos(ph),np.cos(th)*np.sin(ph),-np.sin(th)]); v=np.array([np.sin(ph),-np.cos(ph),0]); n=np.array([np.sin(th)*np.cos(ph),np.sin(th)*np.sin(ph),np.cos(th)])

@@ -1,9 +1,9 @@
-"""Appendix figures D3 and D4: figure 9 for the 30 mHz Galactic binary alone, as
+"""Appendix figures D3 and D4: figure 15 for the 30 mHz Galactic binary alone, as
 the Meyer window changes:
   D3  A_frac, the flat-top fraction (B_frac = 1 - 2 A_frac), at d = 4
   D4  d, the steepness of the transition, at A_frac = 0.25
 on link 1 -> 2 at Delta T = 1000 s (Nf = 250). The tone moves to f = (m + r) Delta F
-across its band, r from 0 to 1 in steps of 0.05, as in figure 9; everything else
+across its band, r from 0 to 1 in steps of 0.05, as in figure 15; everything else
 is held at the paper's values. The reference is a time series, so it is computed
 once per r and transformed with each window's own WDM transform. The vertical
 lines in D3 mark, for each A_frac in its curve's line style, where the tone
@@ -31,7 +31,7 @@ ROOT = HERE.parent
 CACHE = HERE / "cache" / "figD_tone_window.npz"
 ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
-NF = 250                                        # Delta T = 1000 s, as in figure 9
+NF = 250                                        # Delta T = 1000 s, as in figure 15
 DELTA_F = 1 / (2 * NF * DT)
 R = np.linspace(0.0, 1.0, 21)
 
@@ -48,7 +48,7 @@ DS = (2, 4, 16)
 # Every (A_frac, d) to run: the default sits in both sweeps but is run once.
 CONFIGS = tuple(dict.fromkeys([(a, D) for a in A_FRACS] + [(A_FRAC, d) for d in DS]))
 
-LEGEND_DECADES = 1.9                            # headroom above the data, as in figure 9
+LEGEND_DECADES = 1.9                            # headroom above the data, as in figure 15
 
 STYLES = ({"ls": "-", "marker": "o"}, {"ls": "--", "marker": "s"},
           {"ls": ":", "marker": "^"})
@@ -67,7 +67,7 @@ def compute(rs, configs):
     data = read_orbit_file(str(ORBIT_FILE))
     orbit_times = data.t0 + data.dt * np.arange(data.size)
     orbits = InterpolatedOrbits(orbit_times, data.positions, data.velocities)
-    # 200 d in, as in figure 8, so the figures see the same stretch of orbit.
+    # 200 d in, as in figure 14, so the figures see the same stretch of orbit.
     start = orbit_times[0] + 200 * 86400.0
     signal_times = start + DT * np.arange(N_SIGNAL)
     link = utils.Link(1, 2)
@@ -135,7 +135,7 @@ def plot(res, sweep):
     mismatch = res["mismatch"][rows]
 
     bottom = np.nanmin(mismatch) / 3
-    # Headroom above the peaks holds the legend, as in figure 9.
+    # Headroom above the peaks holds the legend, as in figure 15.
     top = (min(3.0, 3 * np.nanmax(mismatch))
            * 10 ** LEGEND_DECADES)
 

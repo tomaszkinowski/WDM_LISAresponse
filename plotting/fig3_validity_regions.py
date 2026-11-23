@@ -1,4 +1,4 @@
-"""Figure 2: where in (f, dT) the approximations behind the WDM response hold.
+"""Figure 3: where in (f, dT) the approximations behind the WDM response hold.
 
 Grey regions are where an approximation fails (overlaps darken):
   narrowband            dF << 1/tau, with dF dT = 1/2 and tau <= 2l  =>  dT >> l/c
@@ -7,6 +7,7 @@ Grey regions are where an approximation fails (overlaps darken):
 The yellow band is the dT in [1, 10] h we recommend. Vertical lines are the three
 example Galactic binaries, in the PALETTE slots their curves use in later figures. The x-axis f
 stands in for f_eff in the slowly-varying-delay condition. The right axis is dF = 1/(2 dT).
+Frequencies are in mHz throughout.
 
 The same regions for split_amp_sinc_first go to figures/investigations/: the waveform
 carries the constellation centre's Roemer delay, so the shift carries only each link's
@@ -40,19 +41,20 @@ REST_DELAY_RATE = np.pi * ARM_LENGTH / (np.sqrt(3) * lc.SPEED_OF_LIGHT * YEAR)  
 
 
 def dt_slow_delay(f, rate=DELAY_RATE):
-    return 1 / (2 * np.pi * f * rate)
+    """The slow-delay bound on dT [s] at f [mHz]."""
+    return 1 / (2 * np.pi * 1e-3 * f * rate)
 
 
 def delta_f(delta_t):
-    """dF = 1 / (2 dT), its own inverse."""
+    """dF [mHz] = 1 / (2 dT [s]), its own inverse."""
     with np.errstate(divide="ignore"):
-        return 0.5 / np.asarray(delta_t, dtype=float)
+        return 500 / np.asarray(delta_t, dtype=float)
 
 
-F_LIM = (1e-5, 1.0)
+F_LIM = (1e-2, 1e3)                                     # [mHz]
 DT_LIM = (1.0, 3e8)
 DT_BAND = (3600.0, 36000.0)                             # 3600-36000 s
-F_GB = [3e-4, 3e-3, 3e-2]                               # example Galactic binaries [Hz]
+F_GB = [0.3, 3.0, 30.0]                                 # example Galactic binaries [mHz]
 
 GREY = dict(color="k", alpha=0.25, lw=0)
 EDGE = dict(color="k", ls=":", lw=0.8)
@@ -61,7 +63,7 @@ FONT = 8
 
 def diagonal_angle(ax, rate):
     """The slow-delay diagonal's angle on screen [deg]."""
-    f0, f1 = 1e-2, 1e-1
+    f0, f1 = 10.0, 100.0
     (x0, y0), (x1, y1) = ax.transData.transform(
         [(f0, dt_slow_delay(f0, rate)), (f1, dt_slow_delay(f1, rate))])
     return np.degrees(np.arctan2(y1 - y0, x1 - x0))
@@ -69,7 +71,7 @@ def diagonal_angle(ax, rate):
 
 def label_diagonal(fig, ax, rate, text, split_after):
     """`text` parallel to the diagonal, just above it, placed so that the space after
-    word `split_after` falls on the 3e-2 Hz line (the label is wider than any gap
+    word `split_after` falls on the 30 mHz line (the label is wider than any gap
     between the Galactic-binary lines)."""
     angle = diagonal_angle(ax, rate)
     renderer = fig.canvas.get_renderer()
@@ -136,25 +138,25 @@ def draw(path, rate=DELAY_RATE, delay_label="Slowly-varying delay", split_after=
         ax.axvline(f_gb, color=c, lw=1)
 
     # Region labels sit right of the last GB line, the only stretch no vertical line crosses.
-    ax.text(3.5e-2, np.sqrt(DT_LIM[0] * DT_NARROWBAND), "Narrowband", fontsize=FONT,
+    ax.text(35.0, np.sqrt(DT_LIM[0] * DT_NARROWBAND), "Narrowband", fontsize=FONT,
             va="center")
-    ax.text(3.5e-2, np.sqrt(DT_SHORT_ATOM * DT_LIM[1]), "Short-atom", fontsize=FONT,
+    ax.text(35.0, np.sqrt(DT_SHORT_ATOM * DT_LIM[1]), "Short-atom", fontsize=FONT,
             va="center")
     if split_after is None:
         label_right(ax, rate, delay_label)
     else:
         label_diagonal(fig, ax, rate, delay_label, split_after)
 
-    ax.set_xlabel(r"$f$ [Hz]")
+    ax.set_xlabel(r"$f$ [mHz]")
     ax.set_ylabel(r"$\Delta T$ [s]")
     ax.secondary_yaxis("right", functions=(delta_f, delta_f)).set_ylabel(
-        r"$\Delta F$ [Hz]")
+        r"$\Delta F$ [mHz]")
 
     fig.savefig(path)
     print("wrote", path)
 
 
-draw(HERE / "figures" / "fig2_validity_regions.pdf")
-draw(HERE / "figures" / "investigations" / "fig2_validity_regions_split_amp_sinc_first.pdf",
+draw(HERE / "figures" / "fig3_validity_regions.pdf")
+draw(HERE / "figures" / "investigations" / "fig3_validity_regions_split_amp_sinc_first.pdf",
      rate=REST_DELAY_RATE, delay_label="Slowly-varying rest delay", split_after=None,
      reference_rate=DELAY_RATE)

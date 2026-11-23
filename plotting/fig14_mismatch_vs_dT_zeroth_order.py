@@ -1,4 +1,4 @@
-"""Figure 8: mismatch of the wavelet one-arm response against the time-domain
+"""Figure 14: mismatch of the wavelet one-arm response against the time-domain
 reference, as a function of the tiling Delta T = Nf dt, on link 1 -> 2: one panel
 each for the three example Galactic binaries and the EMRI (parameters.py).
 
@@ -10,7 +10,7 @@ below the band edge Delta F / 2. Hollow markers are tones that do, and the EMRI
 where more than 1% of its WDM power lies in m = 0 (from investigation_emri_m0.py's
 dense sweep of Delta T, which must be run first).
 
-Each tone's mismatch depends on where it falls within its band (figure 9), so at
+Each tone's mismatch depends on where it falls within its band (figure 15), so at
 every tiling the same tone is also moved to its nearest point halfway between two
 centres, (k + 1/2) Delta F (off-bin, r = 1/2, the peak of every curve in figure
 6), and to its nearest band centre m Delta F and OFFSETS around it. The shading
@@ -35,7 +35,7 @@ runs one tiling, prints it and caches nothing - for checking time and memory;
 so COUNT processes can split the work; ``--merge COUNT`` assembles them. With
 ``--drop-edge-bands`` everything compares bands 2 to Nf - 2 only (m = 0, 1 and
 Nf - 1 dropped), with caches of its own, and the plot goes to
-figures/investigations/fig8_mismatch_vs_dT_edge_bands.pdf.
+figures/investigations/fig14_mismatch_vs_dT_zeroth_order_edge_bands.pdf.
 """
 
 import sys
@@ -54,15 +54,15 @@ from parameters import (DT, EMRI_PARAMS, FREQUENCIES, GC_PHI, GC_THETA, MAX_LAG_
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
-CACHE = HERE / "cache" / "fig8_mismatch_vs_dT.npz"
-BOUNDS_CACHE = HERE / "cache" / "fig8_bounds.npz"
+CACHE = HERE / "cache" / "fig14_mismatch_vs_dT_zeroth_order.npz"
+BOUNDS_CACHE = HERE / "cache" / "fig14_bounds.npz"
 
 # --drop-edge-bands: the investigation variant, comparing bands 2 to Nf - 2 only.
 # The shift cannot get m = 1 right once a signal reaches m = 0 (it has no regular
 # lower neighbour there), and wraps m = 0 into m = Nf - 1.
 EDGE_FREQ_SLICE = slice(2, -1)
-EDGE_CACHE = HERE / "cache" / "fig8_mismatch_vs_dT_edge_bands.npz"
-EDGE_BOUNDS_CACHE = HERE / "cache" / "fig8_bounds_edge_bands.npz"
+EDGE_CACHE = HERE / "cache" / "fig14_mismatch_vs_dT_zeroth_order_edge_bands.npz"
+EDGE_BOUNDS_CACHE = HERE / "cache" / "fig14_bounds_edge_bands.npz"
 ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
 # 1e2 to 1e6 s, four tilings per decade; Nf must be even.
@@ -79,7 +79,7 @@ REF_ROWS = 16
 # none above 0.75. WDM_transform's default A_frac.
 A_FRAC = 0.25
 
-DT_BAND = (3600.0, 36000.0)                     # 3600-36000 s, recommended in fig 2
+DT_BAND = (3600.0, 36000.0)                     # 3600-36000 s, recommended in fig 3
 
 # The EMRI is drawn hollow where more than this fraction of its WDM power (h_plus
 # and h_cross) lies in m = 0, m0 in investigation_emri_m0.py's cache.
@@ -259,7 +259,7 @@ def compute_bounds(nfs, freq_slice=None):
     """Mismatch of each tone moved to its on- and off-bin frequency, and to OFFSETS
     around its band centre, at every tiling. With a different frequency at every
     tiling, each reference is computed on that tiling's grid directly, as in
-    figure 9."""
+    figure 15."""
     import jax
 
     import WDM
@@ -445,6 +445,6 @@ if __name__ == "__main__":
             caches.append(run(NF, freq_slice))
             path.parent.mkdir(exist_ok=True)
             np.savez(path, **caches[-1])
-    plot(*caches, HERE / "figures" / ("investigations/fig8_mismatch_vs_dT_edge_bands.pdf"
-                                      if edge else "fig8_mismatch_vs_dT.pdf"), freq_slice,
+    plot(*caches, HERE / "figures" / ("investigations/fig14_mismatch_vs_dT_zeroth_order_edge_bands.pdf"
+                                      if edge else "fig14_mismatch_vs_dT_zeroth_order.pdf"), freq_slice,
          source_envelope=edge)

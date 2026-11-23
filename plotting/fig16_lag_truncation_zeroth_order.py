@@ -1,6 +1,6 @@
-"""Figure 11: mismatch of the wavelet one-arm response against the time-domain
+"""Figure 16: mismatch of the wavelet one-arm response against the time-domain
 reference as the time-shift kernel's maximum lag L changes, on link 1 -> 2 at
-Delta T = 1e4 s (Nf = 2500), the middle of the 3600-36000 s band figure 2
+Delta T = 1e4 s (Nf = 2500), the middle of the 3600-36000 s band figure 3
 recommends, for the three example Galactic binaries and the EMRI (parameters.py).
 
 At this tiling the three tones sit on band centres, so their curves follow the
@@ -10,7 +10,7 @@ realistic source stops depending on L.
 The grid is padded for the largest L whatever L is tested, so the transform, the
 compared rows and the time-domain references are the same along each curve and
 only the kernel's truncation changes; each reference is computed once, on the
-grid directly. Window, cut and the rest are as in figure 8. The vertical line
+grid directly. Window, cut and the rest are as in figure 14. The vertical line
 marks the L used everywhere else.
 
 Run with no arguments to compute (or reuse the cache) and plot. ``--only L``
@@ -32,7 +32,7 @@ from parameters import (DT, EMRI_PARAMS, FREQUENCIES, GC_PHI, GC_THETA, MAX_LAG_
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
-CACHE = HERE / "cache" / "fig11_lag_truncation.npz"
+CACHE = HERE / "cache" / "fig16_lag_truncation_zeroth_order.npz"
 ORBIT_FILE = ROOT / "examples" / "esa-trailing-orbits.h5"
 
 NF = 2500                                       # Delta T = 1e4 s
@@ -58,7 +58,7 @@ def compute(lags):
     data = read_orbit_file(str(ORBIT_FILE))
     orbit_times = data.t0 + data.dt * np.arange(data.size)
     orbits = InterpolatedOrbits(orbit_times, data.positions, data.velocities)
-    # 200 d in, as in figure 8, so the figures see the same stretch of orbit.
+    # 200 d in, as in figure 14, so the figures see the same stretch of orbit.
     start = orbit_times[0] + 200 * 86400.0
     signal_times = start + DT * np.arange(N_SIGNAL)
     link = utils.Link(1, 2)
@@ -123,7 +123,7 @@ def compute(lags):
     return out
 
 
-def plot(res, path=HERE / "figures" / "fig11_lag_truncation.pdf", legend_loc="center right"):
+def plot(res, path=HERE / "figures" / "fig16_lag_truncation_zeroth_order.pdf", legend_loc="center right"):
     plt.style.use(HERE / "paper.mplstyle")
     values = np.concatenate([res[name] for name in NAMES])
     bottom = np.nanmin(values) / 3

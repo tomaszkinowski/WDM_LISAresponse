@@ -1,8 +1,8 @@
 import sys; sys.path.insert(0,'.')
 import numpy as np
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 from parameters import GC_THETA, GC_PHI, DT, N_SIGNAL
-orbits,start,_,link=fig8.setup()
+orbits,start,_,link=fig14.setup()
 t=start+np.linspace(0,DT*N_SIGNAL,20000)
 n=np.array([np.sin(GC_THETA)*np.cos(GC_PHI),np.sin(GC_THETA)*np.sin(GC_PHI),np.cos(GC_THETA)])
 c=299792458.0

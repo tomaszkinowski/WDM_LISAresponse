@@ -1,12 +1,12 @@
-"""Figure 8 with the prototype response corrections.
+"""Figure 14 with the prototype response corrections.
 
-Figure 8 (fig8_mismatch_vs_dT.py) recomputed several ways from the same
+Figure 14 (fig14_mismatch_vs_dT_zeroth_order.py) recomputed several ways from the same
 responses, via prototypes/delay_rate_correction/response_corrections.py in this
 repository:
 
-- production: the wavelet response as figure 8 computes it, on the current
+- production: the wavelet response as figure 14 computes it, on the current
   WDM_GW_wavelets (which fixes the T' filter half-bin offset when Nt = 2 mod 4,
-  so it differs from figure 8's caches at coarse Delta T);
+  so it differs from figure 14's caches at coarse Delta T);
 - first: the shift with the first-order delay-rate term;
 - full: the amplitude-rate term on the unshifted grid, then the shift to
   second order in the delay's rate and first in its curvature;
@@ -20,8 +20,8 @@ repository:
   sinc term too, and with the first-order delay-rate kernel for the rest.
 
 Tilings, signals, references, on-/off-bin frequencies, the cut (padding, taper
-and m = 0) and the plot are figure 8's own; fig3_mismatch_vs_dT_corrected.py
-redraws the split_amp_sinc_first variant as figure 3. ../prototypes/delay_rate_correction
+and m = 0) and the plot are figure 14's own; fig9_mismatch_vs_dT.py
+redraws the split_amp_sinc_first variant as figure 9. ../prototypes/delay_rate_correction
 must be on PYTHONPATH. Run with no arguments to compute the variants without caches and plot them all;
 ``--only NF`` runs one tiling and the bounds at it, prints, caches nothing.
 ``--part K/COUNT`` computes tilings K, K + COUNT, ... into cache/parts/ and
@@ -36,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 from parameters import (DT, EMRI_PARAMS, GC_PHI, GC_THETA, MAX_LAG_L,
                         MONOCHROMATIC_PARAMS, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -137,7 +137,7 @@ def tiling(orbits, start, link, Nf):
 
 
 def compute(nfs, kinds=VARIANTS):
-    """fig8.compute for the variants `kinds`, sharing references and responses."""
+    """fig14.compute for the variants `kinds`, sharing references and responses."""
     import jax
 
     import WDM
@@ -145,12 +145,12 @@ def compute(nfs, kinds=VARIANTS):
     from WDM_LISAresponse.code.utils import utils
     from WDM_LISAresponse.code.waveforms import waveforms
 
-    orbits, start, signal_times, link = fig8.setup()
-    sky = {name: (GC_THETA, GC_PHI) for name in fig8.TONES}
+    orbits, start, signal_times, link = fig14.setup()
+    sky = {name: (GC_THETA, GC_PHI) for name in fig14.TONES}
     sky["EMRI"] = (EMRI_PARAMS["theta"], EMRI_PARAMS["phi"])
 
     signals, tone_params = {}, {}
-    for name, params in zip(fig8.TONES, MONOCHROMATIC_PARAMS):
+    for name, params in zip(fig14.TONES, MONOCHROMATIC_PARAMS):
         _, hp, hc = waveforms.generate_windowed_waveform(
             "monochromatic", t0=start, dt=DT, N=N_SIGNAL, model_kwargs=params,
             window_function=WINDOW_FUNCTION, window_kwargs=WINDOW_KWARGS)
@@ -169,11 +169,11 @@ def compute(nfs, kinds=VARIANTS):
                                              info["pad_left"], info["pad_right"])
         return hp, hc
 
-    ref_info = utils.wdm_padding_info(N_SIGNAL, fig8.REF_NF,
-                                      extra_rows_left=fig8.REF_ROWS,
-                                      extra_rows_right=fig8.REF_ROWS)
+    ref_info = utils.wdm_padding_info(N_SIGNAL, fig14.REF_NF,
+                                      extra_rows_left=fig14.REF_ROWS,
+                                      extra_rows_right=fig14.REF_ROWS)
     ref_response = LISAresponse(
-        WDM.WDM.WDM_transform(dt=DT, Nf=fig8.REF_NF, N=ref_info["target_length"]),
+        WDM.WDM.WDM_transform(dt=DT, Nf=fig14.REF_NF, N=ref_info["target_length"]),
         orbits, t0=start - ref_info["pad_left"] * DT, max_lag_L=MAX_LAG_L,
         num_interp_points=NUM_INTERP_POINTS, link_convention=(link,))
     references = {}
@@ -186,7 +186,7 @@ def compute(nfs, kinds=VARIANTS):
     print("references done", flush=True)
 
     out = {kind: dict(Nf=np.asarray(nfs), kept_rows=np.zeros(len(nfs), dtype=int),
-                      **{name: np.full(len(nfs), np.nan) for name in fig8.NAMES})
+                      **{name: np.full(len(nfs), np.nan) for name in fig14.NAMES})
            for kind in kinds}
     for j, Nf in enumerate(nfs):
         tick = time.perf_counter()
@@ -211,21 +211,21 @@ def compute(nfs, kinds=VARIANTS):
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s:  "
               + "  ".join(f"{name} " + "/".join(f"{out[kind][name][j]:.1e}"
                                                  for kind in kinds)
-                          for name in fig8.NAMES)
+                          for name in fig14.NAMES)
               + f"   ({time.perf_counter() - tick:.0f} s)", flush=True)
     return out
 
 
 def compute_bounds(nfs, kinds=VARIANTS):
-    """fig8.compute_bounds for the variants `kinds`."""
+    """fig14.compute_bounds for the variants `kinds`."""
     import jax
 
     from WDM_LISAresponse.code.utils import utils
     from WDM_LISAresponse.code.waveforms import waveforms
 
-    orbits, start, signal_times, link = fig8.setup()
-    freqs = dict(zip(("on", "off"), fig8.bound_frequencies(nfs)))
-    freqs["offsets"] = fig8.offset_frequencies(nfs)
+    orbits, start, signal_times, link = fig14.setup()
+    freqs = dict(zip(("on", "off"), fig14.bound_frequencies(nfs)))
+    freqs["offsets"] = fig14.offset_frequencies(nfs)
     out = {kind: dict(Nf=np.asarray(nfs), f_on=freqs["on"], f_off=freqs["off"],
                       f_offsets=freqs["offsets"],
                       on=np.full(freqs["on"].shape, np.nan),
@@ -239,7 +239,7 @@ def compute_bounds(nfs, kinds=VARIANTS):
         info, wdm, response, tables, centre, cut = tiling(orbits, start, link, Nf)
         for i, params in enumerate(MONOCHROMATIC_PARAMS):
             points = [(which, (i, j)) for which in ("on", "off")]
-            points += [("offsets", (i, k, j)) for k in range(len(fig8.OFFSETS))]
+            points += [("offsets", (i, k, j)) for k in range(len(fig14.OFFSETS))]
             for which, index in points:
                 f = freqs[which][index]
                 if np.isnan(f):
@@ -265,7 +265,7 @@ def compute_bounds(nfs, kinds=VARIANTS):
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s bounds:  "
               + "  ".join(f"{name} off " + "/".join(f"{out[kind]['off'][i, j]:.1e}"
                                                      for kind in kinds)
-                          for i, name in enumerate(fig8.TONES))
+                          for i, name in enumerate(fig14.TONES))
               + f"   ({time.perf_counter() - tick:.0f} s)", flush=True)
     return out
 
@@ -286,7 +286,7 @@ def merge(count, kinds=VARIANTS):
             order = np.argsort(np.concatenate([p["Nf"] for p in parts]))
             merged = {key: np.concatenate([p[key] for p in parts], axis=-1)[..., order]
                       for key in parts[0]}
-            assert np.array_equal(merged["Nf"], fig8.NF), merged["Nf"]
+            assert np.array_equal(merged["Nf"], fig14.NF), merged["Nf"]
             np.savez(CACHES[kind][which], **merged)
 
 
@@ -303,7 +303,7 @@ if __name__ == "__main__":
     if "--part" in sys.argv:
         # --part K/COUNT: tilings K, K + COUNT, ..., caches of its own, no plot
         index, count = map(int, sys.argv[sys.argv.index("--part") + 1].split("/"))
-        nfs = fig8.NF[index::count]
+        nfs = fig14.NF[index::count]
         paths = part_paths(index, count, kinds)
         paths[kinds[0]][0].parent.mkdir(parents=True, exist_ok=True)
         for which, run in ((0, compute), (1, compute_bounds)):
@@ -316,10 +316,10 @@ if __name__ == "__main__":
     for index, run in ((0, compute), (1, compute_bounds)):
         missing = tuple(kind for kind in VARIANTS if not CACHES[kind][index].exists())
         if missing:
-            out = run(fig8.NF, missing)
+            out = run(fig14.NF, missing)
             for kind in missing:
                 np.savez(CACHES[kind][index], **out[kind])
     for kind in VARIANTS:
-        fig8.plot(*(dict(np.load(path)) for path in CACHES[kind]),
+        fig14.plot(*(dict(np.load(path)) for path in CACHES[kind]),
                   HERE / "figures" / "investigations" / f"fig8_{kind}_L{MAX_LAG_L}.pdf",
                   source_envelope=True)

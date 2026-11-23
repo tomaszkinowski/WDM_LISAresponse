@@ -16,7 +16,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "plotting"))
 
 import WDM
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 from parameters import (DT, GC_PHI, GC_THETA, MAX_LAG_L, MONOCHROMATIC_PARAMS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 from WDM_LISAresponse import LISAresponse
@@ -31,7 +31,7 @@ block = jax.block_until_ready
 
 
 def main(n_signal, nfs):
-    orbits, start, _, _ = fig8.setup()
+    orbits, start, _, _ = fig14.setup()
     signal_times = start + DT*np.arange(n_signal)
     for Nf in nfs:
         info = utils.wdm_padding_info(

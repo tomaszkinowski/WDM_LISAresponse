@@ -23,7 +23,7 @@ import breakdown_offbin as d
 from breakdown_offbin import (DT, EMRI_PARAMS, GC_PHI, GC_THETA, MAX_LAG_L,
                             MONOCHROMATIC_PARAMS, N_SIGNAL, NUM_INTERP_POINTS,
                             WINDOW_FUNCTION, WINDOW_KWARGS, LISAresponse, WDM,
-                            fig8, rs, utils, waveforms)
+                            fig14, rs, utils, waveforms)
 from amp_sinc_kernel import amp_weights, apply_amplitude_rate, build_amp_table
 from elements_amplitude import closed_Z
 
@@ -46,9 +46,9 @@ def check_small():
 
 def main(nfs):
     check_small()
-    orbits, start, signal_times, link = fig8.setup()
-    freqs = fig8.bound_frequencies(fig8.NF)[1]
-    nf_index = {int(nf): j for j, nf in enumerate(fig8.NF)}
+    orbits, start, signal_times, link = fig14.setup()
+    freqs = fig14.bound_frequencies(fig14.NF)[1]
+    nf_index = {int(nf): j for j, nf in enumerate(fig14.NF)}
     td_gen = waveforms.emri_generator()
     _, emri_p, emri_c = waveforms.generate_windowed_waveform(
         "emri", t0=start, dt=DT, N=N_SIGNAL,
@@ -75,7 +75,7 @@ def main(nfs):
 
         j = nf_index[Nf]
         cases = [(f"{name} off", dict(p, f=freqs[i, j]), (GC_THETA, GC_PHI))
-                 for i, (name, p) in enumerate(zip(fig8.TONES, MONOCHROMATIC_PARAMS))
+                 for i, (name, p) in enumerate(zip(fig14.TONES, MONOCHROMATIC_PARAMS))
                  if name != "0.3 mHz" and not np.isnan(freqs[i, j])]
         cases.append(("EMRI", None, (EMRI_PARAMS["theta"], EMRI_PARAMS["phi"])))
         idx = jnp.asarray([0])

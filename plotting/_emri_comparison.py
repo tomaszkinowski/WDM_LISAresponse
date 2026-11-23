@@ -1,4 +1,4 @@
-"""What figures 12 and 13 share: the EMRI on figure 8's grid, the four codes compared
+"""What figures 12 and 13 share: the EMRI on figure 14's grid, the four codes compared
 on it, the printed mismatches, and the figure drawn for each quantity - the whole
 record and a quarter-day zoom. Investigations, in figures/investigations/: the same
 with the source's h+ and hx over the zoom added, and the residuals over the zoom.
@@ -52,7 +52,7 @@ STYLES = dict(WDM=dict(color=DARK, lw=1.2, zorder=3),
 
 
 def signal_start():
-    """The signal's first sample, as figure 8: 200 d into the orbit file."""
+    """The signal's first sample, as figure 14: 200 d into the orbit file."""
     from lisaorbits.file import read_orbit_file
 
     data = read_orbit_file(str(ORBIT_FILE))
@@ -86,7 +86,7 @@ def waveform(n_signal):
 
 
 def prepare(n_signal, nf, link_convention=None, extra_rows=0):
-    """The EMRI, padded onto an nf-band grid as in figure 8 (200 d into the orbit
+    """The EMRI, padded onto an nf-band grid as in figure 14 (200 d into the orbit
     file), and the transform, response and cut on that grid. ``extra_rows`` widens
     the guard band at each end, for a second time shift (TDI)."""
     from lisaorbits import InterpolatedOrbits
@@ -347,7 +347,7 @@ def main(compute, stem, names, labels, quantity, symbol, residual=None, variant=
     No arguments: compute (or reuse the cache) at Nf = NF and plot. ``--short``: 2**19
     samples (24 d), printed and drawn into figures/investigations/ without caching.
     ``--nf NF``: the whole record at another tiling, cached and drawn as an
-    investigation. ``variant`` (e.g. "corrected") suffixes the cache and every file
+    investigation. ``variant`` (e.g. "zeroth_order") suffixes the cache and every file
     with it, the figure and the mismatches still going to figures/."""
     investigations = HERE / "figures" / "investigations"
     tag = f"_{variant}" if variant else ""

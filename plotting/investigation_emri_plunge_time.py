@@ -1,13 +1,13 @@
-"""Investigation (not a paper figure): figure 7 and the h+ time-frequency map
-(fig_new_emri_tf_map.py) for the EMRI of parameters.py with p0
+"""Investigation (not a paper figure): figure 8 and the h+ time-frequency map
+(fig2_emri_tf_map.py) for the EMRI of parameters.py with p0
 moved so that it plunges closer to the end of the record, to see how much visible
 evolution each choice gives. P0 maps each plunge time after the end of the record
 (years, FEW's KerrEccEqFlux trajectory) to the p0, rounded to 0.01, that gives it;
 everything else is EMRI_PARAMS.
 
 Each waveform is cached as cache/investigation_emri_plunge_p0<p0>.npz; the figures
-go to figures/investigations/, as fig7_emri_polarisations_plunge<years>yr.pdf and
-fig_new_emri_tf_map_plunge<years>yr.pdf.
+go to figures/investigations/, as fig8_emri_polarisations_plunge<years>yr.pdf and
+fig2_emri_tf_map_plunge<years>yr.pdf.
 """
 
 import time
@@ -16,8 +16,8 @@ from pathlib import Path
 import numpy as np
 
 import _emri_comparison as emri
-import fig7_emri_polarisations as fig7
-import fig_new_emri_tf_map as tf_map
+import fig8_emri_polarisations as fig8
+import fig2_emri_tf_map as tf_map
 from parameters import DT, EMRI_PARAMS, N_SIGNAL, WINDOW_FUNCTION, WINDOW_KWARGS
 
 HERE = Path(__file__).parent
@@ -46,5 +46,5 @@ if __name__ == "__main__":
     out.mkdir(parents=True, exist_ok=True)
     for years, p0 in P0.items():
         h_plus, h_cross = waveform(p0)
-        fig7.draw(h_plus, h_cross, out / f"fig7_emri_polarisations_plunge{years:g}yr.pdf")
-        tf_map.draw(h_plus, h_cross, out / f"fig_new_emri_tf_map_plunge{years:g}yr.pdf")
+        fig8.draw(h_plus, h_cross, out / f"fig8_emri_polarisations_plunge{years:g}yr.pdf")
+        tf_map.draw(h_plus, h_cross, out / f"fig2_emri_tf_map_plunge{years:g}yr.pdf")

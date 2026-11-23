@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "plotting"))
 
 from scipy.interpolate import make_interp_spline
 
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 import investigation_fig8_delay_rate as inv
 from parameters import (DT, GC_PHI, GC_THETA, MONOCHROMATIC_PARAMS, N_SIGNAL,
                         NUM_INTEGRAL_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -35,7 +35,7 @@ OFFSETS = (0.0, 0.25, 0.45)
 
 
 def main(nfs):
-    orbits, start, signal_times, link = fig8.setup()
+    orbits, start, signal_times, link = fig14.setup()
     for Nf in nfs:
         tick = time.perf_counter()
         info, wdm, response, tables, centre, cut = inv.tiling(orbits, start, link, Nf)

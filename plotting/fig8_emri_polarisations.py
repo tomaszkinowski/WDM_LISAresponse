@@ -1,4 +1,4 @@
-"""Figure 7: the EMRI's h+ and hx (parameters.py), drawn as figures 12 and 13 draw
+"""Figure 8: the EMRI's h+ and hx (parameters.py), drawn as figures 12 and 13 draw
 the response: the whole record over a third-of-a-day zoom, both on the span those
 figures keep (the cut record at Delta T = 1e4 s), on the signal's own clock.
 
@@ -87,7 +87,7 @@ def draw(h_plus, h_cross, path):
 
 
 def main():
-    draw(*emri.waveform(N_SIGNAL), HERE / "figures" / "fig7_emri_polarisations.pdf")
+    draw(*emri.waveform(N_SIGNAL), HERE / "figures" / "fig8_emri_polarisations.pdf")
 
 
 if __name__ == "__main__":

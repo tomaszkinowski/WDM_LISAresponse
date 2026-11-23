@@ -2,7 +2,7 @@ r"""
 What limits the corrected response off-bin at coarse Delta T.
 
 At each tiling, for the figure-5 tones moved to their on-bin and off-bin
-frequencies (fig8.bound_frequencies) and for the EMRI, the corrected wavelet
+frequencies (fig14.bound_frequencies) and for the EMRI, the corrected wavelet
 response's error against the time-domain reference is split into pieces, each
 measured on its own against an exact counterpart:
 
@@ -40,7 +40,7 @@ jax.config.update("jax_enable_x64", True)
 RESPONSE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RESPONSE_ROOT / "plotting"))
 
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 from parameters import (DT, EMRI_PARAMS, GC_PHI, GC_THETA, MAX_LAG_L,
                         MONOCHROMATIC_PARAMS, N_SIGNAL, NUM_INTEGRAL_POINTS,
                         NUM_INTERP_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
@@ -70,9 +70,9 @@ def tukey_continuous(t, t_start, n_samples, alpha):
 
 
 def main(nfs):
-    orbits, start, signal_times, link = fig8.setup()
-    freqs = dict(zip(("on", "off"), fig8.bound_frequencies(fig8.NF)))
-    nf_index = {int(nf): j for j, nf in enumerate(fig8.NF)}
+    orbits, start, signal_times, link = fig14.setup()
+    freqs = dict(zip(("on", "off"), fig14.bound_frequencies(fig14.NF)))
+    nf_index = {int(nf): j for j, nf in enumerate(fig14.NF)}
 
     td_gen = waveforms.emri_generator()
     _, emri_p, emri_c = waveforms.generate_windowed_waveform(
@@ -107,7 +107,7 @@ def main(nfs):
 
         cases = []
         j = nf_index[Nf]
-        for i, (name, params) in enumerate(zip(fig8.TONES, MONOCHROMATIC_PARAMS)):
+        for i, (name, params) in enumerate(zip(fig14.TONES, MONOCHROMATIC_PARAMS)):
             if name == "0.3 mHz":
                 continue
             for which in ("on", "off"):

@@ -1,21 +1,14 @@
-"""Figure 12: the EMRI (parameters.py) on link 1 -> 2 at Delta T = 1e4 s, from four
-codes - the wavelet one_arm_response, the time-domain reference
-one_arm_response_time_domain, lisagwresponse and fastlisaresponse: the whole
-record, and a quarter-day zoom with the wavelet-minus-lisagwresponse residual
-overlaid (magnified). In figures/investigations/: the same with the source's h+ and
-hx over the zoom (fig12_emri_link_signals_waveform.pdf), and the residuals of every
-pair over the zoom (fig12_emri_link_residuals.pdf).
+"""Figure 12 with the zeroth-order wavelet response: the EMRI on link 1 -> 2 at
+Delta T = 1e4 s, with production one_arm_response in place of the first-order
+response; the time-domain reference, lisagwresponse and fastlisaresponse are
+computed alongside. The grid, window and cut are figure 14's at this tiling, so the
+wavelet-vs-reference mismatch here is figure 14's EMRI point at 1e4 s.
 
-The mismatches over the whole cut record, for the caption, are printed and written
-to figures/fig12_emri_link_mismatches.txt. The grid, window and cut are figure 8's
-at this tiling, so the wavelet-vs-reference mismatch here is figure 8's EMRI point
-at 1e4 s. What the four share, and how the external codes are converted, is in
-_emri_comparison.py.
-
-Run with no arguments to compute (or reuse the cache) and plot. ``--short`` runs
-2**19 samples (24 d), prints the mismatches and draws into figures/investigations/
-without caching - for checking the pipeline on the laptop. ``--nf NF`` runs the
-whole record at another tiling, cached and drawn as an investigation.
+Writes figures/fig12_emri_link_signals_zeroth_order.pdf and
+fig12_emri_link_mismatches_zeroth_order.txt, and
+figures/investigations/fig12_emri_link_{signals_waveform,residuals}_zeroth_order.pdf;
+cache cache/investigation_fig12_zeroth_order.npz. Options as figure 12's
+(``--short``, ``--nf NF``).
 """
 
 import time
@@ -23,10 +16,8 @@ import time
 import numpy as np
 
 import _emri_comparison as emri
+from fig12_emri_link_comparison import LABELS
 from parameters import NUM_INTEGRAL_POINTS
-
-LABELS = dict(WDM="WDM response", TD="time-domain reference", GWR="lisagwresponse",
-              FLR="fastlisaresponse")
 
 
 def compute(n_signal, nf):
@@ -68,4 +59,5 @@ def compute(n_signal, nf):
 if __name__ == "__main__":
     emri.main(compute, "fig12_emri_link",
               ("fig12_emri_link_signals", "fig12_emri_link_residuals"),
-              LABELS, "link 1 -> 2", r"\delta\ell_{1\to2}", residual=("WDM", "GWR"))
+              LABELS, "link 1 -> 2", r"\delta\ell_{1\to2}", residual=("WDM", "GWR"),
+              variant="zeroth_order")

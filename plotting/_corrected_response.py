@@ -3,7 +3,7 @@ in the jitted every-link form of prototypes/delay_rate_correction/fast_split.py
 (float64, interpolated tables).
 
 The waveform goes in already evaluated at t + delta_R(t), delta_R the Roemer delay of
-the constellation centre, as figure 3 does it: tones analytically (tone_warp), the
+the constellation centre, as figure 9 does it: tones analytically (tone_warp), the
 EMRI by quintic spline (spline_warp). The lag range and interpolation points of every
 correction table are those of the response's own filter tables.
 ../prototypes/delay_rate_correction must be on PYTHONPATH.

@@ -1,4 +1,4 @@
-"""Figure 5: three WDM wavelets in the time domain (top), the frequency domain
+"""Figure 6: three WDM wavelets in the time domain (top), the frequency domain
 (right), and the tiles they occupy in the time-frequency plane (centre).
 
 Ported from cell 11 of WDM_GW_wavelets/examples/plotting_the_mother_wavelet.ipynb.
@@ -101,7 +101,7 @@ for n, m, c in zip(N_VALS, M_VALS, PALETTE):
                   path_effects=[patheffects.withStroke(linewidth=1.5, foreground="white")])
 
 plt.subplots_adjust(wspace=0.05, hspace=0.05, left=0.08, right=0.92, top=0.95, bottom=0.08)
-fig.savefig(HERE / "figures" / "fig5_wdm_basis.pdf")
+fig.savefig(HERE / "figures" / "fig6_wdm_basis.pdf")
 
 # The same figure with the tiling axes in units of dT and dF.
 n_ticks = np.arange(0, wdm.Nt + 1, wdm.Nt // 4)
@@ -110,4 +110,4 @@ ax_tf.set_xticks(n_ticks * wdm.dT, [str(n) for n in n_ticks])
 ax_tf.set_yticks(m_ticks * wdm.dF, [str(m) for m in m_ticks])
 ax_tf.set_xlabel(r"Time $t/\Delta T$")
 ax_tf.set_ylabel(r"Frequency $f/\Delta F$")
-fig.savefig(HERE / "figures" / "fig5_wdm_basis_dimensionless.pdf")
+fig.savefig(HERE / "figures" / "fig6_wdm_basis_dimensionless.pdf")

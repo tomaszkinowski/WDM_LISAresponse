@@ -1,10 +1,10 @@
-"""New figure (unnumbered): figure 3's EMRI panel on its own - the mismatch of the
+"""Figure 4: figure 9's EMRI panel on its own - the mismatch of the
 split_amp_sinc_first response against the time-domain reference on link 1 -> 2, as a
-function of the tiling Delta T - with figure 8's production response for the same
+function of the tiling Delta T - with figure 14's production response for the same
 EMRI behind it, muted. Hollow markers, the 3600-36000 s band and the Delta F axis
-are figure 8's.
+are figure 14's.
 
-Plots the caches fig8_mismatch_vs_dT.py and investigation_fig8_delay_rate.py write.
+Plots the caches fig14_mismatch_vs_dT_zeroth_order.py and investigation_fig8_delay_rate.py write.
 """
 
 from pathlib import Path
@@ -13,13 +13,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 from _colours import DARK, HAIRLINE, INK, MUTED, PALETTE
 from parameters import DT
 
 HERE = Path(__file__).parent
 CORRECTED = HERE / "cache" / "investigation_fig8_split_amp_sinc_first.npz"
-PRODUCTION = fig8.CACHE
+PRODUCTION = fig14.CACHE
 
 
 def main():
@@ -27,10 +27,10 @@ def main():
     corrected, production = dict(np.load(CORRECTED)), dict(np.load(PRODUCTION))
     assert np.array_equal(corrected["Nf"], production["Nf"])
     delta_t = corrected["Nf"] * DT
-    leaks = delta_t < fig8.emri_shade_edge()
+    leaks = delta_t < fig14.emri_shade_edge()
 
     fig, ax = plt.subplots(figsize=(3.375, 2.66), layout="constrained")
-    ax.axvspan(*fig8.DT_BAND, color=PALETTE[3], alpha=0.3, lw=0, zorder=0.5)
+    ax.axvspan(*fig14.DT_BAND, color=PALETTE[3], alpha=0.3, lw=0, zorder=0.5)
     markers = dict(marker="o", ms=2.5, mec="white", mew=0.4)
     hollow = dict(ls="none", marker="o", ms=2.5, mfc="white", mew=0.7, zorder=5)
     series = ((production["EMRI"], MUTED, 0.8, r"0$^{\mathrm{th}}$-order response"),
@@ -54,7 +54,7 @@ def main():
     fig.legend(handles, labels, loc="outside lower center", fontsize="small", ncols=2,
                handlelength=1.4, handletextpad=0.5, columnspacing=0.9, frameon=False)
 
-    path = HERE / "figures" / "fig_new_emri_mismatch_corrected.pdf"
+    path = HERE / "figures" / "fig4_emri_mismatch_vs_dT.pdf"
     fig.savefig(path)
     print(f"wrote {path}")
 

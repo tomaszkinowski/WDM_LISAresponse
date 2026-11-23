@@ -1,4 +1,4 @@
-"""Figure 3: figure 8 for the split_amp_sinc_first response (the constellation
+"""Figure 9: figure 14 for the split_amp_sinc_first response (the constellation
 centre's delay applied to the waveform, with the amplitude-rate, sinc and
 first-order delay-rate corrections on the per-link rest), the shading raised to
 the source where it lies above the off-bin bound.
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 
 HERE = Path(__file__).parent
 KIND = "split_amp_sinc_first"
@@ -19,5 +19,5 @@ CACHES = (HERE / "cache" / f"investigation_fig8_{KIND}.npz",
           HERE / "cache" / f"investigation_fig8_{KIND}_bounds.npz")
 
 if __name__ == "__main__":
-    fig8.plot(*(dict(np.load(path)) for path in CACHES),
-              HERE / "figures" / "fig3_mismatch_vs_dT_corrected.pdf", source_envelope=True)
+    fig14.plot(*(dict(np.load(path)) for path in CACHES),
+              HERE / "figures" / "fig9_mismatch_vs_dT.pdf", source_envelope=True)

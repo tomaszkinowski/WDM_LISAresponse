@@ -16,7 +16,7 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "plotting"))
 
-import fig8_mismatch_vs_dT as fig8
+import fig14_mismatch_vs_dT_zeroth_order as fig14
 from parameters import GC_PHI, GC_THETA
 
 import fast_split as fs
@@ -27,7 +27,7 @@ rel = lambda a, b: float(jnp.linalg.norm(jnp.asarray(a, jnp.float64) - b)/jnp.li
 
 
 def main(src, Nf):
-    orbits, start, _, _ = fig8.setup()
+    orbits, start, _, _ = fig14.setup()
     _, wdm, response, consts = build(Nf, orbits, start)
     wp, wc = (jnp.asarray(np.load(src/f"{k}_{Nf}.npy")) for k in ("wp", "wc"))
     ref = np.load(src/f"ref_{Nf}.npy")

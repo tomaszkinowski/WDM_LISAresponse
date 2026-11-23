@@ -1,6 +1,6 @@
-"""New figure (unnumbered): the EMRI's h+ (parameters.py) on the WDM grid at
+"""Figure 2: the EMRI's h+ (parameters.py) on the WDM grid at
 Delta T = 1e4 s (Nf = 2500), as |w_nm| on a log scale spanning DYNAMIC_RANGE below
-its largest coefficient. The grid is figure 7's: padded and windowed as figure 8, cut to the rows
+its largest coefficient. The grid is figure 8's: padded and windowed as figure 14, cut to the rows
 holding neither padding nor a tapered sample, m = 0 dropped. Only the bands the
 signal reaches are drawn.
 
@@ -74,7 +74,7 @@ def draw(h_plus, h_cross, path):
 
 
 def main():
-    draw(*emri.waveform(N_SIGNAL), HERE / "figures" / "fig_new_emri_tf_map.pdf")
+    draw(*emri.waveform(N_SIGNAL), HERE / "figures" / "fig2_emri_tf_map.pdf")
 
 
 if __name__ == "__main__":
