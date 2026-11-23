@@ -59,9 +59,11 @@ docs = [
 # pre-release lets pip pick it without --pre. On macOS it and
 # lisaanalysistools each vendor libstdc++.6.dylib, and loading both aborts the
 # interpreter: run comparison.conventions_flr.check_environment() for the fix.
+# fastlisaresponse imports gpubackendtools without declaring it.
 compare-flr = [
     "fastlisaresponse>=1.2.1a0",
     "lisaanalysistools",
+    "gpubackendtools",
 ]
 # lisagwresponse 3 takes the ICRS ra/dec and pytdi 2.2 has the
 # Data.from_orbits(dataset=...) that conventions_gwr passes.
