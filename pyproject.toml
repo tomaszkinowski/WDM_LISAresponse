@@ -12,8 +12,9 @@ dependencies = [
     # Distribution name, not the import name: this installs as
     # WDM-GW-wavelets and imports as WDM. Naming it "WDM" here resolves only
     # on a machine where it already happens to be installed, and fails on a
-    # clean one - there is no distribution by that name.
-    "WDM_GW_wavelets",
+    # clean one - there is no distribution by that name. 0.0.6 is the first
+    # release with the FFT inverse transform that idwt round trips rely on.
+    "WDM_GW_wavelets>=0.0.6",
     "numpy",
     "scipy",
     "jax",

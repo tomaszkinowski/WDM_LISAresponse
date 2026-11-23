@@ -146,8 +146,9 @@ def interior(cfg, dead_samples : int = 0) -> dict:
     """The part of the wavelet grid every code has valid output on.
 
     ``utils.wdm_cut_info`` on this configuration's padding: the guard rows go,
-    and so does the :math:`m = 0` band, which ``WDM_transform`` does not
-    compute correctly by default. Apply it with ``utils.apply_wdm_cut``.
+    and so does the :math:`m = 0` band, which the WDM time shift does not
+    cover and which holds the integration constant the other codes' output
+    lacks. Apply it with ``utils.apply_wdm_cut``.
     ``dead_samples`` is the widest unusable stretch at either end of the other
     codes' records, and must fit inside our guard band.
     """
