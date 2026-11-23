@@ -7,8 +7,8 @@ on the rows holding neither padding nor a tapered sample, without the m = 0
 band, which WDM_transform gets wrong without calc_m0. A signal leaks into that
 dropped band below (1 - A_frac) Delta F, the edge of the Meyer window, not just
 below the band edge Delta F / 2. Hollow markers are tones that do, and the EMRI
-where more than 1% of its WDM power lies in m = 0 (from investigation_emri_m0.py's
-dense sweep of Delta T, which must be run first).
+where more than 1% of its WDM power lies in m = 0, from a denser sweep of
+Delta T (emri_m0_sweep).
 
 Each tone's mismatch depends on where it falls within its band (figure 15), so at
 every tiling the same tone is also moved to its nearest point halfway between two
@@ -84,8 +84,12 @@ A_FRAC = 0.25
 DT_BAND = (3600.0, 36000.0)                     # 3600-36000 s, recommended in fig 3
 
 # The EMRI is drawn hollow where more than this fraction of its WDM power (h_plus
-# and h_cross) lies in m = 0, m0 in investigation_emri_m0.py's cache.
-EMRI_SWEEP_CACHE = HERE / "cache" / "investigation_emri_m0.npz"
+# and h_cross) lies in m = 0, from emri_m0_sweep on these tilings: 80-3000 s
+# densely, plus figure 14's own in that range; Nf must be even.
+EMRI_SWEEP_CACHE = HERE / "cache" / "fig14_emri_m0.npz"
+EMRI_SWEEP_NF = np.unique(np.concatenate([
+    2 * np.round(np.logspace(np.log10(80), np.log10(3000), 40) / (2 * DT)).astype(int),
+    NF[NF * DT <= 3000]]))
 EMRI_M0_LIMIT = 0.01
 # With the edge bands dropped, the EMRI is hollow where less than this fraction of
 # its WDM power lies in the compared bands (emri_shade_edge).
@@ -108,13 +112,48 @@ def leak_edge(freq_slice=None):
     return lowest_band(freq_slice) - A_FRAC
 
 
+def emri_m0_sweep(nfs=EMRI_SWEEP_NF):
+    """The fraction of the EMRI's WDM power (h_plus and h_cross) in the dropped m = 0
+    band (m0) and in bands 2 to Nf - 2 (compared), at each tiling, on figure 14's
+    padded grids."""
+    import jax
+
+    import WDM
+    from WDM_LISAresponse.code.utils import utils
+    from WDM_LISAresponse.code.waveforms import waveforms
+    import _emri_comparison as emri
+
+    _, _, signal_times, _ = setup()
+    h_plus, h_cross = (np.asarray(h) for h in emri.waveform(N_SIGNAL))
+    taper = waveforms.tukey_taper_samples(N_SIGNAL, WINDOW_KWARGS["alpha"])
+    out = dict(Nf=np.asarray(nfs), m0=np.full(len(nfs), np.nan),
+               compared=np.full(len(nfs), np.nan))
+    for j, Nf in enumerate(nfs):
+        info = utils.wdm_padding_info(N_SIGNAL, int(Nf), max_lag_L=MAX_LAG_L,
+                                      taper_samples=taper)
+        wdm = WDM.WDM.WDM_transform(dt=DT, Nf=int(Nf), N=info["target_length"])
+        _, hp, hc = utils.apply_zero_padding(signal_times, h_plus, h_cross,
+                                             info["pad_left"], info["pad_right"])
+        power = np.asarray(wdm.dwt(hp)) ** 2 + np.asarray(wdm.dwt(hc)) ** 2
+        out["m0"][j] = power[:, 0].sum() / power.sum()
+        out["compared"][j] = power[:, EDGE_FREQ_SLICE].sum() / power.sum()
+        # each tiling compiles for its own shapes; let the compiled code go
+        del wdm, power
+        jax.clear_caches()
+    return out
+
+
 def emri_shade_edge(freq_slice=None):
     """The Delta T below which the EMRI is drawn hollow. By default, where more than
     1% of its WDM power lies in m = 0. With edge bands dropped, the leak no longer
     shows in the mismatch (the dropped bands' error is not compared), so the hollow
     points mark coverage instead: where less than half its WDM power lies in the
     compared bands. Both are interpolated in log Delta T between the dense sweep's
-    tilings, at the first one past the limit."""
+    tilings, at the first one past the limit. The sweep is computed and cached on
+    first use."""
+    if not EMRI_SWEEP_CACHE.exists():
+        EMRI_SWEEP_CACHE.parent.mkdir(exist_ok=True)
+        np.savez(EMRI_SWEEP_CACHE, **emri_m0_sweep())
     sweep = dict(np.load(EMRI_SWEEP_CACHE))
     if freq_slice is None:
         fraction, limit = -sweep["m0"], -EMRI_M0_LIMIT
