@@ -10,8 +10,7 @@ import numpy as np
 from parameters import DT, WINDOW_KWARGS
 
 from . import fast_split as fs
-from .amp_sinc_kernel import amp_weights, build_amp_table, build_sinc_table
-from .rate_kernel import build_rate_tables
+from .tables import amp_weights, build_amp_table, build_rate_tables, build_sinc_table
 
 
 def tukey_continuous(t, t_start, n_samples, alpha):

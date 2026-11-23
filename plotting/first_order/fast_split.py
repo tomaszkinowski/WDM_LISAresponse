@@ -1,8 +1,8 @@
 r"""
-``split_amp_sinc_first`` for every link of one source as a single jitted call.
+The first-order response (``split_amp_sinc_first``) for every link of one source
+as a single jitted call.
 
-The model is `response_corrections.split_responses`' ``split_amp_sinc_first``:
-the waveform arrives already evaluated at :math:`t+\delta_R(t)`, with
+The waveform arrives already evaluated at :math:`t+\delta_R(t)`, with
 :math:`\delta_R=\hat n\cdot x_c/c` the Roemer delay of the constellation
 centre, and each link adds the amplitude-rate and sinc terms to its unshifted
 grid and shifts the rest with the first-order delay-rate kernel. The rest is
@@ -11,7 +11,7 @@ the delay that composes with the warp to :math:`\delta_n`,
 transforms of that warped waveform, as production's input is the transforms
 of the plain one.
 
-What changes is only the arrangement:
+Structure:
 
 - everything source-independent is built once (`setup`): the filter, rate,
   amplitude and sinc tables, the link geometry, :math:`x_c(t_n)`;
@@ -49,10 +49,9 @@ def roemer_rows(theta, phi, centre):
 def shared_sums(wdm, amp_weights, sinc_weights, wdm_coeff):
     r"""
     The amplitude-rate lag sum and the three sinc lag sums of one grid, in one
-    pass: `amp_sinc_kernel.apply_amplitude_rate` and the per-sigma
-    accumulators of `apply_sinc_rate`, before any slope. Terms whose weight
-    vanishes by the window's symmetry are left out: every amplitude weight at
-    sigma = 0, and the sinc weights at sigma = 0 for even l.
+    pass, before any slope. Terms whose weight vanishes by the window's symmetry
+    are left out: every amplitude weight at sigma = 0, and the sinc weights at
+    sigma = 0 for even l.
 
     Returns
     -------
@@ -89,28 +88,6 @@ def shared_sums(wdm, amp_weights, sinc_weights, wdm_coeff):
                 s = sinc_weights[k, i]*coeff
                 sinc[k] = sinc[k] + (s*sign_m if flip else s)
     return amp_same + amp_flip*sign_m, tuple(sinc)
-
-
-def link_grid(freqs, dF, amp_row_p, amp_row_c, tau, d_amp_p, d_amp_c, d_tau,
-              wp, wc, zp, sp, zc, sc):
-    r"""
-    One link's unshifted grid with the amplitude-rate and sinc terms,
-
-    .. math::
-
-        S_0(a^+\omega^+ + a^\times\omega^\times + \dot a^+ Z^+ + \dot a^\times Z^\times)
-        + f\dot\tau\, D_0\,(a^+ Z^+ + a^\times Z^\times)
-        + \tau\sum_\sigma D_\sigma\,(a^+ S^+_\sigma + a^\times S^\times_\sigma),
-
-    with :math:`a=\tfrac12\ell F` per row, :math:`S_0=\mathrm{sinc}(f_m\tau)`,
-    :math:`D_\sigma=\mathrm{sinc}'(x_\sigma)` at
-    :math:`x_\sigma=(f_m+\sigma\Delta F/2)\tau`: :math:`\dot A` by the product
-    rule on the per-row rates, and every sinc and slope from one sincos grid,
-    the half-bin offsets by angle addition.
-    """
-    return _grid_core(freqs[None, :], dF, amp_row_p[:, None], amp_row_c[:, None],
-                      tau[:, None], d_amp_p[:, None], d_amp_c[:, None], d_tau[:, None],
-                      wp, wc, zp, sp, zc, sc)
 
 
 def _grid_core(freqs, dF, ap, ac, tau, d_ap, d_ac, d_tau, wp, wc, zp, sp, zc, sc):
@@ -183,29 +160,6 @@ def stage_common(wdm, consts, theta, phi, wp, wc):
     return rows, sums
 
 
-def _link_grid(wdm, consts, rows, wp, wc, sums, j):
-    rest, amp_row_p, amp_row_c, tau = rows
-    grad = lambda q: jnp.gradient(q, wdm.dT, axis=-1)
-    return link_grid(consts["freqs"], wdm.dF, amp_row_p[j], amp_row_c[j], tau[j],
-                     grad(amp_row_p[j]), grad(amp_row_c[j]), grad(tau[j]),
-                     wp, wc, *sums)
-
-
-def _link_shift(wdm, consts, rows, grid, j):
-    rest = rows[0][j]
-    filters = row_filters(wdm, consts["filters"], consts["rate"], rest,
-                          jnp.gradient(rest, wdm.dT))
-    return rate_shift(wdm, filters, grid, rest)
-
-
-@partial(jax.jit, static_argnums=0)
-def stage_links(wdm, consts, rows, wp, wc, sums):
-    """Every link's grid and its rate-corrected shift, in one graph."""
-    return jnp.stack([_link_shift(wdm, consts, rows,
-                                  _link_grid(wdm, consts, rows, wp, wc, sums, j), j)
-                      for j in range(rows[0].shape[0])])
-
-
 @partial(jax.jit, static_argnums=0)
 def stage_grids(wdm, consts, rows, wp, wc, sums):
     """Every link's grid, all links in one pass (`link_grids_minor`)."""
@@ -213,144 +167,6 @@ def stage_grids(wdm, consts, rows, wp, wc, sums):
     grad = lambda q: jnp.gradient(q, wdm.dT, axis=-1)
     return link_grids_minor(consts["freqs"], wdm.dF, amp_row_p, amp_row_c, tau,
                             grad(amp_row_p), grad(amp_row_c), grad(tau), wp, wc, *sums)
-
-
-@partial(jax.jit, static_argnums=0)
-def stage_shifts(wdm, consts, rows, grids):
-    return jnp.stack([_link_shift(wdm, consts, rows, grids[j], j)
-                      for j in range(rows[0].shape[0])])
-
-
-def response_split(wdm, consts, theta, phi, wp, wc, separate_grids=False):
-    r"""
-    The ``split_amp_sinc_first`` response of every link, shape
-    (num_links, Nt, Nf), from the transforms ``wp``, ``wc`` of the waveform
-    evaluated at :math:`t+\delta_R(t)`: two or three jitted stages.
-    """
-    rows, sums = stage_common(wdm, consts, theta, phi, wp, wc)
-    if separate_grids:
-        return stage_shifts(wdm, consts, rows,
-                            stage_grids(wdm, consts, rows, wp, wc, sums))
-    return stage_links(wdm, consts, rows, wp, wc, sums)
-
-
-def row_filters(wdm, filter_tables, rate_tables, delta, rate):
-    r"""
-    Every filter the rate-corrected shift needs at this delay, for all lags:
-    :math:`T_l`, :math:`T'_l` and, with the rate folded in,
-    :math:`\dot\delta(U_r, U_i, V_r, V_i)^\sigma_l`. Shape (14, 2L+1, Nt):
-    [T, T', then sigma = -1, 0, 1 times (U_r, U_i, V_r, V_i)].
-    """
-    max_lag_L = (filter_tables.shape[1] - 1)//2
-    lags = jnp.arange(-max_lag_L, max_lag_L + 1)
-    look = lambda table: wdm._interp_filter(table, lags, -delta)
-    rows = [look(filter_tables[1]), look(filter_tables[0])]
-    rows += [look(rate_tables[s, k])*rate for s in range(3) for k in range(4)]
-    return jnp.stack(rows)
-
-
-def rate_shift(wdm, filters, wdm_coeff, delta):
-    r"""
-    `rate_kernel.apply_rate_corrected_shift` with its filters looked up
-    beforehand (`row_filters`); the same lag sum, term for term.
-    """
-    max_lag_L = (filters.shape[1] - 1)//2
-    n = jnp.arange(wdm.Nt)
-    m = jnp.arange(wdm.Nf)
-    sign_n = jnp.where(n % 2 == 0, 1.0, -1.0)[:, None]
-    sign_m = jnp.where(m % 2 == 0, 1.0, -1.0)[None, :]
-
-    theta = 2*jnp.pi*wdm.dF*jnp.outer(delta, m)
-    cos_t, sin_t = jnp.cos(theta), jnp.sin(theta)
-    half = jnp.pi*wdm.dF*delta[:, None]
-    cos_h, sin_h = jnp.cos(half), jnp.sin(half)
-    delay_filter = {-1: filters[1], 0: filters[0], 1: filters[1]}
-    rate_filter = {sigma: filters[2 + 4*(sigma + 1):6 + 4*(sigma + 1)]
-                   for sigma in (-1, 0, 1)}
-    m_sigma = {sigma: ((m + 0.5*sigma)*wdm.dF)[None, :] for sigma in (-1, 0, 1)}
-
-    ext = jnp.concatenate([wdm_coeff[-max_lag_L:], wdm_coeff,
-                           wdm_coeff[:max_lag_L]], axis=0)
-    ext = jnp.concatenate([ext[:, -1:], ext, ext[:, :1]], axis=1)
-    i_pow = ((1., 0.), (0., 1.), (-1., 0.), (0., -1.))
-
-    acc = 0.0
-    for i in range(2*max_lag_L + 1):
-        l = i - max_lag_L
-        rows = jax.lax.dynamic_slice_in_dim(ext, max_lag_L - l, wdm.Nt, axis=0)
-        total = 0.0
-        for sigma in (-1, 0, 1):
-            coeff = jax.lax.slice_in_dim(rows, sigma + 1, sigma + 1 + wdm.Nf,
-                                         axis=1)
-            i_re, i_im = i_pow[l % 4]
-            lag_re, lag_im = ((1.0, 0.0) if sigma == 0 else
-                              (i_re, i_im if sigma == -1 else -i_im))
-            cos_s = 1.0 if sigma == 0 else cos_h
-            sin_s = 0.0 if sigma == 0 else sigma*sin_h
-            re_a = lag_re*cos_s + lag_im*sin_s
-            re_b = lag_im*cos_s - lag_re*sin_s
-            im_a = lag_im*cos_s - lag_re*sin_s
-            im_b = -(lag_im*sin_s + lag_re*cos_s)
-            alternates = (l + sigma) % 2 != 0
-            if alternates:
-                re_a, re_b, im_a, im_b = (-sign_n*im_a, -sign_n*im_b,
-                                          sign_n*re_a, sign_n*re_b)
-            if l % 2 != 0:
-                alternates = not alternates
-            T = delay_filter[sigma][i][:, None]
-            Ur, Ui, Vr, Vi = (rate_filter[sigma][k, i][:, None] for k in range(4))
-            p_c = re_a*(T + Vr) + im_a*Vi
-            p_s = re_b*(T + Vr) + im_b*Vi
-            q_c = re_a*Ur + im_a*Ui
-            q_s = re_b*Ur + im_b*Ui
-            ms = m_sigma[sigma]
-            term = coeff*(cos_t*(p_c + ms*q_c) + sin_t*(p_s + ms*q_s))
-            total = total + (term*sign_m if alternates else term)
-        acc = acc + total
-    return acc
-
-
-def shift_weights(wdm, filters, delta):
-    r"""
-    The per-row weights of every term of `rate_shift`, precomputed:
-    :math:`p_c, p_s, q_c, q_s` for each (l, sigma), with the lag and half-bin
-    phases, the parity swap and the rate already folded in, and the
-    :math:`\sigma\Delta F/2` part of :math:`m_\sigma` moved into :math:`p`,
-    so the lag loop multiplies only by :math:`m\Delta F`. Shape
-    (2L+1, 3, 4, Nt); whether a term carries :math:`(-1)^m` is static.
-    """
-    max_lag_L = (filters.shape[1] - 1)//2
-    sign_n = jnp.where(jnp.arange(wdm.Nt) % 2 == 0, 1.0, -1.0)
-    half = jnp.pi*wdm.dF*delta
-    cos_h, sin_h = jnp.cos(half), jnp.sin(half)
-    i_pow = ((1., 0.), (0., 1.), (-1., 0.), (0., -1.))
-    out = []
-    for i in range(2*max_lag_L + 1):
-        l = i - max_lag_L
-        per_sigma = []
-        for sigma in (-1, 0, 1):
-            i_re, i_im = i_pow[l % 4]
-            lag_re, lag_im = ((1.0, 0.0) if sigma == 0 else
-                              (i_re, i_im if sigma == -1 else -i_im))
-            cos_s = 1.0 if sigma == 0 else cos_h
-            sin_s = 0.0 if sigma == 0 else sigma*sin_h
-            re_a = lag_re*cos_s + lag_im*sin_s
-            re_b = lag_im*cos_s - lag_re*sin_s
-            im_a = lag_im*cos_s - lag_re*sin_s
-            im_b = -(lag_im*sin_s + lag_re*cos_s)
-            if (l + sigma) % 2 != 0:
-                re_a, re_b, im_a, im_b = (-sign_n*im_a, -sign_n*im_b,
-                                          sign_n*re_a, sign_n*re_b)
-            T = filters[0 if sigma == 0 else 1][i]
-            Ur, Ui, Vr, Vi = filters[2 + 4*(sigma + 1):6 + 4*(sigma + 1), i]
-            q_c = re_a*Ur + im_a*Ui
-            q_s = re_b*Ur + im_b*Ui
-            shift = 0.5*sigma*wdm.dF
-            p_c = re_a*(T + Vr) + im_a*Vi + shift*q_c
-            p_s = re_b*(T + Vr) + im_b*Vi + shift*q_s
-            per_sigma.append(jnp.stack(jnp.broadcast_arrays(p_c, p_s, q_c, q_s)))
-        out.append(jnp.stack(per_sigma))
-    return jnp.stack(out)
 
 
 def weighted_shift(wdm, weights, wdm_coeff, delta):
@@ -383,97 +199,9 @@ def weighted_shift(wdm, weights, wdm_coeff, delta):
 
 
 @partial(jax.jit, static_argnums=0)
-def stage_weights(wdm, consts, rows):
-    out = []
-    for j in range(rows[0].shape[0]):
-        rest = rows[0][j]
-        filters = row_filters(wdm, consts["filters"], consts["rate"], rest,
-                              jnp.gradient(rest, wdm.dT))
-        out.append(shift_weights(wdm, filters, rest))
-    return jnp.stack(out)
-
-
-@partial(jax.jit, static_argnums=0)
 def stage_wshifts(wdm, rows, grids, weights):
     return jnp.stack([weighted_shift(wdm, weights[j], grids[j], rows[0][j])
                       for j in range(rows[0].shape[0])])
-
-
-@partial(jax.jit, static_argnums=(0, 6))
-def stage_grids_typed(wdm, consts, rows, wp, wc, sums, dtype):
-    """`stage_grids` in ``dtype``, from per-row quantities formed in float64."""
-    rest, amp_row_p, amp_row_c, tau = rows
-    grad = lambda q: jnp.gradient(q, wdm.dT, axis=-1)
-    f = lambda x: x.astype(dtype)
-    sums = jax.tree.map(f, sums)
-    return link_grids_minor(f(consts["freqs"]), wdm.dF, f(amp_row_p), f(amp_row_c), f(tau),
-                            f(grad(amp_row_p)), f(grad(amp_row_c)), f(grad(tau)),
-                            f(wp), f(wc), *sums)
-
-
-@partial(jax.jit, static_argnums=(0, 4))
-def stage_common_typed(wdm, consts, theta, phi, dtype, wp, wc):
-    """`stage_common` with the shared sums in ``dtype``."""
-    rows = _geometry(wdm, consts, theta, phi)
-    sums = (shared_sums(wdm, consts["amp"].astype(dtype),
-                        consts["sinc"].astype(dtype), wp.astype(dtype))
-            + shared_sums(wdm, consts["amp"].astype(dtype),
-                          consts["sinc"].astype(dtype), wc.astype(dtype)))
-    return rows, sums
-
-
-def response_split_w(wdm, consts, theta, phi, wp, wc, dtype=jnp.float64,
-                     filters="table"):
-    r"""
-    `response_split` with the shift's per-row weights as their own stage.
-    ``dtype`` is the working precision of the shared sums, grids, weights and
-    lag loop; geometry, delays and the carrier phase stay float64, and the
-    result is float64. ``filters`` is ``"table"`` (the linearly interpolated
-    tables) or ``"poly"`` (the polynomials in ``consts["poly"]``, `add_poly`).
-    """
-    nodes = table_nodes(wdm, consts["filters"].shape[-1])
-    if dtype == jnp.float64:
-        rows, sums = stage_common(wdm, consts, theta, phi, wp, wc)
-        grids = stage_grids(wdm, consts, rows, wp, wc, sums)
-    else:
-        rows, sums = stage_common_typed(wdm, consts, theta, phi, dtype, wp, wc)
-        grids = stage_grids_typed(wdm, consts, rows, wp, wc, sums, dtype)
-    if filters == "poly":
-        weights = stage_weights_poly(wdm, consts, rows)
-    else:
-        weights = stage_weights_vec(wdm, consts, rows, nodes)
-    return stage_wshifts(wdm, rows, grids, weights).astype(jnp.float64)
-
-
-def shared_sums_grouped(wdm, amp_weights, sinc_weights, wdm_coeff):
-    r"""
-    `shared_sums` with one read of each lag's rows: one accumulator per
-    (sum, sigma, lag parity) over the unshifted columns, then the
-    :math:`(-1)^n` of odd :math:`l+\sigma`, the column :math:`m+\sigma` and
-    the :math:`(-1)^m` of sigma = +-1 applied once, after the sum.
-    """
-    max_lag_L = (amp_weights.shape[1] - 1)//2
-    sign_n = jnp.where(jnp.arange(wdm.Nt) % 2 == 0, 1.0, -1.0)[:, None]
-    sign_m = jnp.where(jnp.arange(wdm.Nf) % 2 == 0, 1.0, -1.0)[None, :]
-    ext = jnp.concatenate([wdm_coeff[-max_lag_L:], wdm_coeff,
-                           wdm_coeff[:max_lag_L]], axis=0)
-    acc = {}
-    for i in range(2*max_lag_L + 1):
-        l = i - max_lag_L
-        rows = jax.lax.dynamic_slice_in_dim(ext, max_lag_L - l, wdm.Nt, axis=0)
-        for k, sigma in enumerate((-1, 0, 1)):
-            for name, w in (("amp", amp_weights), ("sinc", sinc_weights)):
-                if sigma == 0 and (name == "amp" or l % 2 == 0):
-                    continue
-                key = (name, sigma, l % 2)
-                acc[key] = acc.get(key, 0.0) + w[k, i]*rows
-    move = lambda x, sigma: x if sigma == 0 else jnp.roll(x, -sigma, axis=1)*sign_m
-    parts = {}
-    for (name, sigma, parity), x in acc.items():
-        x = x*sign_n if (parity + sigma) % 2 else x
-        parts[(name, sigma)] = parts.get((name, sigma), 0.0) + x
-    amp = move(parts[("amp", -1)], -1) + move(parts[("amp", 1)], 1)
-    return amp, tuple(move(parts[("sinc", s)], s) for s in (-1, 0, 1))
 
 
 #: bound on the per-link rest |delta_n - delta_R(t_n)|, seconds: |x_r - x_c|/c
@@ -509,60 +237,6 @@ def row_filters_local(wdm, filter_tables, rate_tables, delta, rate, nodes):
     # an explicit sum over the few nodes, not a contraction: XLA:GPU runs
     # float32 matmuls in TF32 (1e-3 relative), which cost 1.7e-4 in the response
     out = sum(tables[:, :, k, None]*hat[k] for k in range(len(nodes)))
-    return out.at[2:].multiply(rate)
-
-
-@partial(jax.jit, static_argnums=(0, 3))
-def stage_weights_local(wdm, consts, rows, nodes):
-    out = []
-    for j in range(rows[0].shape[0]):
-        rest = rows[0][j]
-        filters = row_filters_local(wdm, consts["filters"], consts["rate"], rest,
-                                    jnp.gradient(rest, wdm.dT), nodes)
-        out.append(shift_weights(wdm, filters, rest))
-    return jnp.stack(out)
-
-
-def poly_filters(wdm, max_lag_L, degree, bound=REST_BOUND, num_nodes=17):
-    r"""
-    Every filter of the rate-corrected shift as a polynomial in the scaled
-    delay :math:`s=x/B` on :math:`|x|\le B` (`REST_BOUND`): least squares on
-    Chebyshev nodes, the filters evaluated there from their definitions
-    (`build_filter_tables` for :math:`T, T'`, the window integrals of
-    `rate_kernel.build_rate_tables` for :math:`U, V`). Coefficients by
-    descending power, shape (14, 2L+1, degree+1), ordered as `row_filters`
-    (T, T', then sigma = -1, 0, 1 times U_r, U_i, V_r, V_i) before the rate.
-    """
-    from WDM.code.time_delay_filters.filters import build_filter_tables
-    from .elements_delay_rate import u_nodes, window_and_derivative
-
-    s = np.cos(np.pi*(np.arange(num_nodes) + 0.5)/num_nodes)
-    x = bound*s
-    lags = np.arange(-max_lag_L, max_lag_L + 1)
-    TT = np.asarray(build_filter_tables(jnp.asarray(lags), jnp.asarray(x/wdm.dT),
-                                        wdm.d, wdm.A_frac))
-    u, du = u_nodes(wdm)
-    lag_phase = np.exp(2j*np.pi*np.outer(lags*wdm.dT, u))
-    x_phase = np.exp(-2j*np.pi*np.outer(u, x))
-    rate = []
-    for sigma in (-1, 0, 1):
-        lo, _ = window_and_derivative(wdm, u - 0.5*sigma*wdm.dF)
-        _, dhi = window_and_derivative(wdm, u + 0.5*sigma*wdm.dF)
-        U = (lag_phase*(lo*dhi*du)) @ x_phase
-        V = (lag_phase*(u*lo*dhi*du)) @ x_phase
-        rate += [U.real, U.imag, V.real, V.imag]
-    values = np.concatenate([TT[::-1], np.stack(rate)])         # (14, 2L+1, nodes)
-    vander = np.vander(s, degree + 1)
-    coef, *_ = np.linalg.lstsq(vander, values.reshape(-1, num_nodes).T, rcond=None)
-    return coef.T.reshape(14, 2*max_lag_L + 1, degree + 1)
-
-
-def row_filters_poly(coef, delta, rate, bound=REST_BOUND):
-    """`row_filters` from the polynomials of `poly_filters` (Horner per row)."""
-    s = -delta/bound
-    out = coef[..., 0][..., None]*jnp.ones_like(s)
-    for k in range(1, coef.shape[-1]):
-        out = out*s + coef[..., k][..., None]
     return out.at[2:].multiply(rate)
 
 
@@ -621,49 +295,6 @@ def stage_weights_vec(wdm, consts, rows, nodes):
 #: polynomial degree of the filters in the rest delay: 1e-8 (dT = 256 s) to
 #: 1e-15 (dT >= 4096 s) on |x| <= REST_BOUND, against 6.6e-6 (T, T') and
 #: 1.9e-5 (U, V) for the P = 128 linear tables
-POLY_DEGREE = 4
-
-
-def add_poly(consts, wdm, degree=POLY_DEGREE):
-    """``consts`` with the polynomial filters of `poly_filters` added."""
-    max_lag_L = (consts["filters"].shape[1] - 1)//2
-    return dict(consts, poly=jnp.asarray(poly_filters(wdm, max_lag_L, degree)))
-
-
-@partial(jax.jit, static_argnums=0)
-def stage_weights_poly(wdm, consts, rows):
-    return jnp.stack([shift_weights_vec(
-        wdm, row_filters_poly(consts["poly"], rows[0][j],
-                              jnp.gradient(rows[0][j], wdm.dT)), rows[0][j])
-        for j in range(rows[0].shape[0])])
-
-
-def add_offset(consts):
-    r"""
-    ``consts`` with ``offset`` = :math:`x_r(t_n) - x_c(t_n)` per link
-    (num_links, Nt, 3), metres: the rest delay is then
-    :math:`\hat n\cdot(x_r - x_c)/c - \tau/2` directly, a few seconds formed
-    without the cancellation of two ~500 s Roemer delays.
-    """
-    return dict(consts, offset=consts["receiver_position"] - consts["centre"][None])
-
-
-def geometry_offset(wdm, consts, theta, phi, dtype=jnp.float64):
-    r"""
-    `_geometry` from ``consts["offset"]`` (`add_offset`), in ``dtype``: no
-    term larger than the rest delay itself is formed, so float32 keeps it to
-    about a microsecond.
-    """
-    f = lambda x: jnp.asarray(x).astype(dtype)
-    theta, phi = jnp.atleast_1d(f(theta)), jnp.atleast_1d(f(phi))
-    ltt = f(consts["ltt"])
-    proj_p, proj_c, tau, n_hat = rs.compute_angular_geometry_wdm(
-        theta, phi, ltt, f(consts["link_direction"]))
-    rest = (jnp.tensordot(n_hat/rs.c, f(consts["offset"]), axes=([-1], [-1]))
-            - 0.5*tau)[0]
-    ltt, proj_p, proj_c, tau = rs.evaluate_at_landing_times(
-        jnp.stack(jnp.broadcast_arrays(ltt, proj_p, proj_c, tau)), rest, wdm.dT)[:, 0]
-    return rest, 0.5*ltt*proj_p, 0.5*ltt*proj_c, tau
 
 
 def landing_sliced(row_values, time_shift, row_spacing):
