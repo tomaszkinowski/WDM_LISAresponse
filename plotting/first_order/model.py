@@ -6,6 +6,7 @@ of the response's own filter tables.
 """
 
 import numpy as np
+import jax.numpy as jnp
 
 from parameters import DT, WINDOW_KWARGS
 
@@ -70,16 +71,26 @@ def warped_transforms(response, wdm, consts, theta, phi, warp):
     return wdm.dwt(h_plus), wdm.dwt(h_cross)
 
 
-def links(wdm, consts, theta, phi, wp, wc):
-    """Every link of the response, (num_links, Nt, Nf), from warped_transforms."""
-    rows, sums = fs.stage_common(wdm, consts, theta, phi, wp, wc)
+def links(wdm, consts, theta, phi, wp, wc, dtype=jnp.float64):
+    """Every link of the response, (num_links, Nt, Nf), from warped_transforms.
+    dtype is the working precision of the shared sums, grids, weights and lag
+    loop (the figures use float64; float32 is the faster one timed in
+    numbers_runtime.py); geometry, delays and the carrier phase stay float64, and
+    the result is float64."""
+    if dtype == jnp.float64:
+        rows, sums = fs.stage_common(wdm, consts, theta, phi, wp, wc)
+    else:
+        rows, sums = fs.stage_common_typed(wdm, consts, theta, phi, dtype, wp, wc)
     # the shift's weights read only the table nodes a rest delay within REST_BOUND touches
     worst = float(np.max(np.abs(np.asarray(rows[0]))))
     assert worst < fs.REST_BOUND, f"rest delay {worst:.1f} s beyond REST_BOUND"
-    grids = fs.stage_grids(wdm, consts, rows, wp, wc, sums)
+    if dtype == jnp.float64:
+        grids = fs.stage_grids(wdm, consts, rows, wp, wc, sums)
+    else:
+        grids = fs.stage_grids_typed(wdm, consts, rows, wp, wc, sums, dtype)
     weights = fs.stage_weights_vec(wdm, consts, rows,
                                    fs.table_nodes(wdm, consts["filters"].shape[-1]))
-    return np.asarray(fs.stage_wshifts(wdm, rows, grids, weights))
+    return np.asarray(fs.stage_wshifts(wdm, rows, grids, weights), dtype=np.float64)
 
 
 def one_link(response, wdm, link, start, n_signal):

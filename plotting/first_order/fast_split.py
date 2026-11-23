@@ -198,6 +198,29 @@ def weighted_shift(wdm, weights, wdm_coeff, delta):
     return acc
 
 
+@partial(jax.jit, static_argnums=(0, 4))
+def stage_common_typed(wdm, consts, theta, phi, dtype, wp, wc):
+    """`stage_common` with the shared sums in ``dtype``."""
+    rows = _geometry(wdm, consts, theta, phi)
+    sums = (shared_sums(wdm, consts["amp"].astype(dtype),
+                        consts["sinc"].astype(dtype), wp.astype(dtype))
+            + shared_sums(wdm, consts["amp"].astype(dtype),
+                          consts["sinc"].astype(dtype), wc.astype(dtype)))
+    return rows, sums
+
+
+@partial(jax.jit, static_argnums=(0, 6))
+def stage_grids_typed(wdm, consts, rows, wp, wc, sums, dtype):
+    """`stage_grids` in ``dtype``, from per-row quantities formed in float64."""
+    rest, amp_row_p, amp_row_c, tau = rows
+    grad = lambda q: jnp.gradient(q, wdm.dT, axis=-1)
+    f = lambda x: x.astype(dtype)
+    sums = jax.tree.map(f, sums)
+    return link_grids_minor(f(consts["freqs"]), wdm.dF, f(amp_row_p), f(amp_row_c), f(tau),
+                            f(grad(amp_row_p)), f(grad(amp_row_c)), f(grad(tau)),
+                            f(wp), f(wc), *sums)
+
+
 @partial(jax.jit, static_argnums=0)
 def stage_wshifts(wdm, rows, grids, weights):
     return jnp.stack([weighted_shift(wdm, weights[j], grids[j], rows[0][j])
