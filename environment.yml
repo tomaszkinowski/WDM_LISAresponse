@@ -68,13 +68,22 @@ dependencies:
 
   - pip
   - pip:
-    # Orbit provider. pip only.
+    # Orbit provider. pip only. It brings in astropy, which lisaconstants 2.0
+    # warns it does not support from version 8.
     - lisaorbits==3.1.0
+    - astropy<8
 
     # The comparisons. All pip only; see the macOS note above before using
     # fastlisaresponse, whose link sign is wrong before 1.2.1a0.
+    #
+    # lisaanalysistools 1.2.x's Linux wheels use AVX-512 instructions and stop
+    # with "Illegal instruction" on x86 CPUs without them. There, install 1.1.13
+    # instead, whose wheels do not:
+    #     pip install --no-deps --force-reinstall lisaanalysistools==1.1.13
     - lisaanalysistools==1.2.8
     - fastlisaresponse==1.2.1a0
+    # fastlisaresponse imports gpubackendtools without declaring it.
+    - gpubackendtools==0.1.1
     - lisagwresponse==3.0.2
     - pytdi==2.2.1
 
