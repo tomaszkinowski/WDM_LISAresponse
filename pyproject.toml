@@ -1,7 +1,7 @@
 [project]
 name = "WDM_LISAresponse"
 version = "0.0.1"
-authors = [
+authors = [ { name="Tomasz Kinowski", email="tk593@cam.ac.uk"},
   { name="Christopher J. Moore", email="cjm96@cam.ac.uk"},
 ]
 description = "A fast, JAX-based Python implementation for computing LISA detector response functions using the Wilson-Daubechies-Meyer (WDM) wavelet framework."
@@ -9,13 +9,17 @@ readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
+    # Distribution name, not the import name: this installs as
+    # WDM-GW-wavelets and imports as WDM. Naming it "WDM" here resolves only
+    # on a machine where it already happens to be installed, and fails on a
+    # clean one - there is no distribution by that name. 0.0.6 is the first
+    # release with the FFT inverse transform that idwt round trips rely on.
+    "WDM_GW_wavelets>=0.0.6",
     "numpy",
     "scipy",
-    "matplotlib",
     "jax",
-    "ipykernel",
+    "lisaconstants",
     "lisaorbits",
-    "WDM @ git+https://github.com/cjm96/WDM_GW_wavelets.git"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -27,6 +31,16 @@ classifiers = [
 dev = [
     "pytest",
     "astropy",
+    "ipykernel",
+    "matplotlib",
+    "WDM_LISAresponse[emri]",
+]
+
+# EMRIs through waveforms.emri_generator. FEW installs as fastemriwaveforms and
+# imports as few. Pinned to 2.0 because code/waveforms/few_memmap.py replaces a
+# step inside FEW's amplitude loader and relies on its internals.
+emri = [
+    "fastemriwaveforms==2.0.*",
 ]
 
 docs = [
@@ -37,10 +51,40 @@ docs = [
     "sphinx-autodoc-typehints",
 ]
 
-[tool.setuptools]
-packages = ["WDM_LISAresponse"]
-package-dir = {"" = "src"}
+# The external codes examples/response_comparison.ipynb compares against, one
+# extra per code, and `comparison` for the whole notebook. Nothing in the
+# package imports them: the comparison module takes the classes from its caller.
+#
+# fastlisaresponse has the wrong link sign before 1.2.1a0; naming the
+# pre-release lets pip pick it without --pre. On macOS it and
+# lisaanalysistools each vendor libstdc++.6.dylib, and loading both aborts the
+# interpreter: run comparison.conventions_flr.check_environment() for the fix.
+compare-flr = [
+    "fastlisaresponse>=1.2.1a0",
+    "lisaanalysistools",
+]
+# lisagwresponse 3 takes the ICRS ra/dec and pytdi 2.2 has the
+# Data.from_orbits(dataset=...) that conventions_gwr passes.
+compare-gwr = [
+    "lisagwresponse>=3.0",
+    "pytdi>=2.2",
+]
+comparison = [
+    "WDM_LISAresponse[compare-flr,compare-gwr]",
+    "matplotlib",
+    "nbformat",
+    "nbclient",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: integration tests that build orbits and a response; deselect with -m 'not slow'",
+]

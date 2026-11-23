@@ -1,660 +1,1387 @@
-"""Geometry, interpolation and padding helpers for LISA responses."""
+r"""Support routines for the LISA response.
 
-from typing import NamedTuple, Tuple
+The module has two halves, split by what they depend on and therefore by
+whether they can be traced.
 
+The *geometry* half builds the sky-independent link quantities - the
+light-travel time :math:`\ell_{sr}`, the link unit vector :math:`\hat{r}_{sr}`
+and the receiver position :math:`x_r`. These depend on the orbits and the time
+grid but not on the source sky position or the waveform, so they are
+precomputed once and reused across every likelihood evaluation. They run on the
+host in ``numpy``: orbit providers evaluate SciPy splines
+(``InterpolatedOrbits``) or plain ``numpy`` (``EqualArmlengthOrbits``), so
+``compute_position`` cannot be traced and this stage can never run under
+``jit``. The results are converted to ``jnp`` at the boundary by the caller, so
+the apply stage receives device arrays.
+
+The *apply* half is pure ``jnp`` and traces cleanly. It is written as small
+named steps - the source basis, the antenna-pattern factors, the angular
+geometry of each path, the detector amplitudes, the batched shift, the domain
+conversion - composed by two jitted entry points, ``one_arm_time_domain_chunk``
+and ``one_arm_response_wdm``. Only those two carry ``@jax.jit``: the steps are
+plain functions, so XLA inlines them into the caller and fuses across the
+boundaries. Splitting the work this way is therefore free, and it is what lets
+``response.py`` read as a sequence of named physical operations while the
+detail stays findable here.
+
+Following the rule documented on :class:`LISAresponse`, every one of these
+takes its arrays as explicit arguments rather than reading them off ``self``.
+Machinery that describes no part of the response - resolving the ``link``
+selector, interpolating a uniformly sampled series and budgeting memory -
+lives in ``utils.utils`` instead.
+"""
+
+from fractions import Fraction
+from functools import lru_cache, partial
+
+import jax
+import jax.numpy as jnp
 import numpy as np
+
 from lisaconstants import c
-import WDM
 
-from ..utils.utils import wdm_tail_padding_info
+from ..utils.utils import interpolate_uniform_grid
 
 
-def wdm_pad_inputs_right(times, td_waveform_plus, td_waveform_cross, Nf):
-    """Pad plus/cross waveforms on the right using ``WDM.utils.pad_signal``."""
+#: Fixed-point iterations used to solve the retarded light-travel time. The
+#: solve stalls at ~5e-11 s after the second sweep, so a fourth buys nothing -
+#: see the convergence note in ``solve_light_travel_time``.
+LTT_NUM_ITERATIONS = 3
+
+#: Rows in the stencil, and the Taylor order, of ``evaluate_at_landing_times``.
+#: The geometry turns by omega delta ~ 1e-4 over a delay, so order six leaves
+#: below 1e-30; it is set by the tests' faster series (one cycle per 50 rows).
+LANDING_NUM_TAPS = 12
+LANDING_TAYLOR_ORDER = 6
+
+
+def solve_light_travel_time(times,
+                            sender : int,
+                            receiver : int,
+                            orbits,
+                            x_r : np.ndarray = None,
+                            x_s : np.ndarray = None,
+                            num_iterations : int = LTT_NUM_ITERATIONS):
+    r"""
+    Solve the retarded light-travel time for one directed link.
+
+    The receiver is held at reception time :math:`t`, and the sender is
+    iterated back along its own worldline until it is consistent with the
+    delay,
+
+    .. math::
+
+        \ell_{sr}(t) = \frac{1}{c}
+            \left| x_r(t) - x_s\big(t - \ell_{sr}(t)\big) \right| .
+
+    The fixed point is seeded with the instantaneous separation and swept
+    ``num_iterations`` times. The first sweep gains about four decimal digits,
+    because a spacecraft moves by :math:`\sim 10^{-4}` of an arm length in one
+    light-crossing time. The second reaches a floor of :math:`\sim 5\times
+    10^{-11}` s (about 1.4 cm), set by the interpolation error of the orbit
+    provider itself, and further sweeps do not improve on it: the iteration
+    settles into a period-2 cycle of that amplitude rather than converging to
+    machine precision, which for an 8.3 s light time would be
+    :math:`\sim 2\times 10^{-15}` s.
+
+    Measured against a 12-sweep reference at seven epochs spanning the 8.83 yr
+    of ``esa-trailing-orbits.h5``: one sweep leaves :math:`7\times 10^{-8}` s,
+    two leave :math:`5\times 10^{-11}` s, three are exact to the reference in
+    some cases and at the same floor in others. The default of three keeps one
+    sweep of margin over the floor. For scale, :math:`5\times 10^{-11}` s is
+    :math:`1.5\times 10^{-12}` rad of phase at 5 mHz.
+
+    This is the flat-spacetime delay, with no solar Shapiro term. That is a
+    deliberate choice about self-consistency rather than an omission. The
+    response is a flat-spacetime plane-wave calculation from end to end: the
+    link direction is the straight-line :math:`\hat{r}_{sr}`, and the retarded
+    wave phase is :math:`\xi = t - \hat{\Omega}\cdot x/c` along that straight
+    line. Adding a curved-spacetime correction to :math:`\ell_{sr}` alone,
+    while every other quantity stays flat, breaks the exact relation
+    :math:`x_r - x_s = c\,\ell_{sr}\hat{r}_{sr}` that the rest of the geometry
+    relies on - the two ways of forming the emission phase then disagree by
+    :math:`\Delta_{\mathrm{Sh}}(\hat{\Omega}\cdot\hat{r}_{sr})`, measured at
+    :math:`3.4\times10^{-9}` s. The correction is worth 49 m of light time, so
+    dropping it leaves that much disagreement with
+    ``lisaorbits.compute_ltt``, which reports a Shapiro-inclusive delay. Both
+    numbers are far below the :math:`10^{-4}` local-delay error that dominates
+    this pipeline, so the consistent choice is the better one.
+
+    Parameters
+    ----------
+    times : np.ndarray
+        Reception times, in seconds. Array shape=(Nt,).
+    sender : int
+        Sending spacecraft index, :math:`s`.
+    receiver : int
+        Receiving spacecraft index, :math:`r`.
+    orbits : lisaorbits.Orbits
+        Orbit provider exposing ``compute_position(t, sc=[...])``.
+    x_r : np.ndarray
+        Receiver positions at reception time, in metres, shape=(Nt, 3). Pass
+        this when it has already been evaluated on the shared reception grid
+        to avoid a redundant spline call. Optional.
+    x_s : np.ndarray
+        Sender positions at reception time, in metres, shape=(Nt, 3), used
+        only to seed the iteration. Optional.
+    num_iterations : int
+        Number of fixed-point sweeps. Optional.
+
+    Returns
+    -------
+    x_s : np.ndarray
+        Sender positions at emission time :math:`t - \ell_{sr}`, in metres.
+        Array shape=(Nt, 3).
+    x_r : np.ndarray
+        Receiver positions at reception time, in metres. Array shape=(Nt, 3).
+    ltt : np.ndarray
+        Light-travel times :math:`\ell_{sr}(t)`, in seconds.
+        Array shape=(Nt,).
+    """
     times = np.asarray(times, dtype=float)
-    td_waveform_plus = np.asarray(td_waveform_plus)
-    td_waveform_cross = np.asarray(td_waveform_cross)
 
-    if times.ndim != 1 or td_waveform_plus.ndim != 1 or td_waveform_cross.ndim != 1:
-        raise ValueError("times, td_waveform_plus, and td_waveform_cross must be 1D arrays.")
-    if not (len(times) == len(td_waveform_plus) == len(td_waveform_cross)):
-        raise ValueError("times, td_waveform_plus, and td_waveform_cross must have the same length.")
-    if len(times) < 2:
-        raise ValueError("Need at least two time samples for WDM input padding.")
-
-    dt = times[1] - times[0]
-    if not np.allclose(np.diff(times), dt):
-        raise ValueError("times must be uniformly sampled for WDM transforms.")
-
-    info = wdm_tail_padding_info(len(times), int(Nf))
-    target_length = int(info["target_length"])
-
-    td_plus_pad, mask = WDM.utils.pad_signal(td_waveform_plus, target_length)
-    td_cross_pad, _ = WDM.utils.pad_signal(td_waveform_cross, target_length)
-
-    pad_right = int(target_length - len(times))
-    if pad_right == 0:
-        times_pad = times.copy()
-    else:
-        times_right = times[-1] + dt * np.arange(1, pad_right + 1)
-        times_pad = np.concatenate((times, times_right))
-
-    info["mask"] = mask
-    return times_pad, np.asarray(td_plus_pad), np.asarray(td_cross_pad), info
-
-
-class SkyBasis(NamedTuple):
-    """Reusable sky-frame quantities for a fixed source direction."""
-
-    u: np.ndarray
-    v: np.ndarray
-    n: np.ndarray
-    Omega: np.ndarray
-    e_plus: np.ndarray
-    e_cross: np.ndarray
-
-
-def build_sky_basis(theta: float, phi: float) -> SkyBasis:
-    """Build reusable sky-frame vectors, propagation direction, and GW tensors.
-
-    Parameters
-    ----------
-    theta : float
-        Polar angle of the source direction in radians.
-    phi : float
-        Azimuthal angle of the source direction in radians.
-
-    Returns
-    -------
-    SkyBasis
-        Precomputed sky-frame basis vectors ``(u, v, n)``, propagation
-        direction ``Omega = -n``, and GW polarization tensors ``e_plus`` and
-        ``e_cross``.
-    """
-    cos_theta = np.cos(theta)
-    sin_theta = np.sin(theta)
-    cos_phi = np.cos(phi)
-    sin_phi = np.sin(phi)
-
-    u = np.array([cos_theta * cos_phi, cos_theta * sin_phi, -sin_theta], dtype=float)
-    v = np.array([sin_phi, -cos_phi, 0.0], dtype=float)
-    n = np.array([sin_theta * cos_phi, sin_theta * sin_phi, cos_theta], dtype=float)
-    Omega = -n
-    e_plus = np.outer(u, u) - np.outer(v, v)
-    e_cross = np.outer(u, v) + np.outer(v, u)
-    return SkyBasis(u=u, v=v, n=n, Omega=Omega, e_plus=e_plus, e_cross=e_cross)
-
-
-
-class DirectedLinkGeometry(NamedTuple):
-    """Sky-independent six-link geometry sampled on the WDM time grid."""
-
-    links: tuple[tuple[int, int], ...]
-    times: np.ndarray
-    light_time: np.ndarray
-    receiver_position: np.ndarray
-    direction: np.ndarray
-
-
-class SkyLinkGeometry(NamedTuple):
-    """Sky-dependent one-arm quantities derived from static link geometry."""
-
-    sky_basis: SkyBasis
-    tau: np.ndarray
-    time_shift: np.ndarray
-    projection_plus: np.ndarray
-    projection_cross: np.ndarray
-
-
-def build_directed_link_geometry(times, orbits, links):
-    """Precompute orbit-only geometry for directed links."""
-
-    times = np.asarray(times, dtype=float)
-    links = tuple((int(s), int(r)) for s, r in links)
-    light_times = []
-    receiver_positions = []
-    directions = []
-    for sender, receiver in links:
-        light_time, receiver_position = _compute_ltt_iterative(
-            times,
-            sender,
-            receiver,
-            orbits,
-            return_receiver_position=True,
-        )
-        direction = rhat(
-            times,
-            sender,
-            receiver,
-            orbits,
-            tt=light_time,
-            x_r_rec=receiver_position,
-        )
-        light_times.append(light_time)
-        receiver_positions.append(receiver_position)
-        directions.append(direction)
-    return DirectedLinkGeometry(
-        links=links,
-        times=times,
-        light_time=np.stack(light_times, axis=0),
-        receiver_position=np.stack(receiver_positions, axis=0),
-        direction=np.stack(directions, axis=0),
-    )
-
-
-def evaluate_sky_link_geometry(geometry, theta, phi):
-    """Evaluate sky-dependent delays and antenna projections."""
-
-    sky_basis = build_sky_basis(theta, phi)
-    n = sky_basis.n
-    omega = sky_basis.Omega
-    omega_dot_direction = np.einsum(
-        "lti,i->lt",
-        geometry.direction,
-        omega,
-    )
-    tau = 0.5 * geometry.light_time * (1.0 - omega_dot_direction)
-    time_shift = (
-        np.einsum("lti,i->lt", geometry.receiver_position, n / c)
-        - tau
-    )
-    ru = np.einsum("lti,i->lt", geometry.direction, sky_basis.u)
-    rv = np.einsum("lti,i->lt", geometry.direction, sky_basis.v)
-    projection_plus = ru**2 - rv**2
-    projection_cross = 2.0 * ru * rv
-    return SkyLinkGeometry(
-        sky_basis=sky_basis,
-        tau=tau,
-        time_shift=time_shift,
-        projection_plus=projection_plus,
-        projection_cross=projection_cross,
-    )
-
-
-def all_sky_time_shift_bounds(geometry):
-    """Return conservative global bounds for one-arm ``time_shift`` values."""
-
-    # time_shift = -L/2 + n dot (x_r/c - L*rhat/2)
-    vector = (
-        geometry.receiver_position / c
-        - 0.5 * geometry.light_time[:, :, None] * geometry.direction
-    )
-    centre = -0.5 * geometry.light_time
-    radius = np.linalg.norm(vector, axis=2)
-    return float(np.min(centre - radius)), float(np.max(centre + radius))
-
-
-def basis_vectors(theta : float, 
-                  phi : float) -> Tuple[np.ndarray, 
-                                        np.ndarray, 
-                                        np.ndarray]:
-    """
-    Return the orthonormal sky-frame basis vectors ``(u, v, n)``.
-
-    Parameters
-    ----------
-    theta : float
-        Polar angle of the source direction in radians.
-    phi : float
-        Azimuthal angle of the source direction in radians.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray, np.ndarray]
-        The ``u``, ``v``, and ``n`` basis vectors, each with shape ``(3,)``.
-    """
-    sky_basis = build_sky_basis(theta, phi)
-    return sky_basis.u, sky_basis.v, sky_basis.n
-
-def basis_tensors(theta : float, 
-                  phi : float) -> Tuple[np.ndarray, 
-                                        np.ndarray]:
-    """
-    Return the GW polarization tensors for a fixed sky direction.
-
-    Parameters
-    ----------
-    theta : float
-        Polar angle of the source direction in radians.
-    phi : float
-        Azimuthal angle of the source direction in radians.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        The plus and cross polarization tensors, each with shape ``(3, 3)``.
-    """
-    sky_basis = build_sky_basis(theta, phi)
-    return sky_basis.e_plus, sky_basis.e_cross
-
-
-def antenna_pattern_factors(rhat_vec: np.ndarray, sky_basis: SkyBasis) -> Tuple[np.ndarray, np.ndarray]:
-    """Project link directions onto the GW polarization basis without tensors.
-
-    Parameters
-    ----------
-    rhat_vec : ndarray
-        Link unit vector array with shape ``(num_times, 3)`` or ``(3,)``.
-    sky_basis : SkyBasis
-        Precomputed sky-basis quantities for the source direction.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        The plus and cross antenna-pattern factors evaluated on ``rhat_vec``.
-    """
-    rhat_vec = np.asarray(rhat_vec, dtype=float)
-    ru = rhat_vec @ sky_basis.u
-    rv = rhat_vec @ sky_basis.v
-    return ru**2 - rv**2, 2.0 * ru * rv
-
-
-def _solve_link_geometry(times, s, r, orbits, x_s=None):
-    """Solve sender/receiver geometry for a directed link on a reception grid."""
-    times = np.asarray(times, dtype=float)
-    tt_niter = 4
-
-    x_r = orbits.compute_position(times, sc=[r])[:, 0, :]
+    if x_r is None:
+        x_r = orbits.compute_position(times, sc=[receiver])[:, 0, :]
     if x_s is None:
-        x_s = orbits.compute_position(times, sc=[s])[:, 0, :]
-    else:
-        x_s = np.asarray(x_s, dtype=float)
+        x_s = orbits.compute_position(times, sc=[sender])[:, 0, :]
 
-    tt = np.linalg.norm(x_r - x_s, axis=1) / c
+    ltt = np.linalg.norm(x_r - x_s, axis=1) / c
 
-    for _ in range(tt_niter):
-        t_emit = times - tt
-        x_s = orbits.compute_position(t_emit, sc=[s])[:, 0, :]
-        tt = np.linalg.norm(x_r - x_s, axis=1) / c
+    for _ in range(int(num_iterations)):
+        x_s = orbits.compute_position(times - ltt, sc=[sender])[:, 0, :]
+        ltt = np.linalg.norm(x_r - x_s, axis=1) / c
 
-    return x_s, x_r, tt
+    return x_s, x_r, ltt
 
 
-def _compute_ltt_iterative(times, s, r, orbits, x_s=None, return_receiver_position=False):
-    """
-    Iterate the light-travel-time solve for a directed LISA link.
+def link_direction(x_s : np.ndarray, x_r : np.ndarray) -> np.ndarray:
+    r"""
+    Compute the directed link unit vector.
 
-    Parameters
-    ----------
-    times : ndarray
-        Sample reception/readout times for the directed link, in seconds.
-    s : int
-        Sending spacecraft index.
-    r : int
-        Receiving spacecraft index.
-    orbits : object
-        Orbit object used to evaluate spacecraft positions.
-    x_s : ndarray or None, optional
-        Optional precomputed sender positions with shape ``(num_times, 3)``.
-    return_receiver_position : bool, optional
-        When true, also return the receiver position evaluated at reception
-        time.
+    .. math::
 
-    Returns
-    -------
-    ndarray or tuple
-        The light-travel time array. When ``return_receiver_position`` is true,
-        returns ``(tt, x_r_rec)``.
-    """
-    _, x_r, tt = _solve_link_geometry(times, s, r, orbits, x_s=x_s)
-
-    if return_receiver_position:
-        return tt, x_r
-    return tt 
-
-
-def rhat(times, s, r, orbits, tt=None, x_s=None, x_r_rec=None):
-    """
-    Compute the directed link unit vector from sender emission to receiver readout.
+        \hat{r}_{sr}(t) = \frac{x_r(t) - x_s(t-\ell_{sr})}
+                               {\left| x_r(t) - x_s(t-\ell_{sr}) \right|}
 
     Parameters
     ----------
-    times : ndarray
-        Sample reception/readout times for the directed link, in seconds.
-    s : int
-        Sending spacecraft index.
-    r : int
-        Receiving spacecraft index.
-    orbits : object
-        Orbit object used to evaluate spacecraft positions.
-    tt : ndarray or None, optional
-        Optional light-travel time array corresponding to ``times``.
-    x_s : ndarray or None, optional
-        Optional precomputed sender positions at emission time with shape
-        ``(num_times, 3)``.
-    x_r_rec : ndarray or None, optional
-        Optional precomputed receiver positions at reception time with shape
-        ``(num_times, 3)``.
+    x_s : np.ndarray
+        Sender positions at emission time, in metres. Array shape=(Nt, 3).
+    x_r : np.ndarray
+        Receiver positions at reception time, in metres. Array shape=(Nt, 3).
 
     Returns
     -------
-    ndarray
-        Directed link unit vectors with shape ``(num_times, 3)``.
+    r_hat : np.ndarray
+        Unit vectors pointing from sender to receiver. Array shape=(Nt, 3).
     """
-    if x_s is None and x_r_rec is None and tt is None:
-        x_s, x_r_rec, _ = _solve_link_geometry(times, s, r, orbits)
-    else:
-        if tt is not None:
-            tt = np.asarray(tt, dtype=float)
-
-        if x_r_rec is None:
-            x_r_rec = orbits.compute_position(times, [r])[:, 0, :]
-        else:
-            x_r_rec = np.asarray(x_r_rec, dtype=float)
-
-        if x_s is None:
-            if tt is None:
-                x_s, x_r_rec, _ = _solve_link_geometry(times, s, r, orbits)
-            else:
-                t_emit = np.asarray(times, dtype=float) - tt
-                x_s = orbits.compute_position(t_emit, [s])[:, 0, :]
-        else:
-            x_s = np.asarray(x_s, dtype=float)
-
-    r_hat = (x_r_rec - x_s)
-    r_hat = r_hat / np.linalg.norm(r_hat, axis=1)[:, np.newaxis]
-    return r_hat
+    separation = x_r - x_s
+    return separation / np.linalg.norm(separation, axis=1)[:, np.newaxis]
 
 
-def _cubic_kernel_keys(t, a=-0.5):
-    """Keys cubic convolution kernel (Catmull–Rom when a=-0.5)."""
-    t = np.abs(t)
-    w = np.zeros_like(t, dtype=np.float64)
+def build_link_geometry(times,
+                        orbits,
+                        links,
+                        num_iterations : int = LTT_NUM_ITERATIONS,
+                        return_sender_position : bool = False):
+    r"""
+    Build the sky-independent geometry for every directed link.
 
-    m1 = (t < 1)
-    m2 = (t >= 1) & (t < 2)
+    All links share the same reception-time grid, so the positions of all
+    three spacecraft at those times are obtained in a single batched
+    ``compute_position`` call and reused as both the receiver positions and
+    the iteration seeds. Only the retarded sender lookups, which query a
+    different time grid per link, are evaluated link by link. That is
+    ``1 + n_links * num_iterations`` spline evaluations rather than
+    ``n_links * (2 + num_iterations)``.
 
-    w[m1] = (a + 2)*t[m1]**3 - (a + 3)*t[m1]**2 + 1
-    w[m2] = a*t[m2]**3 - 5*a*t[m2]**2 + 8*a*t[m2] - 4*a
-    return w
-
-def _lagrange_weight_matrix(frac, x_nodes):
-    """
-    Build weights W of shape (P, Nt) for evaluation points frac (Nt,)
-    and node locations x_nodes (P,).
-    """
-    frac = frac.astype(np.float64)
-    x_nodes = x_nodes.astype(np.float64)
-    P = len(x_nodes)
-    Nt = len(frac)
-    W = np.ones((P, Nt), dtype=np.float64)
-    for j in range(P):
-        for k in range(P):
-            if k == j:
-                continue
-            W[j, :] *= (frac - x_nodes[k]) / (x_nodes[j] - x_nodes[k])
-    return W
-
-def _lanczos_weights(frac, A):
-    """
-    frac: (Nt,) fractional part in [0,1)
-    A: half-width of kernel (integer), total taps = 2A
-    Returns:
-      offsets: (2A,) integer offsets
-      W: (2A, Nt) weights for each offset
-    """
-    # offsets centered around 0: [-A+1, ..., A]
-    offsets = np.arange(-A + 1, A + 1, dtype=int)  # length 2A
-
-    # x = frac - offset for each tap; shape (2A, Nt)
-    x = (frac[None, :] - offsets[:, None]).astype(np.float64)
-
-    # sinc(pi x)/(pi x) using numpy's normalized sinc: np.sinc(x) = sin(pi x)/(pi x)
-    # Lanczos window: sinc(x/A)
-    W = np.sinc(x) * np.sinc(x / A)
-
-    # Normalize so weights sum to 1 at each frac (helps DC consistency)
-    s = np.sum(W, axis=0, keepdims=True)
-    W = np.divide(W, s, out=W, where=(s != 0))
-
-    return offsets, W
-
-
-def gnm_at_times_grid_np_interp(
-    wdm, n_grid, m_grid, t_query,
-    method="cubic",
-    time_first=True,
-    a=-0.5,
-    wrap=False,
-):
-    """
-    Evaluate g_nm(t) for a grid of (n,m) at times t_query with selectable interpolation.
+    Peak memory is dominated by the output arrays and scales as
+    :math:`56 \, n_{\mathrm{links}} N_t` bytes, or :math:`80 \,
+    n_{\mathrm{links}} N_t` when the sender position is asked for: roughly
+    2 MB for :math:`N_t = 6\times10^3`, and 170 MB for :math:`N_t =
+    4\times10^5`. Nothing here allocates a temporary larger than a single
+    output array, so the peak is set by ``Nt`` alone; if that ever becomes the
+    binding constraint, ``Nf`` is the knob, since :math:`N_t = N/N_f`.
 
     Parameters
     ----------
-    wdm : WDM_transform (needs dt, N, and gnm(n,m)->(N,))
-    n_grid, m_grid : arrays of same shape (grid of indices)
-    t_query : scalar or array of query times (seconds)
-    method : {"nearest","linear","cubic"}
-    time_first : if True -> output shape (t_shape + grid_shape), else (grid_shape + t_shape)
-    a : Keys parameter for cubic (a=-0.5 Catmull–Rom)
-    wrap : if True, periodic wrap indices mod N. If False, zero-extend out-of-range.
+    times : np.ndarray
+        Reception times, in seconds. For the WDM response these are the
+        wavelet centre times :math:`t_n = t_0 + n \Delta T`, not the
+        :math:`N` sample times. Array shape=(Nt,).
+    orbits : lisaorbits.Orbits
+        Orbit provider exposing ``compute_position(t, sc=[...])``.
+    links : tuple
+        Directed links as ``(sender, receiver)`` spacecraft index pairs. The
+        given order indexes axis 0 of every returned array.
+    num_iterations : int
+        Number of fixed-point sweeps per link. Optional.
+    return_sender_position : bool
+        Also return the sender position at emission time. The solve computes
+        it either way, so this only decides whether it is kept; it costs
+        :math:`24 \, n_{\mathrm{links}} N_t` bytes and no extra orbit
+        evaluations. The wavelet path does not need it; the time-domain path
+        uses it to form the retarded phase at emission directly. Optional.
 
     Returns
     -------
-    values : np.ndarray
-        If time_first: shape = t_shape + grid_shape
-        else:         shape = grid_shape + t_shape
+    light_travel_time : np.ndarray
+        Light-travel times :math:`\ell_{sr}(t_n)`, in seconds.
+        Array shape=(n_links, Nt).
+    link_direction : np.ndarray
+        Unit vectors :math:`\hat{r}_{sr}(t_n)`. Array shape=(n_links, Nt, 3).
+    receiver_position : np.ndarray
+        Receiver positions :math:`x_r(t_n)` at reception time, in metres.
+        Array shape=(n_links, Nt, 3).
+    sender_position : np.ndarray
+        Sender positions :math:`x_s(t_n - \ell_{sr})` at emission time, in
+        metres. Returned only when ``return_sender_position`` is set.
+        Array shape=(n_links, Nt, 3).
     """
-    dt = wdm.dt
-    N  = wdm.N
+    times = np.asarray(times, dtype=float)
+    links = tuple((int(sender), int(receiver)) for sender, receiver in links)
 
-    n_grid = np.asarray(n_grid)
-    m_grid = np.asarray(m_grid)
-    if n_grid.shape != m_grid.shape:
-        raise ValueError("n_grid and m_grid must have the same shape")
+    num_times = times.size
+    num_links = len(links)
 
-    t_query = np.asarray(t_query)
-    t_shape = t_query.shape if t_query.shape != () else (1,)
-    t_flat = t_query.ravel()
+    # One batched call on the shared reception grid covers every receiver and
+    # seeds every sender. Axis 1 of the result indexes spacecraft.
+    spacecraft = sorted({sc for link in links for sc in link})
+    row_of = {sc: row for row, sc in enumerate(spacecraft)}
+    positions = orbits.compute_position(times, sc=spacecraft)
 
-    # fractional sample coordinate
-    u = t_flat / dt
-
-    # ----- build neighbor indices + weights depending on method -----
-    if method == "nearest":
-        k0 = np.rint(u).astype(int)
-
-        if wrap:
-            k0i = k0 % N
-            w0  = np.ones_like(u, dtype=np.float64)
-            idxs = [k0i]
-            ws   = [w0]
-        else:
-            v0  = (k0 >= 0) & (k0 < N)
-            k0c = np.clip(k0, 0, N-1)
-            w0  = v0.astype(np.float64)
-            idxs = [k0c]
-            ws   = [w0]
-
-    elif method == "linear":
-        k = np.floor(u).astype(int)
-        frac = u - k
-
-        k0 = k
-        k1 = k + 1
-
-        if wrap:
-            k0i = k0 % N
-            k1i = k1 % N
-            w0  = (1.0 - frac).astype(np.float64)
-            w1  = frac.astype(np.float64)
-            idxs = [k0i, k1i]
-            ws   = [w0,  w1]
-        else:
-            v0  = (k0 >= 0) & (k0 < N)
-            v1  = (k1 >= 0) & (k1 < N)
-            k0c = np.clip(k0, 0, N-1)
-            k1c = np.clip(k1, 0, N-1)
-            w0  = (1.0 - frac) * v0
-            w1  = frac * v1
-            idxs = [k0c, k1c]
-            ws   = [w0.astype(np.float64), w1.astype(np.float64)]
-
-    elif method == "cubic":
-        k = np.floor(u).astype(int)
-        frac = u - k
-
-        k_m1 = k - 1
-        k_0  = k
-        k_p1 = k + 1
-        k_p2 = k + 2
-
-        w_m1 = _cubic_kernel_keys(frac + 1.0, a=a)
-        w_0  = _cubic_kernel_keys(frac,       a=a)
-        w_p1 = _cubic_kernel_keys(frac - 1.0, a=a)
-        w_p2 = _cubic_kernel_keys(frac - 2.0, a=a)
-
-        if wrap:
-            idxs = [k_m1 % N, k_0 % N, k_p1 % N, k_p2 % N]
-            ws   = [w_m1,     w_0,     w_p1,     w_p2]
-        else:
-            v_m1 = (k_m1 >= 0) & (k_m1 < N)
-            v_0  = (k_0  >= 0) & (k_0  < N)
-            v_p1 = (k_p1 >= 0) & (k_p1 < N)
-            v_p2 = (k_p2 >= 0) & (k_p2 < N)
-
-            # zero-extend
-            w_m1 = w_m1 * v_m1
-            w_0  = w_0  * v_0
-            w_p1 = w_p1 * v_p1
-            w_p2 = w_p2 * v_p2
-
-            idxs = [
-                np.clip(k_m1, 0, N-1),
-                np.clip(k_0,  0, N-1),
-                np.clip(k_p1, 0, N-1),
-                np.clip(k_p2, 0, N-1),
-            ]
-            ws = [w_m1, w_0, w_p1, w_p2]
-
-        ws = [w.astype(np.float64) for w in ws]
-
-    elif method.startswith("lagrange"):
-        P = int(method.replace("lagrange", ""))
-        if P < 2:
-            raise ValueError("Lagrange needs >=2 points")
-        # choose a symmetric stencil; for P=8 -> offsets [-3,-2,-1,0,1,2,3,4]
-        half = P // 2
-        offsets = np.arange(-half + 1, half + 1, dtype=int)  # length P for even P
-
-        k = np.floor(u).astype(int)
-        frac = (u - k).astype(np.float64)  # in [0,1)
-
-        x_nodes = offsets.astype(np.float64)
-        W = _lagrange_weight_matrix(frac, x_nodes)  # (P, Nt)
-
-        idxs = [k + off for off in offsets]
-
-        if wrap:
-            idxs = [idx % N for idx in idxs]
-            ws = [W[j, :] for j in range(P)]
-        else:
-            valid = [(idx >= 0) & (idx < N) for idx in idxs]
-            idxs = [np.clip(idx, 0, N-1) for idx in idxs]
-            ws = [(W[j, :] * valid[j]) for j in range(P)]
-
-    elif method.startswith("lanczos"):
-    # e.g. method="lanczos16" or "lanczos32"
-        A = int(method.replace("lanczos", ""))
-        if A < 2:
-            raise ValueError("Lanczos needs A>=2")
-
-        k = np.floor(u).astype(int)
-        frac = (u - k).astype(np.float64)
-
-        offsets, W = _lanczos_weights(frac, A)   # offsets (2A,), W (2A,Nt)
-
-        idxs = [k + off for off in offsets]
-        if wrap:
-            idxs = [idx % N for idx in idxs]
-            ws = [W[j, :] for j in range(len(offsets))]
-        else:
-            valid = [(idx >= 0) & (idx < N) for idx in idxs]
-            idxs = [np.clip(idx, 0, N-1) for idx in idxs]
-            ws = [(W[j, :] * valid[j]) for j in range(len(offsets))]
-
-    else:
-        raise ValueError(f"Unknown method={method}")
-
-
-    # ----- evaluate for each (n,m) mode -----
-    n_flat = n_grid.ravel()
-    m_flat = m_grid.ravel()
-
-    values_list = []
-    for n_i, m_i in zip(n_flat, m_flat):
-        g = np.asarray(wdm.gnm(n=int(n_i), m=int(m_i)))  # (N,)
-
-        out = np.zeros_like(u, dtype=np.float64)
-        for k_idx, w in zip(idxs, ws):
-            out += w * g[k_idx]
-        values_list.append(out.reshape(t_shape))
-
-    values_modes_t = np.stack(values_list, axis=0)  # (Nmodes, *t_shape)
-
-    grid_shape = n_grid.shape
-    values = values_modes_t.reshape(grid_shape + t_shape)
-
-    if time_first:
-        g_dim = len(grid_shape)
-        t_dim = len(t_shape)
-        perm = list(range(g_dim, g_dim + t_dim)) + list(range(0, g_dim))
-        values = np.transpose(values, perm)
-
-    return values
-
-def generate_time_shifts(Nt, times_0, dT, theta, phi, s, r, orbits, sky_basis=None):
-    """
-    Generate coefficient-space time shifts for the dT-grid WDM response.
-
-    Parameters
-    ----------
-    Nt : int
-        Number of samples on the WDM time grid.
-    times_0 : float
-        Start time of the grid in seconds.
-    dT : float
-        WDM time resolution in seconds.
-    theta : float
-        Polar angle of the incoming waveform in radians.
-    phi : float
-        Azimuthal angle of the incoming waveform in radians.
-    s : int
-        Sending spacecraft index.
-    r : int
-        Receiving spacecraft index.
-    orbits : object
-        Orbit object used to evaluate spacecraft positions.
-    sky_basis : SkyBasis or None, optional
-        Optional precomputed sky basis for ``theta`` and ``phi``. When omitted,
-        it is built internally.
-
-    Returns
-    -------
-    ndarray
-        Time-shift array with length ``Nt``.
-    """
-
-    t_p = times_0 + np.arange(Nt) * dT
-
-    if sky_basis is None:
-        sky_basis = build_sky_basis(theta, phi)
-
-    n = sky_basis.n
-    Omega = sky_basis.Omega
-    l_sr_tp, x_r_rec_tp = _compute_ltt_iterative(
-        t_p,
-        s,
-        r,
-        orbits,
-        return_receiver_position=True,
+    out_ltt = np.empty((num_links, num_times), dtype=float)
+    out_direction = np.empty((num_links, num_times, 3), dtype=float)
+    out_receiver = np.empty((num_links, num_times, 3), dtype=float)
+    out_sender = (
+        np.empty((num_links, num_times, 3), dtype=float)
+        if return_sender_position else None
     )
-    rhat_sr_tp = rhat(t_p, s, r, orbits, tt=l_sr_tp, x_r_rec=x_r_rec_tp)
-    Om_dot_rhat_tp = rhat_sr_tp @ Omega
-    tau_p = 0.5 * l_sr_tp * (1 - Om_dot_rhat_tp)
 
-    t_shifts = x_r_rec_tp @ (n / c) - tau_p
+    for index, (sender, receiver) in enumerate(links):
+        x_s, x_r, ltt = solve_light_travel_time(
+            times,
+            sender,
+            receiver,
+            orbits,
+            x_r=positions[:, row_of[receiver], :],
+            x_s=positions[:, row_of[sender], :],
+            num_iterations=num_iterations,
+        )
+
+        out_ltt[index] = ltt
+        out_direction[index] = link_direction(x_s, x_r)
+        out_receiver[index] = x_r
+        if return_sender_position:
+            out_sender[index] = x_s
+
+    if return_sender_position:
+        return out_ltt, out_direction, out_receiver, out_sender
+
+    return out_ltt, out_direction, out_receiver
 
 
-    return t_shifts
+def build_sky_basis(theta, phi):
+    r"""
+    Build the orthonormal sky-frame triad for a source direction.
+
+    With :math:`\theta` the polar and :math:`\phi` the azimuthal angle of the
+    source in the solar-system barycentric frame,
+
+    .. math::
+
+        \hat{u} = (\cos\theta\cos\phi,\ \cos\theta\sin\phi,\ -\sin\theta) ,
+
+    .. math::
+
+        \hat{v} = (\sin\phi,\ -\cos\phi,\ 0) ,
+
+    .. math::
+
+        \hat{n} = (\sin\theta\cos\phi,\ \sin\theta\sin\phi,\ \cos\theta) .
+
+    :math:`\hat{n}` points from the barycentre towards the source, so the
+    gravitational-wave propagation direction is
+    :math:`\hat{\Omega} = -\hat{n}`. Callers form it themselves rather than
+    receiving it, since it is one negation and carrying both invites sign
+    confusion.
+
+    The polarisation tensors :math:`e^+ = \hat{u}\hat{u} - \hat{v}\hat{v}` and
+    :math:`e^\times = \hat{u}\hat{v} + \hat{v}\hat{u}` are deliberately not
+    built. Every consumer contracts them twice with the same link vector, and
+    doing that through the scalars :math:`\hat{r}\cdot\hat{u}` and
+    :math:`\hat{r}\cdot\hat{v}` - see ``antenna_pattern_factors`` - is the same
+    number for two dot products instead of a pair of :math:`3\times3`
+    contractions per link and time sample.
+
+    Parameters
+    ----------
+    theta : jnp.ndarray or float
+        Polar angle of the source direction, in radians. Array shape=(...,),
+        broadcast against ``phi``.
+    phi : jnp.ndarray or float
+        Azimuthal angle of the source direction, in radians.
+        Array shape=(...,), broadcast against ``theta``.
+
+    Returns
+    -------
+    u : jnp.ndarray
+        Sky-frame basis vector :math:`\hat{u}`. Array shape=(..., 3).
+    v : jnp.ndarray
+        Sky-frame basis vector :math:`\hat{v}`. Array shape=(..., 3).
+    n : jnp.ndarray
+        Source direction :math:`\hat{n}`. Array shape=(..., 3).
+    """
+    theta, phi = jnp.broadcast_arrays(
+        jnp.asarray(theta, dtype=float),
+        jnp.asarray(phi, dtype=float),
+    )
+
+    cos_theta = jnp.cos(theta)
+    sin_theta = jnp.sin(theta)
+    cos_phi = jnp.cos(phi)
+    sin_phi = jnp.sin(phi)
+    zero = jnp.zeros_like(phi)
+
+    u = jnp.stack(
+        [cos_theta * cos_phi, cos_theta * sin_phi, -sin_theta], axis=-1)
+    v = jnp.stack([sin_phi, -cos_phi, zero], axis=-1)
+    n = jnp.stack(
+        [sin_theta * cos_phi, sin_theta * sin_phi, cos_theta], axis=-1)
+
+    return u, v, n
+
+
+def antenna_pattern_factors(link_direction, u, v):
+    r"""
+    Project link directions onto the polarisation basis.
+
+    .. math::
+
+        F^+ = (\hat{r}\cdot\hat{u})^2 - (\hat{r}\cdot\hat{v})^2 , \qquad
+        F^\times = 2 (\hat{r}\cdot\hat{u})(\hat{r}\cdot\hat{v}) .
+
+    These are the double contractions :math:`\hat{r} \cdot e^{+,\times} \cdot
+    \hat{r}` written out, which is why ``build_sky_basis`` never forms the
+    tensors.
+
+    The two operands carry independent leading axes: ``u`` and ``v`` are
+    indexed by source, ``link_direction`` by link and time. The output takes
+    the source axes first and the link axes second, so a batch of sources
+    against a set of links comes back as ``(..., num_links, num_times)``.
+
+    Parameters
+    ----------
+    link_direction : jnp.ndarray
+        Unit vectors :math:`\hat{r}_{sr}`.
+        Array shape=(num_links, num_times, 3), or any shape ending in 3.
+    u : jnp.ndarray
+        Sky-frame basis vector :math:`\hat{u}`. Array shape=(..., 3).
+    v : jnp.ndarray
+        Sky-frame basis vector :math:`\hat{v}`. Array shape=(..., 3).
+
+    Returns
+    -------
+    projection_plus : jnp.ndarray
+        Plus antenna-pattern factor.
+        Array shape=(...,) + link_direction.shape[:-1].
+    projection_cross : jnp.ndarray
+        Cross antenna-pattern factor. Same shape as ``projection_plus``.
+    """
+    r_dot_u = jnp.tensordot(u, link_direction, axes=([-1], [-1]))
+    r_dot_v = jnp.tensordot(v, link_direction, axes=([-1], [-1]))
+
+    return r_dot_u ** 2 - r_dot_v ** 2, 2.0 * r_dot_u * r_dot_v
+
+
+def resolve_domain(wdm_class, array, from_domain : str, to_domain : str):
+    r"""
+    Move an array between the time and wavelet representations.
+
+    A single place for the ``dwt``/``idwt`` decision, used on the way in by
+    ``prepare_sources`` and on the way out by ``finalise_response``, so neither
+    has to know which transform is needed.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``dwt`` and ``idwt``.
+    array : jnp.ndarray
+        Array in the ``from_domain`` representation, shape (..., N) for
+        ``"time"`` or (..., Nt, Nf) for ``"wdm"``.
+    from_domain : str
+        Representation ``array`` is in, ``"time"`` or ``"wdm"``.
+    to_domain : str
+        Representation wanted, ``"time"`` or ``"wdm"``.
+
+    Returns
+    -------
+    array : jnp.ndarray
+        The same data in ``to_domain``; the input unchanged when the two agree.
+    """
+    if from_domain == to_domain:
+        return array
+
+    return (wdm_class.dwt(array) if to_domain == "wdm"
+            else wdm_class.idwt(array))
+
+
+def compute_angular_geometry_td(theta,
+                                phi,
+                                light_travel_time,
+                                link_direction,
+                                receiver_position,
+                                sender_position,
+                                reception_times):
+    r"""
+    Sky-dependent quantities for the time-domain response.
+
+    Everything the quadrature needs from the source direction: the antenna
+    response, the two ends of the retarded-phase window, and the projection of
+    the propagation direction on the link.
+
+    The window runs between the retarded wave phase at emission and at
+    reception,
+
+    .. math::
+
+        \xi_r = t - \hat{\Omega}\cdot x_r(t)/c , \qquad
+        \xi_s = t - \ell_{sr}(t)
+                  - \hat{\Omega}\cdot x_s(t-\ell_{sr})/c ,
+
+    both formed from the positions the geometry solve produced. A test comparing the two routes must scale its tolerance with
+    :math:`t_0` rather than fix it.
+
+    Parameters
+    ----------
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,). The sky
+        basis is built here rather than passed in: it is angular geometry, and
+        nothing outside this function needs it.
+    light_travel_time : jnp.ndarray
+        :math:`\ell_{sr}`, in seconds. Array shape=(num_links, chunk).
+    link_direction : jnp.ndarray
+        :math:`\hat{r}_{sr}`. Array shape=(num_links, chunk, 3).
+    receiver_position : jnp.ndarray
+        :math:`x_r`, in metres. Array shape=(num_links, chunk, 3).
+    sender_position : jnp.ndarray
+        :math:`x_s` at emission, in metres. Array shape=(num_links, chunk, 3).
+    reception_times : jnp.ndarray
+        Reception times, as offsets from waveform sample zero, in seconds.
+        Array shape=(chunk,).
+
+    Returns
+    -------
+    projection_plus, projection_cross : jnp.ndarray
+        Antenna-pattern factors. Array shape=(batch, num_links, chunk).
+    xi_receive : jnp.ndarray
+        Retarded phase at reception, :math:`\xi_r`, in seconds. Same shape.
+    tau : jnp.ndarray
+        Effective light travel time :math:`\tau_{sr} = \xi_r - \xi_s`, in
+        seconds. Same shape.
+    omega_dot_direction : jnp.ndarray
+        :math:`\hat{\Omega}\cdot\hat{r}_{sr}`, which sets the response
+        prefactor. Same shape.
+    """
+    u, v, n = build_sky_basis(theta, phi)
+    propagation_direction = -n
+
+    projection_plus, projection_cross = antenna_pattern_factors(
+        link_direction, u, v,
+    )
+
+    # (batch, num_links, chunk) from (batch, 3) against (num_links, chunk, 3).
+    omega_dot_direction = jnp.tensordot(
+        propagation_direction, link_direction, axes=([-1], [-1]),
+    )
+    omega_dot_receiver = jnp.tensordot(
+        propagation_direction, receiver_position / c, axes=([-1], [-1]),
+    )
+    omega_dot_sender = jnp.tensordot(
+        propagation_direction, sender_position / c, axes=([-1], [-1]),
+    )
+
+    xi_receive = reception_times - omega_dot_receiver
+
+    # tau = xi_receive - xi_emit, with the reception time cancelled
+    # analytically rather than in floating point.
+    tau = light_travel_time + omega_dot_sender - omega_dot_receiver
+
+    return (projection_plus, projection_cross, xi_receive,
+            tau, omega_dot_direction)
+
+
+def compute_angular_geometry_wdm(theta,
+                                 phi,
+                                 light_travel_time,
+                                 link_direction):
+    r"""
+    Sky-dependent quantities for the wavelet response.
+
+    The antenna response and :math:`\tau_{sr}`, the effective light travel
+    time of the link measured along the gravitational-wave propagation
+    direction,
+
+    .. math::
+
+        \tau_{sr}(t_n) = \ell_{sr}(t_n)
+            \left( 1 + \hat{n}\cdot\hat{r}_{sr}(t_n) \right) .
+
+    This is the width of the retarded-phase window the wave is averaged over,
+    :math:`\tau_{sr} = \xi_r - \xi_s`, formed here without a sender position,
+    which the wavelet path does not store.
+
+    The factor :math:`(1 + \hat{n}\cdot\hat{r}_{sr})` is the closing rate
+    between photon and wavefront. It vanishes when the wave travels along the
+    arm with the photon, which surfs the wavefront and accumulates no phase;
+    it is :math:`\ell_{sr}` for a wave crossing the arm, and :math:`2\ell_{sr}`
+    for one travelling against the photon.
+
+    Nothing here carries a frequency axis, so these stay
+    :math:`(\ldots, N_t)` and only ``compute_detector_amplitudes`` builds the
+    large arrays.
+
+    Parameters
+    ----------
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,). The sky
+        basis is built here rather than passed in: it is angular geometry.
+    light_travel_time : jnp.ndarray
+        :math:`\ell_{sr}(t_n)`, in seconds. Array shape=(num_links, Nt).
+    link_direction : jnp.ndarray
+        :math:`\hat{r}_{sr}(t_n)`. Array shape=(num_links, Nt, 3).
+
+    Returns
+    -------
+    projection_plus, projection_cross : jnp.ndarray
+        Antenna-pattern factors. Array shape=(batch, num_links, Nt).
+    tau : jnp.ndarray
+        Effective light travel time :math:`\tau_{sr}`, in seconds. Same shape.
+    source_direction : jnp.ndarray
+        :math:`\hat{n}`, returned because ``compute_time_shifts`` needs it to
+        form :math:`\hat{n}\cdot x_r/c`. Array shape=(batch, 3).
+    """
+    u, v, n = build_sky_basis(theta, phi)
+
+    projection_plus, projection_cross = antenna_pattern_factors(
+        link_direction, u, v,
+    )
+
+    direction_dot_source = jnp.tensordot(
+        n, link_direction, axes=([-1], [-1]),
+    )
+    tau = light_travel_time * (1.0 + direction_dot_source)
+
+    return projection_plus, projection_cross, tau, n
+
+
+def compute_time_shifts(source_direction, receiver_position, tau):
+    r"""
+    Delay carrying each pixel to the centre of its retarded-phase window.
+
+    .. math::
+
+        \delta_n = \hat{n}\cdot x_r(t_n)/c - \tfrac{1}{2}\tau_{sr}(t_n)
+
+    The wave reaching the receiver at :math:`t_n` was sampled, on average, at
+    :math:`t_n + \delta_n`: the first term is the plane-wave phase at the
+    receiver, the second steps back by half the effective light travel time,
+    to the middle of the window.
+
+    Parameters
+    ----------
+    source_direction : jnp.ndarray
+        :math:`\hat{n}`, from ``compute_angular_geometry_wdm``.
+        Array shape=(batch, 3).
+    receiver_position : jnp.ndarray
+        :math:`x_r(t_n)`, in metres. Array shape=(num_links, Nt, 3).
+    tau : jnp.ndarray
+        Effective light travel time, in seconds.
+        Array shape=(batch, num_links, Nt).
+
+    Returns
+    -------
+    time_shift : jnp.ndarray
+        :math:`\delta_n`, in seconds. Array shape=(batch, num_links, Nt).
+    """
+    return jnp.tensordot(
+        source_direction / c, receiver_position, axes=([-1], [-1]),
+    ) - 0.5 * tau
+
+
+def evaluate_at_landing_times(row_values, time_shift, row_spacing):
+    r"""
+    Per-row detector quantities at the time each row lands after the shift.
+
+    .. math::
+
+        \tilde{q}_n = q\!\left( t_n - \delta_n \right)
+
+    The shift carries row :math:`n` to :math:`t_n - \delta_n`, so a detector
+    quantity multiplied in before it is sampled there to arrive at the right
+    time; see ``one_arm_response_wdm``.
+
+    A Taylor step from each row,
+
+    .. math::
+
+        \tilde{q}_n = \sum_{k=0}^{K} \frac{(-\delta_n / \Delta T)^k}{k!}
+            \, q^{(k)}_n ,
+
+    with the row derivatives :math:`q^{(k)}_n` those of the Lagrange
+    interpolant through the ``LANDING_NUM_TAPS`` rows around :math:`n`, moved
+    inward at the ends, so a landing time off the record is extrapolated. The
+    stencils sit at fixed rows, so the step is static slices and no gather,
+    which XLA:CPU would otherwise carry into every pixel of the amplitudes.
+
+    Parameters
+    ----------
+    row_values : jnp.ndarray
+        A quantity sampled at the rows :math:`t_n`. Array shape=(..., Nt).
+    time_shift : jnp.ndarray
+        :math:`\delta_n`, in seconds, broadcastable against ``row_values``.
+    row_spacing : float
+        :math:`\Delta T`, in seconds.
+
+    Returns
+    -------
+    landed : jnp.ndarray
+        :math:`q(t_n - \delta_n)`. Same shape as ``row_values``.
+    """
+    num_taps, order = LANDING_NUM_TAPS, LANDING_TAYLOR_ORDER
+    num_rows = row_values.shape[-1]
+    assert num_rows >= num_taps, \
+                f"landing times need at least {num_taps} rows, got {num_rows=}."
+
+    weights = landing_derivative_weights(num_taps, order)
+    centre = num_taps // 2 - 1
+    num_head, num_tail = centre, num_taps - centre - 1
+    num_middle = num_rows - num_taps + 1
+    lead = (1,) * (row_values.ndim - 1)
+
+    # Tap j of every row and its weights, row derivatives of shape
+    # (order + 1, ..., Nt): the first and last rows use the end stencils
+    # off-centre, the rest the centred one. One product per tap, so no element
+    # depends on the batch shape.
+    derivatives = 0.0
+    for j in range(num_taps):
+        tap = jnp.concatenate([
+            jnp.repeat(row_values[..., j:j + 1], num_head, axis=-1),
+            row_values[..., j:j + num_middle],
+            jnp.repeat(row_values[..., num_middle - 1 + j:num_middle + j],
+                       num_tail, axis=-1),
+        ], axis=-1)
+        weight = jnp.concatenate([
+            weights[:centre, :, j].T,
+            jnp.broadcast_to(weights[centre, :, j, None],
+                             (order + 1, num_middle)),
+            weights[centre + 1:, :, j].T,
+        ], axis=-1)
+        derivatives = derivatives \
+            + weight.reshape((order + 1,) + lead + (num_rows,)) * tap
+
+    step = -jnp.broadcast_to(time_shift, row_values.shape) / row_spacing
+    landed = derivatives[order]
+    for k in range(order - 1, -1, -1):
+        landed = derivatives[k] + step / (k + 1) * landed
+    return landed
+
+
+@lru_cache
+def landing_derivative_weights(num_taps : int, order : int) -> np.ndarray:
+    r"""
+    Weights of the row derivatives of a ``num_taps``-row Lagrange stencil.
+
+    ``weights[p, k, j]`` is the weight of tap :math:`j` in the :math:`k`-th
+    derivative, in rows, of the interpolant at its own row :math:`p`, for
+    :math:`k = 0, \dots,` ``order``. Array shape=(num_taps, order + 1,
+    num_taps).
+    """
+    # In exact integers: the power basis over rows 0 .. num_taps - 1 is too
+    # ill-conditioned for float64 (1e-8 off the identity at k = 0).
+    weights = np.empty((num_taps, order + 1, num_taps))
+    for j in range(num_taps):
+        coeffs, denominator = [1], 1
+        for m in range(num_taps):
+            if m != j:
+                coeffs = [a - m * b for a, b in zip([0] + coeffs, coeffs + [0])]
+                denominator *= j - m
+        for k in range(order + 1):
+            for p in range(num_taps):
+                value = sum(a * p**i for i, a in enumerate(coeffs))
+                weights[p, k, j] = Fraction(value, denominator)
+            coeffs = [i * a for i, a in enumerate(coeffs)][1:]
+    return weights
+
+
+def compute_detector_amplitudes(light_travel_time,
+                                projection_plus,
+                                projection_cross,
+                                tau,
+                                wavelet_freqs):
+    r"""
+    Per-pixel amplitudes of the one-arm transfer function.
+
+    .. math::
+
+        A^{+,\times}_{nm} = \tfrac{1}{2} \ell_{sr}(t_n) F^{+,\times}(t_n)
+            \, \mathrm{sinc}\!\left( f_m \tau_{sr}(t_n) \right)
+
+    The sinc is the window average of a wave at the pixel's centre frequency:
+    averaging :math:`e^{2\pi i f \xi}` over a window of width
+    :math:`\tau_{sr}` gives exactly :math:`\mathrm{sinc}(f \tau_{sr})`, the
+    closed form the time-domain path reaches by quadrature instead.
+
+    Evaluating it at :math:`f_m` rather than at the wave's true frequency is
+    the *local-delay approximation*, the dominant error in this pipeline: L2
+    of order :math:`10^{-4}`, mismatch :math:`10^{-8}`, for a source on a band
+    centre, rising to :math:`5\times10^{-3}` for one halfway between two.
+
+    This is where the frequency axis enters, so these are the first arrays of
+    size :math:`(\ldots, N_t, N_f)`.
+
+    Parameters
+    ----------
+    light_travel_time : jnp.ndarray
+        :math:`\ell_{sr}`, in seconds. Array shape=(num_links, Nt), or
+        (batch, num_links, Nt) when it has been taken to per-source times by
+        ``evaluate_at_landing_times``.
+    projection_plus, projection_cross : jnp.ndarray
+        Antenna-pattern factors. Array shape=(batch, num_links, Nt).
+    tau : jnp.ndarray
+        Effective light travel time :math:`\tau_{sr}`, in seconds. Same shape.
+    wavelet_freqs : jnp.ndarray
+        Pixel centre frequencies :math:`f_m`, in hertz. Array shape=(Nf,).
+
+    Returns
+    -------
+    amplitude_plus, amplitude_cross : jnp.ndarray
+        :math:`A^{+}` and :math:`A^{\times}`.
+        Array shape=(batch, num_links, Nt, Nf).
+    """
+    transfer = jnp.sinc(tau[..., jnp.newaxis] * wavelet_freqs)
+    scale = 0.5 * light_travel_time[..., jnp.newaxis]
+
+    return (scale * projection_plus[..., jnp.newaxis] * transfer,
+            scale * projection_cross[..., jnp.newaxis] * transfer)
+
+
+def apply_batch_shift(wdm_class,
+                      filter_tables,
+                      wavelet_coefficients,
+                      time_shift):
+    r"""
+    Apply a per-link variable time shift to a batch of coefficient grids.
+
+    ``wdm_class.apply_variable_time_shift`` takes one :math:`(N_t, N_f)` grid
+    and one :math:`(N_t,)` delay, so the source and link axes are flattened
+    together and the grids are swept one at a time.
+
+    The sweep is a python loop, which unrolls into the graph. That is worth
+    2.7x over the ``lax.scan`` this used to be, for a bit-identical result:
+    the shift is a chain of :math:`2L+1` accumulations over
+    :math:`(N_t, N_f)` arrays, and XLA:CPU fuses that chain into one pass only
+    when it is not inside a loop body. Vmapping instead is worse still,
+    measured 18.5% slower than the scan.
+
+    The graph therefore grows with the number of grids, so a large source
+    batch is better looped over on the host than passed in as a leading axis.
+
+    The delay is passed with its own sign, not negated. Shifting the
+    *coefficients* is the active transformation and carries the opposite sign
+    to shifting the basis functions, since
+    :math:`\langle f(t-\delta), g_{nm}(t)\rangle = \langle f(t),
+    g_{nm}(t+\delta)\rangle`, so passing :math:`\delta_n` samples the wave at
+    :math:`t + \delta_n` - the window centre.
+
+    How accurate the shift is depends on whether the delay varies. A constant
+    delay is shifted essentially exactly: at :math:`L=25` a shifted tone
+    matches the transform of the exactly shifted signal to a mismatch of
+    :math:`10^{-11}` on a band centre and :math:`6\times10^{-8}` halfway
+    between two. A varying delay is sampled once per row, and every lag
+    feeding row :math:`n` sees :math:`\delta_n`. On a band centre that costs
+    nothing measurable, :math:`2\times10^{-10}`, but a tone whose power is
+    split between two bands pays for it. Halfway between band centres, the
+    one-year orbital delay - :math:`\pm 436` s, changing by up to 0.086 s per
+    row at :math:`\Delta T = 1000` s - leaves mismatches of
+    :math:`8\times10^{-7}`, :math:`10^{-5}` and :math:`4\times10^{-5}` at 1, 5
+    and 10 mHz. At 5 and 10 mHz it grows as the square of the delay's rate of
+    change. This is the off-bin error of the full response, not the
+    band-centre frequency in the sinc, and at 10 mHz it is already within a
+    factor of two of the SNR-100 threshold of :math:`5\times10^{-5}`: higher
+    frequencies, higher SNR or a coarser :math:`\Delta T` can be expected to
+    cross it.
+
+    Removing it needs a first-order term in the delay's rate inside the
+    shift, with filter tables of its own, and that is not implemented.
+    Evaluating each lag at the delay midway between its two rows was tried
+    and rejected: it halves the off-bin error and makes tones on a band centre
+    hundreds of times worse.
+
+    The shift wraps periodically at the ends of the record rather than running
+    off it. Pixel row :math:`n` reads rows :math:`n-L \ldots n+L`, the kernel
+    having hard support at :math:`\pm L` and nothing beyond, so on an unpadded
+    record exactly :math:`L` rows at each end are contaminated.
+
+    Zero padding the input remains the caller's responsibility, and
+    :math:`\lceil L/2 \rceil` rows *at each end* suffices - not :math:`L`.
+    Padding both ends is what halves it: the first physical row reads down to
+    :math:`P-L`, which wraps to :math:`N_t+P-L`, and that lands inside the
+    *trailing* pad whenever :math:`2P \geq L`, so the wrapped read returns
+    zeros rather than signal. In samples that is
+    :math:`\lceil L/2 \rceil N_f` per side.
+
+    ``utils.wdm_padding_info`` also rounds the leading pad up to an even number
+    of rows. That is bookkeeping, not correctness - it keeps differently padded
+    grids comparable - and affects no response calculation.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``apply_variable_time_shift``.
+    filter_tables : jnp.ndarray
+        Time-delay filter tables, shape=(2, 2L+1, num_interp_points).
+    wavelet_coefficients : jnp.ndarray
+        Unshifted coefficients. Array shape=(batch, num_links, Nt, Nf).
+    time_shift : jnp.ndarray
+        Delay per pixel row, in seconds. Array shape=(batch, num_links, Nt).
+
+    Returns
+    -------
+    shifted : jnp.ndarray
+        Array shape=(batch, num_links, Nt, Nf).
+    """
+    batch_size, num_links, num_times, num_freqs = wavelet_coefficients.shape
+    num_grids = batch_size * num_links
+
+    coefficients = wavelet_coefficients.reshape(
+        num_grids, num_times, num_freqs)
+    delta = time_shift.reshape(num_grids, num_times)
+
+    shifted = jnp.stack([
+        wdm_class.apply_variable_time_shift(
+            filter_tables, coefficients[grid], delta[grid],
+        )
+        for grid in range(num_grids)
+    ])
+
+    return shifted.reshape(batch_size, num_links, num_times, num_freqs)
+
+
+@partial(jax.jit, static_argnames=("wdm_class",))
+def one_arm_response_wdm(wdm_class,
+                         filter_tables,
+                         wavelet_plus,
+                         wavelet_cross,
+                         theta,
+                         phi,
+                         light_travel_time,
+                         link_direction,
+                         receiver_position,
+                         wavelet_freqs):
+    r"""
+    One-arm response in the wavelet domain, for every link and source.
+
+    This is the production path. Where ``one_arm_time_domain_chunk`` evaluates
+    the retarded-phase integral node by node, this evaluates it once per pixel
+    in closed form and then moves the result to the retarded phase with the
+    WDM time-shift operator, which is what makes it fast enough for a
+    likelihood.
+
+    The closed form is exact for a monochromatic wave. Averaging
+    :math:`e^{2\pi i f \xi}` over the window of width :math:`2\tau_n` gives
+    :math:`\mathrm{sinc}(2 f \tau_n)`, so the pixel amplitude is
+
+    .. math::
+
+        A^{+,\times}_{nm} = \tfrac{1}{2} \ell_{sr}(t'_n) F^{+,\times}(t'_n)
+            \, \mathrm{sinc}\!\left( 2 f_m \tau(t'_n) \right) ,
+        \qquad t'_n = t_n - \delta_n ,
+
+    and the unshifted coefficients are
+    :math:`w^\xi = A^+ w^{h_+} + A^\times w^{h_\times}`. Evaluating the sinc at
+    the pixel's own centre frequency :math:`f_m` is the *local-delay
+    approximation*, and it is the dominant error in this pipeline at an L2 of
+    order :math:`10^{-4}` - far above the light-travel-time solve, the filter
+    tables, or anything the time-domain path contributes. That is why the
+    time-domain path exists to check it.
+
+    The shift then samples the wave at :math:`t_n + \delta_n` through
+    ``wdm_class.apply_variable_time_shift``, which applies a time-varying delay
+    directly in the wavelet domain rather than returning to the time series.
+    The shift moves the amplitudes with the coefficients they multiply, so they
+    are taken at :math:`t'_n`, where each row lands: the response is
+    :math:`A(t)\,h(t + \delta(t))`, with only the waveform retarded. The delay
+    stays at :math:`t_n`, the output row it is applied for.
+
+    Links are swept one at a time in ``apply_batch_shift``, which is where the
+    runtime of this path very nearly all sits - 98% of it at a year.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``apply_variable_time_shift``. Static under
+        ``jit``.
+    filter_tables : jnp.ndarray
+        Time-delay filter tables, shape=(2, 2L+1, num_interp_points).
+    wavelet_plus : jnp.ndarray
+        Wavelet coefficients of :math:`h_+`. Array shape=(batch, Nt, Nf).
+    wavelet_cross : jnp.ndarray
+        Wavelet coefficients of :math:`h_\times`. Array shape=(batch, Nt, Nf).
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,).
+    light_travel_time : jnp.ndarray
+        :math:`\ell_{sr}(t_n)`, in seconds. Array shape=(num_links, Nt).
+    link_direction : jnp.ndarray
+        :math:`\hat{r}_{sr}(t_n)`. Array shape=(num_links, Nt, 3).
+    receiver_position : jnp.ndarray
+        :math:`x_r(t_n)`, in metres. Array shape=(num_links, Nt, 3).
+    wavelet_freqs : jnp.ndarray
+        Pixel centre frequencies :math:`f_m`, in hertz. Array shape=(Nf,).
+
+    Returns
+    -------
+    response : jnp.ndarray
+        Link delay fluctuations :math:`\delta \ell_{sr}`, in seconds, as
+        wavelet coefficients. Array shape=(batch, num_links, Nt, Nf).
+    """
+    projection_plus, projection_cross, tau, source_direction = (
+        compute_angular_geometry_wdm(
+            theta, phi, light_travel_time, link_direction,
+        )
+    )
+
+    time_shift = compute_time_shifts(source_direction, receiver_position, tau)
+
+    landed = evaluate_at_landing_times(
+        jnp.stack(jnp.broadcast_arrays(
+            light_travel_time, projection_plus, projection_cross, tau,
+        )),
+        time_shift, wdm_class.dT,
+    )
+
+    amplitude_plus, amplitude_cross = compute_detector_amplitudes(
+        *landed, wavelet_freqs,
+    )
+
+    unshifted = (amplitude_plus * wavelet_plus[:, jnp.newaxis]
+                 + amplitude_cross * wavelet_cross[:, jnp.newaxis])
+
+    return apply_batch_shift(
+        wdm_class, filter_tables, unshifted, time_shift,
+    )
+
+
+def broadcast_sources(wdm_class,
+                      theta,
+                      phi,
+                      h_plus,
+                      h_cross,
+                      in_domain : str,
+                      target_domain : str):
+    r"""
+    Validate a batch of sources, put it in one domain and give it one axis.
+
+    Plumbing shared by both response methods, which differ only in the domain
+    their kernel wants the waveform in. The leading axes of ``theta``, ``phi``
+    and the two waveforms are broadcast against each other and then flattened
+    to a single batch axis, so the jitted kernels see a fixed rank whatever the
+    caller passed. ``batch_shape`` comes back so ``finalise_response`` can
+    restore the caller's axes at the end.
+
+    The sky basis is deliberately *not* built here: it is a physical quantity
+    with its own name, so the caller does ``build_sky_basis(theta, phi)`` on
+    the broadcast angles returned below, and it stays visible alongside the
+    other named steps.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``dwt``/``idwt`` and the grid sizes.
+    theta, phi : jnp.ndarray or float
+        Source direction angles, in radians. Array shape=(...,).
+    h_plus, h_cross : jnp.ndarray
+        Polarisations in the ``in_domain`` representation.
+    in_domain : str
+        Domain the waveforms arrive in, ``"time"`` or ``"wdm"``.
+    target_domain : str
+        Domain the kernel needs, ``"time"`` or ``"wdm"``.
+
+    Returns
+    -------
+    h_plus, h_cross : jnp.ndarray
+        Waveforms in ``target_domain``, with one leading batch axis.
+    theta, phi : jnp.ndarray
+        Angles broadcast to the batch and flattened. Array shape=(batch,).
+    batch_shape : tuple
+        The broadcast leading shape, for restoring the output's axes.
+    """
+    assert in_domain in ("time", "wdm"), \
+                f"in_domain must be 'time' or 'wdm', got {in_domain!r}."
+
+    h_plus = jnp.asarray(h_plus)
+    h_cross = jnp.asarray(h_cross)
+
+    given = ((wdm_class.Nt, wdm_class.Nf) if in_domain == "wdm"
+             else (wdm_class.N,))
+    for name, array in (("h_plus", h_plus), ("h_cross", h_cross)):
+        assert array.shape[-len(given):] == given, \
+                    f"With {in_domain=}, {name} must end in axes " \
+                    f"{given}, got {array.shape=}."
+
+    h_plus = resolve_domain(wdm_class, h_plus, in_domain, target_domain)
+    h_cross = resolve_domain(wdm_class, h_cross, in_domain, target_domain)
+
+    wanted = ((wdm_class.Nt, wdm_class.Nf) if target_domain == "wdm"
+              else (wdm_class.N,))
+
+    theta = jnp.asarray(theta, dtype=float)
+    phi = jnp.asarray(phi, dtype=float)
+
+    batch_shape = jnp.broadcast_shapes(
+        theta.shape,
+        phi.shape,
+        h_plus.shape[:-len(wanted)],
+        h_cross.shape[:-len(wanted)],
+    )
+    batch_size = int(np.prod(batch_shape, dtype=int))
+
+    return (
+        jnp.broadcast_to(
+            h_plus, batch_shape + wanted).reshape((batch_size,) + wanted),
+        jnp.broadcast_to(
+            h_cross, batch_shape + wanted).reshape((batch_size,) + wanted),
+        jnp.broadcast_to(theta, batch_shape).reshape(batch_size),
+        jnp.broadcast_to(phi, batch_shape).reshape(batch_size),
+        batch_shape,
+    )
+
+
+@partial(jax.jit, static_argnames=("num_integral_points", "num_taps"))
+def one_arm_time_domain_chunk(h_plus,
+                              h_cross,
+                              theta,
+                              phi,
+                              light_travel_time,
+                              link_direction,
+                              receiver_position,
+                              sender_position,
+                              chunk_times,
+                              waveform_step : float,
+                              num_integral_points : int = 12,
+                              num_taps : int = 12):
+    r"""
+    One-arm time-domain response for one block of reception times.
+
+    This is the time-domain formulation, evaluated directly rather than through
+    the WDM filter tables. The fractional frequency shift accumulated along a
+    directed link is the wave averaged over the null geodesic that connects
+    emission to reception, so the link delay fluctuation is
+
+    .. math::
+
+        \delta \ell_{sr}(t) =
+            \frac{1}{2\left(1 - \hat{\Omega}\cdot\hat{r}_{sr}\right)}
+            \int_{\xi_s}^{\xi_r}
+                \left[ F^+ h_+(\xi) + F^\times h_\times(\xi) \right]
+            \mathrm{d}\xi ,
+
+    with the retarded wave phase evaluated at the two endpoints,
+
+    .. math::
+
+        \xi_r = t - \hat{\Omega}\cdot x_r(t)/c , \qquad
+        \xi_s = t - \ell_{sr}(t) - \hat{\Omega}\cdot x_s(t-\ell_{sr})/c .
+
+    Both endpoints come from their definitions, using the sender and receiver
+    positions the geometry solve produced. The wavelet path stores receiver
+    positions only, and reaches the same window width through
+    :math:`\tau_{sr} = \ell_{sr}(1 + \hat{n}\cdot\hat{r}_{sr})`.
+
+    The prefactor stays an explicit ratio rather than folding into
+    :math:`\ell_{sr}/2` by the same identity. It is regular as written, the
+    window closing at the same rate as the denominator; only an exact float
+    equality :math:`\hat{\Omega}\cdot\hat{r}_{sr} = 1` gives :math:`0/0`,
+    and that direction is genuinely singular in this model.
+
+    Two independent errors enter and neither knob repairs the other: the
+    quadrature, set by the node count :math:`P`, and the interpolation, which
+    falls as :math:`(2\pi f \delta t)^{n-1}` with the stencil width :math:`n`.
+    The quadrature is Gauss-Legendre, so on this smooth integrand its error
+    falls exponentially in :math:`P` once :math:`P` exceeds about half the
+    phase :math:`2\pi f W` swept across the window :math:`W`. That phase is
+    at most about 10 radians (0.1 Hz on a link with
+    :math:`1 - \hat{\Omega}\cdot\hat{r}_{sr} = 2`), and twelve nodes leave
+    the quadrature at :math:`10^{-13}` there and at rounding level below,
+    where a trapezoidal rule needs thousands of nodes to reach
+    :math:`10^{-6}`. The
+    interpolation matters more than it looks, because the window is *narrower
+    than the sample spacing* - 1.63 intervals at LISA's 8.3 s arm and 5 s
+    cadence - so every node is a sub-sample reconstruction rather than a
+    lookup. With the quadrature converged it is the term left, so
+    ``num_taps`` is the one worth tuning; see ``interpolate_uniform_grid``.
+    The wavelet path meets the same difficulty and answers it through its
+    filter tables instead.
+
+    The mean is a Gauss-Legendre rule on ``num_integral_points`` nodes across
+    the window, accumulated in a ``jax.lax.fori_loop`` rather than
+    materialised, so peak memory is one ``(batch, links, chunk)`` array per
+    node and *not* ``num_integral_points`` times that. The node count
+    therefore costs time and not memory.
+
+    Parameters
+    ----------
+    h_plus : jnp.ndarray
+        Plus polarisation sampled on the waveform grid.
+        Array shape=(batch, num_samples).
+    h_cross : jnp.ndarray
+        Cross polarisation sampled on the waveform grid.
+        Array shape=(batch, num_samples).
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,).
+    light_travel_time : jnp.ndarray
+        Light-travel time :math:`\ell_{sr}`, in seconds, on this block of
+        reception times. Array shape=(num_links, chunk).
+    link_direction : jnp.ndarray
+        Unit vectors :math:`\hat{r}_{sr}` on this block.
+        Array shape=(num_links, chunk, 3).
+    receiver_position : jnp.ndarray
+        Receiver positions :math:`x_r`, in metres, on this block.
+        Array shape=(num_links, chunk, 3).
+    sender_position : jnp.ndarray
+        Sender positions :math:`x_s` at emission time, in metres, on this
+        block. Array shape=(num_links, chunk, 3).
+    chunk_times : jnp.ndarray
+        Reception times of this block, as offsets from waveform sample zero,
+        in seconds. Array shape=(chunk,).
+    waveform_step : float
+        Waveform sample spacing, in seconds.
+    num_integral_points : int
+        Number of Gauss-Legendre nodes per link integral, at least one.
+        Static under ``jit``. Optional.
+    num_taps : int
+        Stencil width for the waveform interpolation, even and at least two.
+        Static under ``jit``. Optional.
+    Returns
+    -------
+    response : jnp.ndarray
+        Link delay fluctuation :math:`\delta \ell_{sr}`, in seconds.
+        Array shape=(batch, num_links, chunk).
+    """
+    projection_plus, projection_cross, xi_receive, tau, \
+        omega_dot_direction = compute_angular_geometry_td(
+            theta, phi, light_travel_time, link_direction, receiver_position,
+            sender_position, chunk_times,
+        )
+
+    batch_size, num_links, chunk_size = tau.shape
+    flat_shape = (batch_size, num_links * chunk_size)
+
+    # Gauss-Legendre on [-1, 1], mapped to fractions of the window on [0, 1]
+    # with weights summing to one. Tabulated at trace time: the node count is
+    # static, so these are compile-time constants.
+    unit_nodes, unit_weights = np.polynomial.legendre.leggauss(
+        num_integral_points)
+    node_fractions = jnp.asarray(0.5 * (unit_nodes + 1.0))
+    node_weights = jnp.asarray(0.5 * unit_weights)
+
+    def accumulate(node, carry):
+        r"""Add one Gauss-Legendre node to the running plus/cross means."""
+        total_plus, total_cross = carry
+
+        # xi runs from the emission endpoint up to the reception endpoint.
+        offset = tau * (1.0 - node_fractions[node])
+        query = (xi_receive - offset).reshape(flat_shape)
+
+        weight = node_weights[node]
+
+        # The waveform grid starts at zero because the caller hands this
+        # kernel offsets from sample zero, never absolute times.
+        sampled_plus = interpolate_uniform_grid(
+            h_plus, 0.0, waveform_step, query, num_taps,
+        )
+        sampled_cross = interpolate_uniform_grid(
+            h_cross, 0.0, waveform_step, query, num_taps,
+        )
+
+        return (
+            total_plus + weight * sampled_plus.reshape(tau.shape),
+            total_cross + weight * sampled_cross.reshape(tau.shape),
+        )
+
+    mean_plus, mean_cross = jax.lax.fori_loop(
+        0,
+        num_integral_points,
+        accumulate,
+        (jnp.zeros_like(tau), jnp.zeros_like(tau)),
+    )
+
+    return 0.5 * tau / (1.0 - omega_dot_direction) * (
+        projection_plus * mean_plus + projection_cross * mean_cross
+    )
+
+
+def one_arm_time_domain_blocked(orbits,
+                                links,
+                                t0 : float,
+                                dt : float,
+                                num_samples : int,
+                                chunk_size : int,
+                                h_plus,
+                                h_cross,
+                                theta,
+                                phi,
+                                num_integral_points : int = 12,
+                                num_taps : int = 12):
+    r"""
+    Drive ``one_arm_time_domain_chunk`` over the reception grid in blocks.
+
+    The kernel is jitted and the geometry solve is not, so the two meet here:
+    each block has its geometry built on the host and is then handed to the
+    device in one call. Blocking is what makes the path runnable at all - see
+    ``utils.resolve_time_chunk_size`` for the arithmetic - and the result does
+    not depend on the block length.
+
+    Blocks are padded to a fixed length by repeating the last reception time,
+    so the kernel sees one shape and compiles once. The padded tail is
+    discarded on the way out.
+
+    Parameters
+    ----------
+    orbits : lisaorbits.Orbits
+        Orbit provider exposing ``compute_position(t, sc=[...])``.
+    links : tuple
+        Directed links as ``(sender, receiver)`` pairs, in output order.
+    t0 : float
+        Time of sample zero, in seconds.
+    dt : float
+        Sample cadence, in seconds.
+    num_samples : int
+        Length of the reception grid, :math:`N`.
+    chunk_size : int
+        Block length in samples.
+    h_plus, h_cross : jnp.ndarray
+        Polarisations on the sample grid. Array shape=(batch, N).
+    theta, phi : jnp.ndarray
+        Source direction angles, in radians. Array shape=(batch,).
+    num_integral_points : int
+        Gauss-Legendre nodes per link integral. Optional.
+    num_taps : int
+        Waveform interpolation stencil width. Optional.
+
+    Returns
+    -------
+    response : jnp.ndarray
+        Link delay fluctuations, in seconds. Array shape=(batch, num_links, N).
+    """
+    blocks = []
+
+    for start in range(0, num_samples, chunk_size):
+        stop = min(start + chunk_size, num_samples)
+
+        # The orbits need absolute time; the kernel works in offsets from the
+        # waveform's first sample, so its grid starts at zero.
+        sample_offsets = np.arange(start, stop) * dt
+        reception_times = t0 + sample_offsets
+
+        padding = chunk_size - reception_times.size
+        if padding:
+            reception_times = np.pad(
+                reception_times, (0, padding), mode="edge")
+            sample_offsets = np.pad(
+                sample_offsets, (0, padding), mode="edge")
+
+        light_travel_time, direction, receiver, sender = build_link_geometry(
+            reception_times, orbits, links, return_sender_position=True,
+        )
+
+        block = one_arm_time_domain_chunk(
+            h_plus,
+            h_cross,
+            theta,
+            phi,
+            jnp.asarray(light_travel_time),
+            jnp.asarray(direction),
+            jnp.asarray(receiver),
+            jnp.asarray(sender),
+            jnp.asarray(sample_offsets),
+            dt,
+            num_integral_points=num_integral_points,
+            num_taps=num_taps,
+        )
+
+        blocks.append(block[..., :stop - start] if padding else block)
+
+    return jnp.concatenate(blocks, axis=-1)
+
+
+def finalise_response(wdm_class,
+                      response,
+                      from_domain : str,
+                      out_domain : str,
+                      batch_shape : tuple,
+                      num_links : int,
+                      drop_link_axis : bool):
+    r"""
+    Convert a response to the requested domain and restore its axes.
+
+    The two response methods differ in the domain their kernel produces but
+    agree on everything after it, so the conversion, the unflattening of the
+    batch axis and the link-axis squeeze are done once here.
+
+    A ``"time"`` to ``"wdm"`` conversion is driven one link at a time. The
+    transform builds a complex intermediate the size of its input, so
+    transforming every link together would multiply the peak allocation by the
+    number of links for no gain; the reverse direction has no such intermediate
+    and goes in one call.
+
+    Parameters
+    ----------
+    wdm_class : WDM.WDM_transform
+        The transform supplying ``dwt``/``idwt``.
+    response : jnp.ndarray
+        Response with a single leading batch axis, shape=(batch, num_links, N)
+        or (batch, num_links, Nt, Nf).
+    from_domain : str
+        Domain the kernel produced, ``"time"`` or ``"wdm"``.
+    out_domain : str
+        Domain requested by the caller, ``"time"`` or ``"wdm"``.
+    batch_shape : tuple
+        Leading shape to restore, from ``prepare_sources``.
+    num_links : int
+        Number of links on axis 1.
+    drop_link_axis : bool
+        Whether the caller asked for a single link by a scalar specifier.
+
+    Returns
+    -------
+    response : jnp.ndarray
+        Array shape=batch_shape + (num_links, N), or
+        batch_shape + (num_links, Nt, Nf), with the link axis dropped when
+        ``drop_link_axis``.
+    """
+    if from_domain != out_domain:
+        # One link at a time when transforming forward: the transform builds a
+        # complex intermediate the size of its input, so doing every link at
+        # once would multiply the peak by the link count for no gain. The
+        # inverse has no such intermediate and goes in one call.
+        if out_domain == "wdm":
+            response = jnp.stack(
+                [resolve_domain(wdm_class, response[:, index],
+                                from_domain, out_domain)
+                 for index in range(num_links)],
+                axis=1,
+            )
+        else:
+            response = resolve_domain(
+                wdm_class, response, from_domain, out_domain)
+
+    tail = ((wdm_class.Nt, wdm_class.Nf) if out_domain == "wdm"
+            else (wdm_class.N,))
+    response = response.reshape(batch_shape + (num_links,) + tail)
+
+    # The link axis sits just after the batch axes in either domain.
+    if drop_link_axis:
+        response = jnp.squeeze(response, axis=len(batch_shape))
+
+    return response

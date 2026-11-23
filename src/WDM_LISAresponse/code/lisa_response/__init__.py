@@ -1,9 +1,14 @@
-"""Public LISA response, waveform and TDI modules."""
+"""Public LISA response and waveform modules."""
 
-from . import TDI_with_one_arm_plan, response_with_plan, waveforms
+from . import response, response_sub
+from .response import LISAresponse
+from ..utils.utils import Link
+from ..waveforms import waveforms
 
 __all__ = [
-    "TDI_with_one_arm_plan",
-    "response_with_plan",
+    "LISAresponse",
+    "Link",
+    "response",
+    "response_sub",
     "waveforms",
 ]
