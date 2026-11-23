@@ -6,8 +6,6 @@ sqrt(dT) phi(t) against t/dT, each with unit norm in its own variable. With
 u = f/dF, tau = t/dT and dF dT = 1/2,
 
     sqrt(dT) phi(t) = (1/sqrt 2) int du M(u) exp(i pi u tau).
-
-Ported from WDM_GW_wavelets/examples/plotting_the_mother_wavelet.ipynb.
 """
 
 from pathlib import Path

@@ -27,12 +27,11 @@ The time-domain reference is computed once per waveform, on a grid with a few
 hours of zeros at each end, and utils.apply_repadding moves it onto each
 tiling: the response reaches at most ~500 s past the signal, so nothing is lost.
 
-Ported from examples/accuracy_analysis.ipynb, at the paper's parameters. compute,
-compute_bounds and main take the response as `model` (zeroth_order here, the
-first-order response for figure 9).
-Run with no arguments to compute (or reuse the caches) and plot. ``--only NF``
-runs one tiling, prints it and caches nothing - for checking time and memory;
-``--only-bounds NF`` does the same for the on- and off-bin points.
+compute, compute_bounds and main take the response as `model` (zeroth_order here,
+the first-order response for figure 9). Run with no arguments to compute (or reuse
+the caches) and plot. ``--only NF`` runs one tiling, prints it and caches nothing -
+for checking time and memory; ``--only-bounds NF`` does the same for the on- and
+off-bin points.
 ``--part K/COUNT`` computes tilings K, K + COUNT, ... into cache/parts/ and stops,
 so COUNT processes can split the work; ``--merge COUNT`` assembles them.
 """
@@ -67,10 +66,9 @@ NF = np.unique(2 * np.round(np.logspace(2, 6, 17) / (2 * DT)).astype(int))
 REF_NF = 64
 REF_ROWS = 16
 
-# A tone below (1 - A_frac) Delta F leaks into the dropped m = 0 band: the band
-# edge is Delta F / 2, but the Meyer window reaches (1/2 - A_frac) Delta F past it. The
-# taper study measured 1e-1 of the power there at 0.55 Delta F, 1e-5 at 0.70 and
-# none above 0.75. WDM_transform's default A_frac.
+# WDM_transform's default flat-top fraction. A tone below (1 - A_frac) Delta F leaks
+# into the dropped m = 0 band: the band edge is Delta F / 2, but the Meyer window
+# reaches (1/2 - A_frac) Delta F past it.
 A_FRAC = 0.25
 
 DT_BAND = (3600.0, 36000.0)                     # 3600-36000 s, recommended in fig 3

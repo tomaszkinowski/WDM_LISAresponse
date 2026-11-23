@@ -4,9 +4,7 @@ Sky positions use solar-system barycentric J2000 ecliptic coordinates:
 theta is colatitude from the north ecliptic pole, and phi is longitude
 from the vernal equinox. All angles passed to waveform/response code are
 in radians. Positions below use the rounded values reported in the paper.
-
 Importing this module does not generate waveforms or load orbit data.
-Existing plotting scripts must explicitly import these settings to use them.
 """
 
 from math import pi, radians
@@ -17,9 +15,8 @@ DT = 4.0  # seconds
 N_SIGNAL = 2**23
 T_SIGNAL = N_SIGNAL * DT  # seconds; last sample is at (N_SIGNAL - 1) * DT
 
-# Current fixed-window prescription used by the plotting studies. Studies
-# varying the taper should override this explicitly. Padding is grid-dependent
-# and must be computed separately once Nf and the maximum lag are chosen.
+# The taper of every signal. Padding depends on the grid, so each script computes
+# it once Nf and the maximum lag are chosen.
 WINDOW_FUNCTION = "tukey"
 WINDOW_KWARGS = dict(alpha=0.05)
 

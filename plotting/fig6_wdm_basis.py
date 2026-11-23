@@ -1,8 +1,6 @@
 """Figure 6: three WDM wavelets in the time domain (top), the frequency domain
 (right), and the tiles they occupy in the time-frequency plane (centre), with
 the tiling axes in units of Delta T and Delta F.
-
-Ported from cell 11 of WDM_GW_wavelets/examples/plotting_the_mother_wavelet.ipynb.
 """
 
 from pathlib import Path

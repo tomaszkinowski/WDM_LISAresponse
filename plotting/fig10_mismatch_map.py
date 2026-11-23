@@ -8,8 +8,9 @@ The tilings are figure 14's. The frequency axis is split into F_CELLS log cells;
 at each tiling a cell's tones sit in the band m nearest its centre, at
 f = (m + r) Delta F for N_R offsets r spaced evenly over the band, and the cell
 is coloured by the median of their mismatches. Cells where any of its tones leaks
-into the dropped m = 0 band are covered in grey. Each tone is compared against the time-domain response on the same
-tiling's grid, as for figure 14's bounds, interpolating the waveform with 12 taps
+into the dropped m = 0 band are covered in grey. Each tone is compared against the
+time-domain response on the same tiling's grid, as for figure 14's bounds,
+interpolating the waveform with 12 taps
 below TAPS_SPLIT and 20 above: at 12 the reference's own error reaches 2e-9 at
 0.05 Hz and 3e-4 at 0.09 Hz (dt = 4 s), while 20 taps hold it near 1e-12 up to
 0.055 Hz, so the cells stop at 0.05 Hz.

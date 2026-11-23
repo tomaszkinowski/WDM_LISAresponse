@@ -1,7 +1,5 @@
 """Figure 7: the time-delay filters T_ell (top) and T'_ell (bottom) against the
 delay, with the band -dT/2 <= delta < dT/2 shaded.
-
-Ported from WDM_GW_wavelets/examples/time_delay_filters_demo.ipynb.
 """
 
 from pathlib import Path

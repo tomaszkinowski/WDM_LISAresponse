@@ -10,10 +10,8 @@ else - sky, amplitudes, window, cut - is as in figure 14. With one tiling only,
 the reference is computed on its grid directly. Each curve is labelled by its
 frequency at r = 0, m Delta F.
 
-Ported from the off-bin section of examples/accuracy_analysis.ipynb, at the
-paper's parameters. Run with no arguments to compute (or reuse the cache) and
-plot. ``--only R`` runs one r for every tone, prints it and caches nothing - for
-checking time and memory.
+Run with no arguments to compute (or reuse the cache) and plot. ``--only R`` runs
+one r for every tone, prints it and caches nothing - for checking time and memory.
 """
 
 import sys

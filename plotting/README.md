@@ -113,7 +113,7 @@ correction tables. The zeroth-order response is the package's
 
 | Number | Script | Output |
 |---|---|---|
-| response runtime (Sec. II) | `numbers_runtime.py zeroth`, `first`, `first --float32`; `gwr`, `flr [--gpu]` for the external codes | `numbers/runtime_<label>_<device>.txt` |
+| response runtime on the CPU (Sec. II) | `numbers_runtime.py zeroth`, `first`, `first --float32` | `numbers/runtime_<label>.txt` |
 | the EMRI's dominant power, f = 2–5 mHz (App. C) | `numbers_emri_power.py` | `numbers/emri_power.txt` |
 | filter interpolation at P = 128 (App. B) | `numbers_interpolation.py` | `numbers/interpolation.txt` |
 
