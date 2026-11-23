@@ -1,9 +1,9 @@
-"""Figure 10: the mismatch of the split_amp_sinc_first response
-(investigation_fig8_delay_rate.py) over the (f, Delta T) plane, on link 1 -> 2;
-``--kind K`` maps another variant of that script instead (e.g. production), with
-its own cache and PDFs suffixed _K. The median maps of production (left panel,
-fig10_mismatch_map_production.pdf) and split_amp_sinc_first (right panel,
-fig10_mismatch_map.pdf) go to figures/; the others to figures/investigations/.
+"""Figure 10: the mismatch of the wavelet response over the (f, Delta T) plane, on
+link 1 -> 2. ``--kind first_order`` (the default; right panel, fig10_mismatch_map.pdf)
+maps the first-order response of first_order/model.py, ``--kind zeroth_order`` (left
+panel, fig10_mismatch_map_zeroth_order.pdf) the production one_arm_response, each
+with its own cache. The median maps go to figures/, the largest-mismatch maps to
+figures/investigations/.
 
 The tilings are figure 14's. The frequency axis is split into F_CELLS log cells;
 at each tiling a cell's tones sit in the band m nearest its centre, at
@@ -36,8 +36,8 @@ from parameters import (DT, GC_PHI, GC_THETA, MONOCHROMATIC_PARAMS, N_SIGNAL,
                         NUM_INTEGRAL_POINTS, WINDOW_FUNCTION, WINDOW_KWARGS)
 
 HERE = Path(__file__).parent
-KIND = "split_amp_sinc_first"
-PAPER_KINDS = ("production", KIND)                   # the paper's two panels
+KIND = "first_order"
+KINDS = ("zeroth_order", KIND)                       # the paper's two panels
 
 F_EDGES = np.logspace(-4, -1.3, 14)                  # five cells per decade [Hz]
 TAPS_SPLIT = 0.03                                    # [Hz]
@@ -61,7 +61,7 @@ def cell_frequencies(nfs, centres=F_CELLS, r=R):
 
 
 def suffix(kind):
-    """File-name suffix: none for split_amp_sinc_first, the map's original variant."""
+    """File-name suffix: none for the first-order map, _zeroth_order for the other."""
     return "" if kind == KIND else f"_{kind}"
 
 
@@ -75,14 +75,16 @@ def compute(nfs, centres=F_CELLS, r=R, kind=KIND):
 
     from WDM_LISAresponse.code.utils import utils
     from WDM_LISAresponse.code.waveforms import waveforms
-    import investigation_fig8_delay_rate as inv
+    from first_order.model import one_link
 
+    model = dict(zeroth_order=fig14.zeroth_order, first_order=one_link)[kind]
     orbits, start, signal_times, link = fig14.setup()
     freqs = cell_frequencies(nfs, centres, r)
     out = np.full(freqs.shape, np.nan)
     for j, Nf in enumerate(nfs):
         tick = time.perf_counter()
-        info, wdm, response, tables, centre, cut = inv.tiling(orbits, start, link, Nf)
+        info, wdm, response, cut = fig14.tiling(orbits, start, link, Nf)
+        respond = model(response, wdm, link, start, N_SIGNAL)
         done = {}                         # cells sharing a band share their tones
         for c, k in np.ndindex(freqs.shape[:2]):
             f = freqs[c, k, j]
@@ -95,9 +97,7 @@ def compute(nfs, centres=F_CELLS, r=R, kind=KIND):
                     window_function=WINDOW_FUNCTION, window_kwargs=WINDOW_KWARGS)
                 _, hp, hc = utils.apply_zero_padding(signal_times, hp, hc,
                                                      info["pad_left"], info["pad_right"])
-                ours = inv.responses(response, wdm, tables, centre, GC_THETA, GC_PHI,
-                                     hp, hc, link, inv.tone_warp(params, start),
-                                     (kind,))[kind]
+                ours = respond(GC_THETA, GC_PHI, hp, hc, tone=params)
                 reference = utils.apply_wdm_cut(np.asarray(wdm.dwt(np.asarray(
                     response.one_arm_response_time_domain(
                         GC_THETA, GC_PHI, hp, hc, link=link,
@@ -106,7 +106,7 @@ def compute(nfs, centres=F_CELLS, r=R, kind=KIND):
                 done[f] = utils.wdm_mismatch(utils.apply_wdm_cut(ours, cut),
                                              reference)["mismatch"]
             out[c, k, j] = done[f]
-        del response, wdm
+        del response, wdm, respond
         jax.clear_caches()
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s: {len(done)} tones, median "
               + " ".join(f"{x:.0e}" for x in np.nanmedian(out[:, :, j], axis=1)
@@ -198,6 +198,7 @@ def plot(data, statistic, path, label):
 
 if __name__ == "__main__":
     kind = sys.argv[sys.argv.index("--kind") + 1] if "--kind" in sys.argv else KIND
+    assert kind in KINDS, f"--kind is one of {KINDS}"
     if "--part" in sys.argv:
         index, count = map(int, sys.argv[sys.argv.index("--part") + 1].split("/"))
         path = part_path(index, count, kind)
@@ -209,6 +210,6 @@ if __name__ == "__main__":
     plt.style.use(HERE / "paper.mplstyle")
     data = dict(np.load(cache_path(kind)))
     out = HERE / "figures" / "investigations"
-    paper = HERE / "figures" if kind in PAPER_KINDS else out
-    plot(data, np.nanmedian, paper / f"fig10_mismatch_map{suffix(kind)}.pdf", "median mismatch")
+    plot(data, np.nanmedian, HERE / "figures" / f"fig10_mismatch_map{suffix(kind)}.pdf",
+         "median mismatch")
     plot(data, np.nanmax, out / f"fig10_mismatch_map{suffix(kind)}_max.pdf", "largest mismatch")

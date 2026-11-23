@@ -13,7 +13,7 @@ dense sweep of Delta T, which must be run first).
 Each tone's mismatch depends on where it falls within its band (figure 15), so at
 every tiling the same tone is also moved to its nearest point halfway between two
 centres, (k + 1/2) Delta F (off-bin, r = 1/2, the peak of every curve in figure
-6), and to its nearest band centre m Delta F and OFFSETS around it. The shading
+15), and to its nearest band centre m Delta F and OFFSETS around it. The shading
 runs from the least of those near-centre points and the source itself up to the
 off-bin point; the points themselves are not drawn. The least is taken, not the
 band centre alone, because near the floor the error is set by the lag truncation
@@ -21,13 +21,15 @@ at L = 25, which varies with the offset from the centre. Above Delta T ~ 1e5 s t
 30 mHz on-bin point can lie above the off-bin one, so neither is a bound there.
 Nothing is drawn where the tone itself leaks into m = 0, and the off-bin point is
 kept to k >= 1 so it does not leak either. These come from a separate run, on
-each tiling's grid directly, cached in fig8_bounds.npz.
+each tiling's grid directly, cached in fig14_bounds.npz.
 
 The time-domain reference is computed once per waveform, on a grid with a few
 hours of zeros at each end, and utils.apply_repadding moves it onto each
 tiling: the response reaches at most ~500 s past the signal, so nothing is lost.
 
-Ported from examples/accuracy_analysis.ipynb, at the paper's parameters.
+Ported from examples/accuracy_analysis.ipynb, at the paper's parameters. compute,
+compute_bounds and main take the response as `model` (zeroth_order here, the
+first-order response for figure 9).
 Run with no arguments to compute (or reuse the caches) and plot. ``--only NF``
 runs one tiling, prints it and caches nothing - for checking time and memory;
 ``--only-bounds NF`` does the same for the on- and off-bin points.
@@ -166,7 +168,36 @@ def setup():
     return orbits, start, start + DT * np.arange(N_SIGNAL), utils.Link(1, 2)
 
 
-def compute(nfs, freq_slice=None):
+def zeroth_order(response, wdm, link, start, n_signal):
+    """The sweeps' model interface for the production (zeroth-order) response:
+    respond(theta, phi, h_plus, h_cross, tone=None) on `link`."""
+    def respond(theta, phi, h_plus, h_cross, tone=None):
+        return response.one_arm_response(theta, phi, wdm.dwt(h_plus), wdm.dwt(h_cross),
+                                         link=link)
+    return respond
+
+
+def tiling(orbits, start, link, Nf, freq_slice=None):
+    """One tiling's padding info, WDM transform, response on `link` and cut."""
+    import WDM
+    from WDM_LISAresponse import LISAresponse
+    from WDM_LISAresponse.code.utils import utils
+    from WDM_LISAresponse.code.waveforms import waveforms
+
+    info = utils.wdm_padding_info(
+        N_SIGNAL, int(Nf), max_lag_L=MAX_LAG_L,
+        taper_samples=waveforms.tukey_taper_samples(N_SIGNAL, WINDOW_KWARGS["alpha"]))
+    wdm = WDM.WDM.WDM_transform(dt=DT, Nf=int(Nf), N=info["target_length"])
+    response = LISAresponse(wdm, orbits, t0=start - info["pad_left"] * DT,
+                            max_lag_L=MAX_LAG_L, num_interp_points=NUM_INTERP_POINTS,
+                            link_convention=(link,))
+    cut = utils.wdm_cut_info(info)
+    if freq_slice is not None:
+        cut["freq_slice"] = freq_slice
+    return info, wdm, response, cut
+
+
+def compute(nfs, freq_slice=None, model=zeroth_order):
     import jax
 
     import WDM
@@ -180,12 +211,13 @@ def compute(nfs, freq_slice=None):
     sky = {name: (GC_THETA, GC_PHI) for name in TONES}
     sky["EMRI"] = (EMRI_PARAMS["theta"], EMRI_PARAMS["phi"])
 
-    signals = {}
+    signals, tones = {}, {}
     for name, params in zip(TONES, MONOCHROMATIC_PARAMS):
         _, h_plus, h_cross = waveforms.generate_windowed_waveform(
             "monochromatic", t0=start, dt=DT, N=N_SIGNAL, model_kwargs=params,
             window_function=WINDOW_FUNCTION, window_kwargs=WINDOW_KWARGS)
         signals[name] = (h_plus, h_cross)
+        tones[name] = params
     tick = time.perf_counter()
     td_gen = waveforms.emri_generator()
     _, h_plus, h_cross = waveforms.generate_windowed_waveform(
@@ -217,26 +249,17 @@ def compute(nfs, freq_slice=None):
     del ref_response
     jax.clear_caches()
 
-    taper = waveforms.tukey_taper_samples(N_SIGNAL, WINDOW_KWARGS["alpha"])
     out = dict(Nf=np.asarray(nfs), kept_rows=np.zeros(len(nfs), dtype=int),
                **{name: np.full(len(nfs), np.nan) for name in NAMES})
     for j, Nf in enumerate(nfs):
         tick = time.perf_counter()
-        info = utils.wdm_padding_info(N_SIGNAL, int(Nf), max_lag_L=MAX_LAG_L,
-                                      taper_samples=taper)
-        wdm = WDM.WDM.WDM_transform(dt=DT, Nf=int(Nf), N=info["target_length"])
-        response = LISAresponse(wdm, orbits, t0=start - info["pad_left"] * DT,
-                                max_lag_L=MAX_LAG_L, num_interp_points=NUM_INTERP_POINTS,
-                                link_convention=(link,))
-        cut = utils.wdm_cut_info(info)
-        if freq_slice is not None:
-            cut["freq_slice"] = freq_slice
+        info, wdm, response, cut = tiling(orbits, start, link, Nf, freq_slice)
+        respond = model(response, wdm, link, start, N_SIGNAL)
         out["kept_rows"][j] = cut["time_slice"].stop - cut["time_slice"].start
 
         for name, (h_plus, h_cross) in signals.items():
             h_plus, h_cross = padded(info, h_plus, h_cross)
-            ours = response.one_arm_response(*sky[name], wdm.dwt(h_plus), wdm.dwt(h_cross),
-                                             link=link)
+            ours = respond(*sky[name], h_plus, h_cross, tone=tones.get(name))
             reference = utils.apply_repadding(
                 references[name], ref_info["pad_left"], ref_info["pad_right"],
                 info["pad_left"], info["pad_right"])
@@ -246,7 +269,7 @@ def compute(nfs, freq_slice=None):
 
         # Every tiling compiles for its own array shapes and none are reused, so let
         # the compiled code go rather than accumulate it.
-        del response, wdm
+        del response, wdm, respond
         jax.clear_caches()
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s, {out['kept_rows'][j]:>6} rows:  "
               + "  ".join(f"{name} {out[name][j]:.1e}" for name in NAMES)
@@ -255,15 +278,13 @@ def compute(nfs, freq_slice=None):
     return out
 
 
-def compute_bounds(nfs, freq_slice=None):
+def compute_bounds(nfs, freq_slice=None, model=zeroth_order):
     """Mismatch of each tone moved to its on- and off-bin frequency, and to OFFSETS
     around its band centre, at every tiling. With a different frequency at every
     tiling, each reference is computed on that tiling's grid directly, as in
     figure 15."""
     import jax
 
-    import WDM
-    from WDM_LISAresponse import LISAresponse
     from WDM_LISAresponse.code.utils import utils
     from WDM_LISAresponse.code.waveforms import waveforms
 
@@ -275,20 +296,12 @@ def compute_bounds(nfs, freq_slice=None):
                on=np.full(freqs["on"].shape, np.nan),
                off=np.full(freqs["on"].shape, np.nan),
                offsets=np.full(freqs["offsets"].shape, np.nan))
-    taper = waveforms.tukey_taper_samples(N_SIGNAL, WINDOW_KWARGS["alpha"])
     for j, Nf in enumerate(nfs):
         if np.all(np.isnan(freqs["on"][:, j])):
             continue
         tick = time.perf_counter()
-        info = utils.wdm_padding_info(N_SIGNAL, int(Nf), max_lag_L=MAX_LAG_L,
-                                      taper_samples=taper)
-        wdm = WDM.WDM.WDM_transform(dt=DT, Nf=int(Nf), N=info["target_length"])
-        response = LISAresponse(wdm, orbits, t0=start - info["pad_left"] * DT,
-                                max_lag_L=MAX_LAG_L, num_interp_points=NUM_INTERP_POINTS,
-                                link_convention=(link,))
-        cut = utils.wdm_cut_info(info)
-        if freq_slice is not None:
-            cut["freq_slice"] = freq_slice
+        info, wdm, response, cut = tiling(orbits, start, link, Nf, freq_slice)
+        respond = model(response, wdm, link, start, N_SIGNAL)
 
         def mismatch(params, f):
             _, h_plus, h_cross = waveforms.generate_windowed_waveform(
@@ -297,8 +310,7 @@ def compute_bounds(nfs, freq_slice=None):
                 window_kwargs=WINDOW_KWARGS)
             _, h_plus, h_cross = utils.apply_zero_padding(
                 signal_times, h_plus, h_cross, info["pad_left"], info["pad_right"])
-            ours = response.one_arm_response(GC_THETA, GC_PHI, wdm.dwt(h_plus),
-                                             wdm.dwt(h_cross), link=link)
+            ours = respond(GC_THETA, GC_PHI, h_plus, h_cross, tone=dict(params, f=f))
             reference = response.one_arm_response_time_domain(
                 GC_THETA, GC_PHI, h_plus, h_cross, link=link,
                 num_integral_points=NUM_INTEGRAL_POINTS)
@@ -315,7 +327,7 @@ def compute_bounds(nfs, freq_slice=None):
                 if not np.isnan(f):
                     out["offsets"][i, k, j] = mismatch(params, f)
 
-        del response, wdm
+        del response, wdm, respond
         jax.clear_caches()
         print(f"Nf = {Nf:>6}, dT = {Nf * DT:8.3g} s:  "
               + "  ".join(f"{name} on {out['on'][i, j]:.1e} "
@@ -406,17 +418,19 @@ def plot(res, bounds, path, freq_slice=None, source_envelope=False):
     print(f"wrote {path}")
 
 
-if __name__ == "__main__":
-    edge = "--drop-edge-bands" in sys.argv
-    freq_slice = EDGE_FREQ_SLICE if edge else None
+def main(cache, bounds_cache, figure, model=zeroth_order, freq_slice=None,
+         source_envelope=False):
+    """The command line, for `model` with its caches: ``--only NF``,
+    ``--only-bounds NF``, ``--part K/COUNT``, ``--merge COUNT``, or (no arguments)
+    compute what is missing and plot to `figure`."""
     if "--only" in sys.argv:
-        compute([int(sys.argv[sys.argv.index("--only") + 1])], freq_slice)
+        compute([int(sys.argv[sys.argv.index("--only") + 1])], freq_slice, model)
         sys.exit()
     if "--only-bounds" in sys.argv:
-        compute_bounds([int(sys.argv[sys.argv.index("--only-bounds") + 1])], freq_slice)
+        compute_bounds([int(sys.argv[sys.argv.index("--only-bounds") + 1])], freq_slice,
+                       model)
         sys.exit()
-    targets = ((EDGE_CACHE if edge else CACHE, compute),
-               (EDGE_BOUNDS_CACHE if edge else BOUNDS_CACHE, compute_bounds))
+    targets = ((cache, compute), (bounds_cache, compute_bounds))
 
     def part_path(path, index, count):
         return path.parent / "parts" / f"{path.stem}_part{index}of{count}.npz"
@@ -425,7 +439,8 @@ if __name__ == "__main__":
         index, count = map(int, sys.argv[sys.argv.index("--part") + 1].split("/"))
         for path, run in targets:
             part_path(path, index, count).parent.mkdir(parents=True, exist_ok=True)
-            np.savez(part_path(path, index, count), **run(NF[index::count], freq_slice))
+            np.savez(part_path(path, index, count),
+                     **run(NF[index::count], freq_slice, model))
         sys.exit()
     if "--merge" in sys.argv:
         count = int(sys.argv[sys.argv.index("--merge") + 1])
@@ -442,9 +457,16 @@ if __name__ == "__main__":
         if path.exists():
             caches.append(dict(np.load(path)))
         else:
-            caches.append(run(NF, freq_slice))
+            caches.append(run(NF, freq_slice, model))
             path.parent.mkdir(exist_ok=True)
             np.savez(path, **caches[-1])
-    plot(*caches, HERE / "figures" / ("investigations/fig14_mismatch_vs_dT_zeroth_order_edge_bands.pdf"
-                                      if edge else "fig14_mismatch_vs_dT_zeroth_order.pdf"), freq_slice,
-         source_envelope=edge)
+    plot(*caches, figure, freq_slice, source_envelope=source_envelope)
+
+
+if __name__ == "__main__":
+    if "--drop-edge-bands" in sys.argv:
+        main(EDGE_CACHE, EDGE_BOUNDS_CACHE, HERE / "figures" / "investigations"
+             / "fig14_mismatch_vs_dT_zeroth_order_edge_bands.pdf",
+             freq_slice=EDGE_FREQ_SLICE, source_envelope=True)
+    else:
+        main(CACHE, BOUNDS_CACHE, HERE / "figures" / "fig14_mismatch_vs_dT_zeroth_order.pdf")

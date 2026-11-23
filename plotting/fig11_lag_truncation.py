@@ -1,5 +1,5 @@
 """Figure 11: mismatch of the first-order wavelet response split_amp_sinc_first
-(_corrected_response.py) against the time-domain reference on link 1 -> 2 at
+(first_order/model.py) against the time-domain reference on link 1 -> 2 at
 Delta T = 1e4 s as the maximum lag L changes. Every correction table takes the
 same L as the shift. Grid, signals, references and plot are figure 16's (the
 zeroth-order version, fig16_lag_truncation_zeroth_order.py).
@@ -28,7 +28,7 @@ def compute(lags):
     from lisaorbits.file import read_orbit_file
 
     import WDM
-    import _corrected_response as corrected
+    from first_order import model
     import _emri_comparison as emri
     from WDM_LISAresponse import LISAresponse
     from WDM_LISAresponse.code.utils import utils
@@ -63,15 +63,16 @@ def compute(lags):
     # The warp needs only the constellation centre, the same at every L.
     response = LISAresponse(wdm, orbits, t0=t0, max_lag_L=MAX_LAG_L,
                             num_interp_points=NUM_INTERP_POINTS, link_convention=(link,))
-    consts = corrected.constants(response, wdm)
+    consts = model.constants(response, wdm)
     warped, references = {}, {}
     for name, (h_plus, h_cross) in signals.items():
         tick = time.perf_counter()
         _, hp, hc = utils.apply_zero_padding(signal_times, h_plus, h_cross,
                                              info["pad_left"], info["pad_right"])
-        warp = (corrected.tone_warp(MONOCHROMATIC_PARAMS[fig16.TONES.index(name)], start)
-                if name in fig16.TONES else corrected.spline_warp(times, hp, hc))
-        warped[name] = corrected.warped_transforms(response, wdm, consts, *sky[name], warp)
+        warp = (model.tone_warp(MONOCHROMATIC_PARAMS[fig16.TONES.index(name)], start,
+                                N_SIGNAL)
+                if name in fig16.TONES else model.spline_warp(times, hp, hc))
+        warped[name] = model.warped_transforms(response, wdm, consts, *sky[name], warp)
         references[name] = utils.apply_wdm_cut(np.asarray(wdm.dwt(np.asarray(
             response.one_arm_response_time_domain(
                 *sky[name], hp, hc, link=link,
@@ -87,9 +88,9 @@ def compute(lags):
         response = LISAresponse(wdm, orbits, t0=t0, max_lag_L=int(L),
                                 num_interp_points=NUM_INTERP_POINTS,
                                 link_convention=(link,))
-        consts = corrected.constants(response, wdm)
+        consts = model.constants(response, wdm)
         for name in fig16.NAMES:
-            ours = corrected.links(wdm, consts, *sky[name], *warped[name])[0]
+            ours = model.links(wdm, consts, *sky[name], *warped[name])[0]
             out[name][i] = utils.wdm_mismatch(
                 utils.apply_wdm_cut(ours, cut), references[name])["mismatch"]
         del response, consts

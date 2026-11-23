@@ -1,6 +1,6 @@
 """Figure 12: the EMRI (parameters.py) on link 1 -> 2 at Delta T = 1e4 s, from four
 codes - the first-order wavelet response split_amp_sinc_first
-(_corrected_response.py), the time-domain reference one_arm_response_time_domain,
+(first_order/model.py), the time-domain reference one_arm_response_time_domain,
 lisagwresponse and fastlisaresponse: the whole record, and a quarter-day zoom with
 the wavelet-minus-lisagwresponse residual overlaid (x 1e3). In
 figures/investigations/: the same with the source's h+ and hx over the zoom
@@ -43,7 +43,7 @@ def cached(path, compute):
 
 
 def compute(n_signal, nf):
-    import _corrected_response as corrected
+    from first_order import model
     from WDM_LISAresponse.code.comparison import common
     from WDM_LISAresponse.code.utils import utils
 
@@ -77,10 +77,10 @@ def compute(n_signal, nf):
 
     tick = time.perf_counter()
     times = np.asarray(s.response.t0 + s.wdm.times)
-    consts = corrected.constants(s.response, s.wdm)
-    wp, wc = corrected.warped_transforms(s.response, s.wdm, consts, s.theta, s.phi,
-                                         corrected.spline_warp(times, s.h_plus, s.h_cross))
-    wdm_grid = corrected.links(s.wdm, consts, s.theta, s.phi, wp, wc)[0]
+    consts = model.constants(s.response, s.wdm)
+    wp, wc = model.warped_transforms(s.response, s.wdm, consts, s.theta, s.phi,
+                                         model.spline_warp(times, s.h_plus, s.h_cross))
+    wdm_grid = model.links(s.wdm, consts, s.theta, s.phi, wp, wc)[0]
     print(f"WDM response ({time.perf_counter() - tick:.0f} s)", flush=True)
 
     return emri.finish(s, dict(WDM=wdm_grid, TD=ref["TD"]),

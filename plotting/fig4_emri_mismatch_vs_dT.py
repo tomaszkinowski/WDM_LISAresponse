@@ -1,10 +1,10 @@
 """Figure 4: figure 9's EMRI panel on its own - the mismatch of the
-split_amp_sinc_first response against the time-domain reference on link 1 -> 2, as a
-function of the tiling Delta T - with figure 14's production response for the same
+first-order response against the time-domain reference on link 1 -> 2, as a
+function of the tiling Delta T - with figure 14's zeroth-order response for the same
 EMRI behind it, muted. Hollow markers, the 3600-36000 s band and the Delta F axis
 are figure 14's.
 
-Plots the caches fig14_mismatch_vs_dT_zeroth_order.py and investigation_fig8_delay_rate.py write.
+Plots the caches fig14_mismatch_vs_dT_zeroth_order.py and fig9_mismatch_vs_dT.py write.
 """
 
 from pathlib import Path
@@ -14,11 +14,12 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 import fig14_mismatch_vs_dT_zeroth_order as fig14
+import fig9_mismatch_vs_dT as fig9
 from _colours import DARK, HAIRLINE, INK, MUTED, PALETTE
 from parameters import DT
 
 HERE = Path(__file__).parent
-CORRECTED = HERE / "cache" / "investigation_fig8_split_amp_sinc_first.npz"
+CORRECTED = fig9.CACHE
 PRODUCTION = fig14.CACHE
 
 

@@ -1,6 +1,6 @@
 """Figure 13: the EMRI (parameters.py) in second-generation Michelson TDI X
 at Delta T = 1e4 s, from four codes:
-  - WDM: first-order wavelet links split_amp_sinc_first (_corrected_response.py),
+  - WDM: first-order wavelet links split_amp_sinc_first (first_order/model.py),
     combined by comparison.tdi.TDIgen2
   - TD: our time-domain links, combined by comparison.tdi_reference
   - lisagwresponse's links, combined by pytdi
@@ -32,7 +32,7 @@ LABELS = dict(WDM="WDM response", TD="time-domain reference",
 
 
 def compute(n_signal, nf):
-    import _corrected_response as corrected
+    from first_order import model
     from WDM_LISAresponse.code.comparison.tdi import TDIgen2
 
     s = emri.prepare(n_signal, nf, extra_rows=-(-MAX_LAG_L // 2))
@@ -70,10 +70,10 @@ def compute(n_signal, nf):
 
     tick = time.perf_counter()
     times = np.asarray(s.response.t0 + s.wdm.times)
-    consts = corrected.constants(s.response, s.wdm)
-    wp, wc = corrected.warped_transforms(s.response, s.wdm, consts, s.theta, s.phi,
-                                         corrected.spline_warp(times, s.h_plus, s.h_cross))
-    links = corrected.links(s.wdm, consts, s.theta, s.phi, wp, wc)
+    consts = model.constants(s.response, s.wdm)
+    wp, wc = model.warped_transforms(s.response, s.wdm, consts, s.theta, s.phi,
+                                         model.spline_warp(times, s.h_plus, s.h_cross))
+    links = model.links(s.wdm, consts, s.theta, s.phi, wp, wc)
     x = np.asarray(TDIgen2(s.response, channels=("X",))(links)[0])
     print(f"WDM links and TDI ({time.perf_counter() - tick:.0f} s)", flush=True)
 
