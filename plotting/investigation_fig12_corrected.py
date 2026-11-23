@@ -19,7 +19,7 @@ import _emri_comparison as emri
 from fig12_emri_link_comparison import LABELS as PAPER_LABELS
 from parameters import N_SIGNAL, NUM_INTEGRAL_POINTS
 
-LABELS = dict(PAPER_LABELS, WDM="corrected WDM response")
+LABELS = PAPER_LABELS
 
 
 def cached(path, compute):

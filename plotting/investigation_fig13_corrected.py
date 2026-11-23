@@ -21,7 +21,7 @@ from fig13_emri_tdi_comparison import LABELS as PAPER_LABELS
 from investigation_fig12_corrected import cached
 from parameters import MAX_LAG_L, N_SIGNAL, NUM_INTEGRAL_POINTS
 
-LABELS = dict(PAPER_LABELS, WDM="corrected WDM response")
+LABELS = PAPER_LABELS
 
 
 def compute(n_signal, nf):
