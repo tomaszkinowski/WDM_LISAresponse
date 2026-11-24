@@ -58,7 +58,8 @@ NUMBERS = [
     ("numbers_runtime.py", ["gwr"]),
 ]
 
-# Runs a script as __main__ and leaves its peak memory (bytes) in MAKE_FIGURES_PEAK.
+# Runs a script as __main__ and leaves its peak memory (bytes) in MAKE_FIGURES_PEAK:
+# its own, or that of its largest subprocess (figure 14's m = 0 sweep uses them).
 WRAPPER = r"""
 import os, resource, runpy, sys
 script = sys.argv[1]
@@ -66,7 +67,8 @@ sys.argv = sys.argv[1:]
 try:
     runpy.run_path(script, run_name="__main__")
 finally:
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak = max(resource.getrusage(who).ru_maxrss          # the script or its largest
+               for who in (resource.RUSAGE_SELF, resource.RUSAGE_CHILDREN))  # subprocess
     peak *= 1 if sys.platform == "darwin" else 1024
     with open(os.environ["MAKE_FIGURES_PEAK"], "w") as f:
         f.write(str(peak))

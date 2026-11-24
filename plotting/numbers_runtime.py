@@ -266,15 +266,16 @@ def versions(label):
 
 
 def code_version():
-    """This repository's commit, with -dirty when the working tree has changes."""
+    """This repository's commit, with -dirty when a tracked Python file has changes
+    (regenerated figures and numbers do not count)."""
     def git(*args):
         return subprocess.run(["git", "-C", str(HERE), *args], capture_output=True,
                               text=True).stdout.strip()
     commit = git("rev-parse", "--short", "HEAD")
     if not commit:
         return "unrecorded"
-    return commit + ("-dirty" if git("status", "--porcelain", "--untracked-files=no")
-                     else "")
+    return commit + ("-dirty" if git("status", "--porcelain", "--untracked-files=no",
+                                     "--", ":(top)*.py") else "")
 
 
 def write(label, platform_name, device_kind, rows, notes, grid):

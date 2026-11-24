@@ -2,7 +2,7 @@
 
     python estimate_runtime.py
 
-Runs a calibration of about a minute (CALIBRATION, short records of the same
+Runs a calibration of a minute or two (CALIBRATION, short records of the same
 pipeline the figures use), compares its time with the same calibration in the
 reference run (REFERENCE, written by ``make_figures.py --log``), and scales every
 script's reference time by that ratio. Each script's reference peak memory is shown
@@ -57,7 +57,7 @@ def duration(seconds):
 
 
 if __name__ == "__main__":
-    print("calibrating (about a minute) ...", flush=True)
+    print("calibrating (a minute or two) ...", flush=True)
     here = calibrate()
     if not REFERENCE.exists():
         sys.exit(f"calibration {here:.1f} s; no reference run to compare with "

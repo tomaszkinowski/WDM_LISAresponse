@@ -93,9 +93,27 @@ def leak_edge():
     return 1 - A_FRAC
 
 
-def emri_m0_sweep(nfs=EMRI_SWEEP_NF):
+def emri_m0_sweep(nfs=EMRI_SWEEP_NF, per_process=6):
     """The fraction of the EMRI's WDM power (h_plus and h_cross) in the dropped m = 0
-    band, at each tiling, on figure 14's padded grids."""
+    band, at each tiling, on figure 14's padded grids. Each batch of per_process
+    tilings runs in a fresh process, since JAX keeps ~0.4 GiB per transform until its
+    process exits."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    import _emri_comparison as emri
+    from fig14_mismatch_vs_dT_zeroth_order import m0_fractions   # importable by name
+
+    emri.waveform(N_SIGNAL)                     # computed and cached here, if missing
+    batches = [nfs[i:i + per_process] for i in range(0, len(nfs), per_process)]
+    with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
+                             max_tasks_per_child=1) as pool:
+        m0 = np.concatenate(list(pool.map(m0_fractions, batches)))
+    return dict(Nf=np.asarray(nfs), m0=m0)
+
+
+def m0_fractions(nfs):
+    """emri_m0_sweep's fractions at the tilings nfs, in this process."""
     import jax
 
     import WDM
@@ -106,7 +124,7 @@ def emri_m0_sweep(nfs=EMRI_SWEEP_NF):
     _, _, signal_times, _ = setup()
     h_plus, h_cross = (np.asarray(h) for h in emri.waveform(N_SIGNAL))
     taper = waveforms.tukey_taper_samples(N_SIGNAL, WINDOW_KWARGS["alpha"])
-    out = dict(Nf=np.asarray(nfs), m0=np.full(len(nfs), np.nan))
+    m0 = np.full(len(nfs), np.nan)
     for j, Nf in enumerate(nfs):
         info = utils.wdm_padding_info(N_SIGNAL, int(Nf), max_lag_L=MAX_LAG_L,
                                       taper_samples=taper)
@@ -114,11 +132,11 @@ def emri_m0_sweep(nfs=EMRI_SWEEP_NF):
         _, hp, hc = utils.apply_zero_padding(signal_times, h_plus, h_cross,
                                              info["pad_left"], info["pad_right"])
         power = np.asarray(wdm.dwt(hp)) ** 2 + np.asarray(wdm.dwt(hc)) ** 2
-        out["m0"][j] = power[:, 0].sum() / power.sum()
+        m0[j] = power[:, 0].sum() / power.sum()
         # each tiling compiles for its own shapes; let the compiled code go
         del wdm, power
         jax.clear_caches()
-    return out
+    return m0
 
 
 def emri_shade_edge():

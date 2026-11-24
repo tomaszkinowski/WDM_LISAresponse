@@ -1,0 +1,10 @@
+P = 128, L = 25, Meyer d = 4, A_frac = 0.25
+
+(a) linear interpolation of the filters, against exact values on 16 points per interval
+  T   largest error / filter peak 6.62e-06; worst lag l = -25: error / its own peak 4.62e-05
+  T'  largest error / filter peak 3.65e-07; worst lag l = -20: error / its own peak 1.14e-05
+
+(b) off-bin tones at Delta T = 10000 s, link 1 -> 2, N = 2**23 samples: mismatch of P = 128 against P = 1017
+  f = 0.2750 mHz:  first order 7.61e-15,  zeroth order 2.95e-11
+  f = 3.0250 mHz:  first order 7.29e-13,  zeroth order 2.97e-11
+  f = 30.0250 mHz:  first order 3.31e-11,  zeroth order 2.90e-11

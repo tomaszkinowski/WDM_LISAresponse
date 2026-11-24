@@ -1,0 +1,21 @@
+first-order response, first_order.model.links, float32 (six links, wavelet domain)
+
+date        2026-11-24T09:56:38
+cpu         Intel(R) Core(TM) Ultra 7 265K, 20 logical cores
+device      cpu (cpu)
+packages    jax 0.7.2, jaxlib 0.7.2, numpy 2.3.5
+code        WDM_LISAresponse 6115ed2
+
+signal      N = 2**23 samples, dt = 4 s, T = 388.4 d, Tukey alpha = 0.05
+padded      N = 8460000 samples (391.7 d)
+WDM grid    Nf = 2500, Delta T = 10000 s, Nt = 3384, L = 25, P = 128
+links       12, 23, 31, 13, 32, 21
+
+setup (LISAresponse construction, filter tables, first-order tables): 1.24 s
+first call (compilation + one evaluation): 9.079 s
+subsequent calls (new sky + waveform each): min 0.3521 s, median 0.3663 s over 11 (all: 0.3628, 0.3557, 0.3721, 0.3646, 0.3712, 0.3663, 0.3721, 0.4191, 0.3648, 0.3521, 0.3788)
+dwt of h+ and hx, host CPU, first waveform (incl. compilation): 1.899 s
+dwt of h+ and hx, host CPU, later waveforms: min 0.5458 s, median 0.5516 s over 2 (all: 0.5575, 0.5458)
+peak host memory (max RSS): 6.72 GiB
+output: shape (6, 3384, 2500)
+float32 vs float64, first call's input: rel L2 1.35e-07, mismatch 9.10e-15
